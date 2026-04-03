@@ -5,11 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getNwsService } from '@/services/nws/nws-service.js';
-
-/** Convert Celsius to Fahrenheit. */
-function cToF(c: number): number {
-  return Math.round(c * 1.8 + 32);
-}
+import { cToF, formatTimestamp } from '../format-utils.js';
 
 /** Convert km/h to mph. */
 function kmhToMph(kmh: number): number {
@@ -34,20 +30,6 @@ function mToKm(m: number): number {
 /** Convert meters to feet. */
 function mToFt(m: number): number {
   return Math.round(m * 3.28084);
-}
-
-/** Format an ISO 8601 timestamp as a short human-readable string. */
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZoneName: 'short',
-  });
 }
 
 /** Format temperature with both F and C. */

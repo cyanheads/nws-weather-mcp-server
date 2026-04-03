@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getNwsService } from '@/services/nws/nws-service.js';
+import { formatTimestamp } from '../format-utils.js';
 
 const MAX_ALERTS = 25;
 
@@ -86,20 +87,6 @@ const VALID_AREA_CODES = new Set([
   'SL',
 ]);
 
-/** Format an ISO 8601 timestamp as a short human-readable string. */
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZoneName: 'short',
-  });
-}
-
 /** Build a human-readable summary of the applied search filters. */
 function describeFilters(input: Record<string, unknown>): string {
   const parts: string[] = [];
@@ -157,10 +144,6 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       .array(z.enum(['Observed', 'Likely', 'Possible', 'Unlikely', 'Unknown']))
       .optional()
       .describe('Filter by certainty level.'),
-    status: z
-      .enum(['Actual', 'Exercise', 'System', 'Test', 'Draft'])
-      .default('Actual')
-      .describe('Alert status filter. Almost always want "Actual".'),
   }),
 
   output: z.object({

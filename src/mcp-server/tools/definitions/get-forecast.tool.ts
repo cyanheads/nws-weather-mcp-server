@@ -5,25 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getNwsService } from '@/services/nws/nws-service.js';
-
-/** Convert Celsius to Fahrenheit. */
-function cToF(c: number): number {
-  return Math.round(c * 1.8 + 32);
-}
-
-/** Format an ISO 8601 timestamp as a short human-readable string. */
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZoneName: 'short',
-  });
-}
+import { cToF, formatTimestamp } from '../format-utils.js';
 
 /** Derive a period label from startTime when name is empty (hourly periods). */
 function periodLabel(name: string, startTime: string): string {

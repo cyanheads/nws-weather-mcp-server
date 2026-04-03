@@ -75,5 +75,6 @@ docs/devdocs.md
 .mcp.json
 .claude/
 .agents/
+claude-plans/
 .mcpregistry_github_token
 .mcpregistry_registry_token

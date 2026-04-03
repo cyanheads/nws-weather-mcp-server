@@ -6,7 +6,9 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![Version](https://img.shields.io/badge/Version-0.3.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) 
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.2+-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -16,7 +18,7 @@
 
 Five tools for real-time US weather data:
 
-| Tool Name | Description |
+| Tool | Description |
 |:----------|:------------|
 | `nws_get_forecast` | 7-day or hourly forecast for coordinates. Resolves NWS grid internally. |
 | `nws_search_alerts` | Active weather alerts filtered by area, point, zone, event, severity. |
@@ -31,7 +33,6 @@ Get the weather forecast for a US location.
 - Default returns named 12-hour periods (14 total, ~7 days)
 - Hourly mode returns up to 156 one-hour periods with dewpoint and humidity
 - Coordinates resolve to NWS grid internally via `/points` endpoint
-- Dual-unit display: temperatures in both F and C
 
 ---
 
@@ -65,6 +66,15 @@ Discover nearby observation stations.
 - Includes zone codes, elevation, time zone
 - Useful for finding station IDs for `nws_get_observations`
 
+---
+
+### `nws_list_alert_types`
+
+List all valid NWS alert event type names.
+
+- Returns the full set of event types the NWS API recognizes (e.g., "Tornado Warning", "Heat Advisory")
+- Use to discover valid values for the `event` filter in `nws_search_alerts`
+
 ## Resources
 
 | URI Pattern | Description |
@@ -77,57 +87,76 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core):
 
 - Declarative tool definitions — single file per tool, framework handles registration and validation
 - Unified error handling across all tools
+- Pluggable auth (`none`, `jwt`, `oauth`)
+- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
 - Structured logging with optional OpenTelemetry tracing
-- Runs locally (stdio/HTTP) from the same codebase
+- Runs locally (stdio/HTTP) or on Cloudflare Workers from the same codebase
 
 NWS-specific:
 
 - Zero-auth access to the NWS API — no API keys required
 - Automatic coordinate-to-grid resolution with caching (1h TTL)
 - Retry with backoff for transient NWS API failures
-- Dual-unit display for all measurements (imperial + metric)
+- Dual-unit display for observations (F/C, mph/km/h, inHg/hPa, mi/km)
 - Continental US, Alaska, Hawaii, and US territories coverage
 
-## Getting Started
+## Getting started
 
-### npx (no install)
-
-```bash
-npx @cyanheads/nws-weather-mcp-server run start:stdio
-```
-
-### MCP Client Config
-
-Add to your MCP client config (e.g., `claude_desktop_config.json`):
+Add the following to your MCP client configuration file.
 
 ```json
 {
   "mcpServers": {
     "nws-weather": {
+      "type": "stdio",
+      "command": "bunx",
+      "args": ["@cyanheads/nws-weather-mcp-server@latest"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_LOG_LEVEL": "info"
+      }
+    }
+  }
+}
+```
+
+Or with npx (no Bun required):
+
+```json
+{
+  "mcpServers": {
+    "nws-weather": {
+      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/nws-weather-mcp-server", "run", "start:stdio"]
+      "args": ["-y", "@cyanheads/nws-weather-mcp-server@latest"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_LOG_LEVEL": "info"
+      }
     }
   }
 }
 ```
 
-### HTTP Transport
+Or with Docker:
 
 ```json
 {
   "mcpServers": {
     "nws-weather": {
-      "type": "streamable-http",
-      "url": "http://localhost:3010/mcp"
+      "type": "stdio",
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/nws-weather-mcp-server:latest"]
     }
   }
 }
 ```
 
-Start the HTTP server:
+For Streamable HTTP, set the transport and start the server:
 
-```bash
-MCP_TRANSPORT_TYPE=http npx @cyanheads/nws-weather-mcp-server run start:http
+```sh
+MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
+# Server listens at http://localhost:3010/mcp
 ```
 
 ### Prerequisites
@@ -142,10 +171,15 @@ MCP_TRANSPORT_TYPE=http npx @cyanheads/nws-weather-mcp-server run start:http
 git clone https://github.com/cyanheads/nws-weather-mcp-server.git
 ```
 
-2. **Install dependencies:**
+2. **Navigate into the directory:**
 
 ```sh
 cd nws-weather-mcp-server
+```
+
+3. **Install dependencies:**
+
+```sh
 bun install
 ```
 
@@ -161,15 +195,20 @@ bun install
 
 See [`.env.example`](.env.example) for the full list including auth, storage, and OpenTelemetry options.
 
-## Running the Server
+## Running the server
 
-### Local Development
+### Local development
 
 - **Build and run the production version:**
 
   ```sh
-  bun run build
-  bun run start:http   # or start:stdio
+  # One-time build
+  bun run rebuild
+
+  # Run the built server
+  bun run start:http
+  # or
+  bun run start:stdio
   ```
 
 - **Run checks and tests:**
@@ -179,14 +218,7 @@ See [`.env.example`](.env.example) for the full list including auth, storage, an
   bun run test         # Runs test suite
   ```
 
-### Docker
-
-```sh
-docker build -t nws-weather-mcp-server .
-docker run -p 3010:3010 nws-weather-mcp-server
-```
-
-## Project Structure
+## Project structure
 
 | Directory | Purpose |
 |:----------|:--------|
@@ -195,13 +227,13 @@ docker run -p 3010:3010 nws-weather-mcp-server
 | `src/services/nws/` | NWS API client and response types. |
 | `src/config/` | Environment variable parsing and validation with Zod. |
 
-## Development Guide
+## Development guide
 
 See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rules. The short version:
 
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for domain-specific logging, `ctx.state` for storage
-- Register new tools and resources in the `index.ts` barrel files
+- Add new tools/resources to the barrel exports and the `createApp()` arrays in `src/index.ts`
 
 ## Contributing
 

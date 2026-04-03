@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/nws-weather-mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Real-time US weather data via the National Weather Service API. Forecasts, alerts, and observations with zero auth.",
   "type": "module",
   "main": "dist/index.js",
@@ -40,11 +40,21 @@
     "type": "git",
     "url": "git+https://github.com/cyanheads/nws-weather-mcp-server.git"
   },
-  "homepage": "https://github.com/cyanheads/nws-weather-mcp-server",
+  "homepage": "https://github.com/cyanheads/nws-weather-mcp-server#readme",
   "bugs": {
     "url": "https://github.com/cyanheads/nws-weather-mcp-server/issues"
   },
-  "author": "cyanheads (https://github.com/cyanheads)",
+  "author": "cyanheads <casey@caseyjhand.com> (https://github.com/cyanheads/nws-weather-mcp-server#readme)",
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/cyanheads"
+    },
+    {
+      "type": "buy_me_a_coffee",
+      "url": "https://www.buymeacoffee.com/cyanheads"
+    }
+  ],
   "license": "Apache-2.0",
   "engines": {
     "node": ">=22.0.0",
@@ -62,6 +72,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.7",
     "@types/node": "^25.5.0",
+    "@vitest/coverage-istanbul": "^4.1.2",
     "depcheck": "^1.4.7",
     "ignore": "^7.0.5",
     "tsc-alias": "^1.8.16",

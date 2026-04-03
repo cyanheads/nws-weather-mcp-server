@@ -29,7 +29,7 @@ function truncateCoord(n: number): number {
 
 /** Build cache key for /points resolution. */
 function pointsCacheKey(lat: number, lon: number): string {
-  return `nws:points:${truncateCoord(lat)},${truncateCoord(lon)}`;
+  return `nws/points/${truncateCoord(lat)}_${truncateCoord(lon)}`;
 }
 
 /** Fetch JSON from the NWS API with User-Agent and optional retries. */
@@ -348,7 +348,8 @@ export class NwsService {
     if (params.severity?.length) url.searchParams.set('severity', params.severity.join(','));
     if (params.urgency?.length) url.searchParams.set('urgency', params.urgency.join(','));
     if (params.certainty?.length) url.searchParams.set('certainty', params.certainty.join(','));
-    if (params.status) url.searchParams.set('status', params.status);
+    // /alerts/active doesn't accept a status param (returns 400).
+    // Use /alerts if non-default status filtering is ever needed.
 
     ctx.log.info('Searching alerts', { url: url.toString() });
     const data = await nwsFetch<Record<string, unknown>>(url.toString(), ctx);

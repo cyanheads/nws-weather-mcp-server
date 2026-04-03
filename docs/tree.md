@@ -1,0 +1,140 @@
+# nws-weather-mcp-server - Directory Structure
+
+Generated on: 2026-04-03 20:16:43
+
+```text
+nws-weather-mcp-server/
+├── .claude/
+├── .github/
+│   └── ISSUE_TEMPLATE/
+│       ├── bug_report.yml
+│       ├── config.yml
+│       └── feature_request.yml
+├── .vscode/
+│   ├── extensions.json
+│   └── settings.json
+├── claude-plans/
+├── docs/
+│   └── design.md
+├── scripts/
+│   ├── build.ts
+│   ├── clean.ts
+│   ├── devcheck.ts
+│   ├── lint-mcp.ts
+│   └── tree.ts
+├── skills/
+│   ├── add-prompt/
+│   │   └── SKILL.md
+│   ├── add-resource/
+│   │   └── SKILL.md
+│   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-test/
+│   │   └── SKILL.md
+│   ├── add-tool/
+│   │   └── SKILL.md
+│   ├── api-auth/
+│   │   └── SKILL.md
+│   ├── api-config/
+│   │   └── SKILL.md
+│   ├── api-context/
+│   │   └── SKILL.md
+│   ├── api-errors/
+│   │   └── SKILL.md
+│   ├── api-services/
+│   │   ├── references/
+│   │   │   ├── graph.md
+│   │   │   ├── llm.md
+│   │   │   └── speech.md
+│   │   └── SKILL.md
+│   ├── api-testing/
+│   │   └── SKILL.md
+│   ├── api-utils/
+│   │   ├── references/
+│   │   │   ├── formatting.md
+│   │   │   ├── parsing.md
+│   │   │   └── security.md
+│   │   └── SKILL.md
+│   ├── api-workers/
+│   │   └── SKILL.md
+│   ├── design-mcp-server/
+│   │   └── SKILL.md
+│   ├── devcheck/
+│   │   └── SKILL.md
+│   ├── field-test/
+│   │   └── SKILL.md
+│   ├── maintenance/
+│   │   └── SKILL.md
+│   ├── migrate-mcp-ts-template/
+│   │   └── SKILL.md
+│   ├── polish-docs-meta/
+│   │   ├── references/
+│   │   │   ├── agent-protocol.md
+│   │   │   ├── package-meta.md
+│   │   │   ├── readme.md
+│   │   │   └── server-json.md
+│   │   └── SKILL.md
+│   ├── report-issue-framework/
+│   │   └── SKILL.md
+│   ├── report-issue-local/
+│   │   └── SKILL.md
+│   └── setup/
+│       └── SKILL.md
+├── src/
+│   ├── config/
+│   │   └── server-config.ts
+│   ├── mcp-server/
+│   │   ├── resources/
+│   │   │   └── definitions/
+│   │   │       ├── alert-types.resource.ts
+│   │   │       └── index.ts
+│   │   └── tools/
+│   │       └── definitions/
+│   │           ├── find-stations.tool.ts
+│   │           ├── get-forecast.tool.ts
+│   │           ├── get-observations.tool.ts
+│   │           ├── index.ts
+│   │           ├── list-alert-types.tool.ts
+│   │           └── search-alerts.tool.ts
+│   ├── services/
+│   │   └── nws/
+│   │       ├── nws-service.ts
+│   │       └── types.ts
+│   └── index.ts
+├── tests/
+│   ├── config/
+│   │   └── server-config.test.ts
+│   ├── fixtures/
+│   │   └── nws-responses.ts
+│   ├── prompts/
+│   ├── resources/
+│   │   └── alert-types.resource.test.ts
+│   ├── services/
+│   │   └── nws/
+│   │       └── nws-service.test.ts
+│   └── tools/
+│       ├── find-stations.tool.test.ts
+│       ├── get-forecast.tool.test.ts
+│       ├── get-observations.tool.test.ts
+│       ├── list-alert-types.tool.test.ts
+│       └── search-alerts.tool.test.ts
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── biome.json
+├── bun.lock
+├── bunfig.toml
+├── CHANGELOG.md
+├── CLAUDE.md
+├── devcheck.config.json
+├── Dockerfile
+├── LICENSE
+├── package.json
+├── README.md
+├── server.json
+├── tsconfig.build.json
+├── tsconfig.json
+└── vitest.config.ts
+```
+
+_Note: This tree excludes files and directories matched by .gitignore and default patterns._

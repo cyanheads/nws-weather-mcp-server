@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-04-03
+
+### Fixed
+
+- **Dual-unit forecast temperatures** — `nws_get_forecast` now correctly shows both °F and °C regardless of which unit the NWS API returns for a given forecast period (added `fToC()` to `format-utils.ts`).
+- **Area code case normalization** — `nws_search_alerts` now uppercases the `area` input before validation, so lowercase codes (e.g., `"wa"`) no longer fail with an invalid-area-code error.
+- **Missing freely associated states** — Added FM (Federated States of Micronesia), MH (Marshall Islands), and PW (Palau) to the valid area code set.
+- **Event filter description** — Clarified that the `event` parameter performs an exact match (case-insensitive), not a partial match.
+
 ## [0.3.0] - 2026-04-03
 
 ### Changed

@@ -8,13 +8,106 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 
 const MAX_ALERTS = 25;
 
+/** Valid area codes: US states, DC, territories, and marine areas. */
+const VALID_AREA_CODES = new Set([
+  // States + DC
+  'AL',
+  'AK',
+  'AZ',
+  'AR',
+  'CA',
+  'CO',
+  'CT',
+  'DE',
+  'DC',
+  'FL',
+  'GA',
+  'HI',
+  'ID',
+  'IL',
+  'IN',
+  'IA',
+  'KS',
+  'KY',
+  'LA',
+  'ME',
+  'MD',
+  'MA',
+  'MI',
+  'MN',
+  'MS',
+  'MO',
+  'MT',
+  'NE',
+  'NV',
+  'NH',
+  'NJ',
+  'NM',
+  'NY',
+  'NC',
+  'ND',
+  'OH',
+  'OK',
+  'OR',
+  'PA',
+  'RI',
+  'SC',
+  'SD',
+  'TN',
+  'TX',
+  'UT',
+  'VT',
+  'VA',
+  'WA',
+  'WV',
+  'WI',
+  'WY',
+  // Territories
+  'AS',
+  'GU',
+  'MP',
+  'PR',
+  'VI',
+  // Marine areas
+  'AM',
+  'AN',
+  'GM',
+  'LC',
+  'LE',
+  'LH',
+  'LM',
+  'LO',
+  'LS',
+  'PH',
+  'PK',
+  'PM',
+  'PS',
+  'PZ',
+  'SL',
+]);
+
+/** Format an ISO 8601 timestamp as a short human-readable string. */
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
 /** Build a human-readable summary of the applied search filters. */
 function describeFilters(input: Record<string, unknown>): string {
   const parts: string[] = [];
   if (input.area) parts.push(`area=${input.area}`);
   if (input.point) parts.push(`point=${input.point}`);
   if (input.zone) parts.push(`zone=${input.zone}`);
-  if (Array.isArray(input.event) && input.event.length) parts.push(`event=${input.event.join(', ')}`);
+  if (Array.isArray(input.event) && input.event.length)
+    parts.push(`event=${input.event.join(', ')}`);
   if (Array.isArray(input.severity) && input.severity.length)
     parts.push(`severity=${input.severity.join(', ')}`);
   if (Array.isArray(input.urgency) && input.urgency.length)
@@ -96,17 +189,26 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   }),
 
   async handler(input, ctx) {
+    // Validate area code against known US states, territories, and marine areas
+    if (input.area && !VALID_AREA_CODES.has(input.area.toUpperCase())) {
+      throw new Error(
+        `Invalid area code "${input.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
+      );
+    }
+
     // Validate point format before hitting the API
     if (input.point) {
-      const parts = input.point.split(',').map(Number);
+      const [lat, lon, ...rest] = input.point.split(',').map(Number);
       if (
-        parts.length !== 2 ||
-        isNaN(parts[0]!) ||
-        isNaN(parts[1]!) ||
-        parts[0]! < -90 ||
-        parts[0]! > 90 ||
-        parts[1]! < -180 ||
-        parts[1]! > 180
+        rest.length > 0 ||
+        lat == null ||
+        lon == null ||
+        Number.isNaN(lat) ||
+        Number.isNaN(lon) ||
+        lat < -90 ||
+        lat > 90 ||
+        lon < -180 ||
+        lon > 180
       ) {
         throw new Error(
           `Invalid point "${input.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
@@ -156,8 +258,8 @@ export const searchAlertsTool = tool('nws_search_alerts', {
         `**Severity:** ${a.severity} | **Urgency:** ${a.urgency} | **Certainty:** ${a.certainty}`,
       );
       lines.push(`**Area:** ${a.areaDesc}`);
-      if (a.onset) lines.push(`**Onset:** ${a.onset}`);
-      if (a.expires) lines.push(`**Expires:** ${a.expires}`);
+      if (a.onset) lines.push(`**Onset:** ${formatTimestamp(a.onset)}`);
+      if (a.expires) lines.push(`**Expires:** ${formatTimestamp(a.expires)}`);
       lines.push(`**From:** ${a.senderName}`);
       lines.push('');
       lines.push(a.description);

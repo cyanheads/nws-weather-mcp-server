@@ -6,6 +6,37 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getNwsService } from '@/services/nws/nws-service.js';
 
+/** Convert Celsius to Fahrenheit. */
+function cToF(c: number): number {
+  return Math.round(c * 1.8 + 32);
+}
+
+/** Format an ISO 8601 timestamp as a short human-readable string. */
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
+/** Derive a period label from startTime when name is empty (hourly periods). */
+function periodLabel(name: string, startTime: string): string {
+  if (name) return name;
+  const d = new Date(startTime);
+  if (Number.isNaN(d.getTime())) return startTime;
+  return d.toLocaleString('en-US', {
+    weekday: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 export const getForecastTool = tool('nws_get_forecast', {
   description:
     'Get the weather forecast for a US location. Returns either named 12-hour periods (default) or hourly breakdowns. Internally resolves coordinates to the NWS grid.',
@@ -84,9 +115,7 @@ export const getForecastTool = tool('nws_get_forecast', {
         precipChance: p.probabilityOfPrecipitation.value,
         dewpoint: p.dewpoint.value != null ? Math.round(p.dewpoint.value * 10) / 10 : null,
         relativeHumidity:
-          p.relativeHumidity.value != null
-            ? Math.round(p.relativeHumidity.value * 10) / 10
-            : null,
+          p.relativeHumidity.value != null ? Math.round(p.relativeHumidity.value * 10) / 10 : null,
       })),
     };
   },
@@ -95,7 +124,7 @@ export const getForecastTool = tool('nws_get_forecast', {
     const loc = result.location;
     const lines = [
       `## Forecast for ${loc.city}, ${loc.state}`,
-      `**Office:** ${loc.office} | **Time Zone:** ${loc.timeZone} | **Generated:** ${result.generatedAt}`,
+      `**Office:** ${loc.office} | **Time Zone:** ${loc.timeZone} | **Generated:** ${formatTimestamp(result.generatedAt)}`,
       '',
     ];
 
@@ -109,9 +138,12 @@ export const getForecastTool = tool('nws_get_forecast', {
     for (const p of periods) {
       const precip = p.precipChance != null ? ` | **Precip:** ${p.precipChance}%` : '';
       const humidity = p.relativeHumidity != null ? ` | **Humidity:** ${p.relativeHumidity}%` : '';
-      const dew = p.dewpoint != null ? ` | **Dewpoint:** ${Math.round(p.dewpoint)}°C` : '';
+      const dew =
+        p.dewpoint != null
+          ? ` | **Dewpoint:** ${cToF(p.dewpoint)}°F (${Math.round(p.dewpoint)}°C)`
+          : '';
 
-      lines.push(`### ${p.name}`);
+      lines.push(`### ${periodLabel(p.name, p.startTime)}`);
       lines.push(
         `**${p.temperature}°${p.temperatureUnit}** | **Wind:** ${p.windSpeed} ${p.windDirection}${precip}${humidity}${dew}`,
       );

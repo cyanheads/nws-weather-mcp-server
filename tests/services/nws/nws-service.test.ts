@@ -137,9 +137,7 @@ describe('NwsService', () => {
       const result = await service.getNwsService().getObservation({ stationId: 'KSEA' }, ctx);
 
       expect(result.observation.stationId).toBe('KSEA');
-      expect(result.observation.stationName).toBe(
-        'Seattle, Seattle-Tacoma International Airport',
-      );
+      expect(result.observation.stationName).toBe('Seattle, Seattle-Tacoma International Airport');
       expect(result.observation.temperature.value).toBe(14.4);
       expect(result.observation.textDescription).toBe('Mostly Cloudy');
     });

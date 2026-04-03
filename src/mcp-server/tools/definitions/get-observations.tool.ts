@@ -26,6 +26,30 @@ function mToMi(m: number): number {
   return Math.round(m * 0.000621371 * 10) / 10;
 }
 
+/** Convert meters to km. */
+function mToKm(m: number): number {
+  return Math.round(m / 100) / 10;
+}
+
+/** Convert meters to feet. */
+function mToFt(m: number): number {
+  return Math.round(m * 3.28084);
+}
+
+/** Format an ISO 8601 timestamp as a short human-readable string. */
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
 /** Format temperature with both F and C. */
 function formatTemp(value: number | null): string | null {
   if (value == null) return null;
@@ -34,11 +58,7 @@ function formatTemp(value: number | null): string | null {
 }
 
 /** Format wind speed with both mph and km/h. */
-function formatWind(
-  speed: number | null,
-  direction: number | null,
-  gust: number | null,
-): string {
+function formatWind(speed: number | null, direction: number | null, gust: number | null): string {
   if (speed == null) return 'Calm';
   const mph = kmhToMph(speed);
   const kmh = Math.round(speed);
@@ -145,7 +165,7 @@ export const getObservationsTool = tool('nws_get_observations', {
   format: (result) => {
     const lines = [
       `## Current Conditions — ${result.stationName} (${result.stationId})`,
-      `**${result.textDescription}** | Observed: ${result.timestamp}`,
+      `**${result.textDescription}** | Observed: ${formatTimestamp(result.timestamp)}`,
       '',
     ];
 
@@ -167,7 +187,7 @@ export const getObservationsTool = tool('nws_get_observations', {
     }
 
     if (result.visibility != null) {
-      lines.push(`**Visibility:** ${mToMi(result.visibility)} mi`);
+      lines.push(`**Visibility:** ${mToMi(result.visibility)} mi (${mToKm(result.visibility)} km)`);
     }
 
     const heat = formatTemp(result.heatIndex);
@@ -179,7 +199,7 @@ export const getObservationsTool = tool('nws_get_observations', {
     if (result.cloudLayers.length > 0) {
       const clouds = result.cloudLayers
         .map((l) => {
-          const base = l.base != null ? ` at ${Math.round(l.base)}m` : '';
+          const base = l.base != null ? ` at ${Math.round(l.base)}m (${mToFt(l.base)} ft)` : '';
           return `${l.amount}${base}`;
         })
         .join(', ');

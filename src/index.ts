@@ -5,7 +5,6 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
-import { initNwsService } from '@/services/nws/nws-service.js';
 import { alertTypesResource } from '@/mcp-server/resources/definitions/index.js';
 import {
   findStationsTool,
@@ -14,6 +13,7 @@ import {
   listAlertTypesTool,
   searchAlertsTool,
 } from '@/mcp-server/tools/definitions/index.js';
+import { initNwsService } from '@/services/nws/nws-service.js';
 
 await createApp({
   tools: [

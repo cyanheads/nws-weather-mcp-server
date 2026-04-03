@@ -22,6 +22,12 @@ const POINTS_CACHE_TTL = 3600; // 1 hour — grid cells rarely change
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
 
+/** Extract the last path segment from an NWS API URL (e.g., zone code from zone URL). */
+function extractZoneCode(url: string): string {
+  const lastSlash = url.lastIndexOf('/');
+  return lastSlash >= 0 ? url.slice(lastSlash + 1) : url;
+}
+
 /** Truncate coordinate to 4 decimal places per NWS API requirement. */
 function truncateCoord(n: number): number {
   return Math.trunc(n * 10000) / 10000;
@@ -32,8 +38,28 @@ function pointsCacheKey(lat: number, lon: number): string {
   return `nws/points/${truncateCoord(lat)}_${truncateCoord(lon)}`;
 }
 
+const DEFAULT_NOT_FOUND =
+  'NWS only covers the US. Provide coordinates within US states, territories, or adjacent marine areas.';
+
+/** Try to extract a detail message from an NWS error response body. */
+async function parseNwsErrorDetail(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as Record<string, unknown>;
+    if (typeof body.detail === 'string') return body.detail;
+    if (typeof body.title === 'string') return body.title;
+  } catch {
+    /* not JSON — ignore */
+  }
+  return null;
+}
+
 /** Fetch JSON from the NWS API with User-Agent and optional retries. */
-async function nwsFetch<T>(url: string, ctx: Context, retries = MAX_RETRIES): Promise<T> {
+async function nwsFetch<T>(
+  url: string,
+  ctx: Context,
+  retries = MAX_RETRIES,
+  notFoundMessage = DEFAULT_NOT_FOUND,
+): Promise<T> {
   const { userAgent } = getServerConfig();
   let lastError: unknown;
 
@@ -61,9 +87,12 @@ async function nwsFetch<T>(url: string, ctx: Context, retries = MAX_RETRIES): Pr
     }
 
     if (response.status === 404) {
-      throw new Error(
-        'NWS only covers the US. Provide coordinates within US states, territories, or adjacent marine areas.',
-      );
+      throw new Error(notFoundMessage);
+    }
+
+    if (response.status === 400) {
+      const detail = await parseNwsErrorDetail(response);
+      throw new Error(detail ?? `NWS API returned 400: Bad Request for ${url}`);
     }
 
     throw serviceUnavailable(`NWS API returned ${response.status}: ${response.statusText}`, {
@@ -163,7 +192,7 @@ function parseAlert(feature: Record<string, unknown>): Alert {
     onset: (p.onset as string) ?? null,
     expires: (p.expires as string) ?? null,
     senderName: p.senderName as string,
-    affectedZones: (p.affectedZones as string[]) ?? [],
+    affectedZones: ((p.affectedZones as string[]) ?? []).map(extractZoneCode),
   };
 }
 
@@ -213,8 +242,8 @@ function parseStations(data: Record<string, unknown>): Station[] {
       name: (p.name as string) ?? '',
       elevation: (p.elevation as NwsValue) ?? { value: null, unitCode: '' },
       timeZone: (p.timeZone as string) ?? '',
-      county: (p.county as string) ?? '',
-      forecastZone: (p.forecast as string) ?? '',
+      county: extractZoneCode((p.county as string) ?? ''),
+      forecastZone: extractZoneCode((p.forecast as string) ?? ''),
       coordinates: [coords[0] ?? 0, coords[1] ?? 0] as const,
     };
   });
@@ -372,7 +401,15 @@ export class NwsService {
 
     if (params.stationId) {
       stationId = params.stationId.toUpperCase();
-      stationName = stationId;
+      // Fetch station metadata to get the proper name
+      const stationData = await nwsFetch<Record<string, unknown>>(
+        `${BASE_URL}/stations/${stationId}`,
+        ctx,
+        0,
+        `Station '${stationId}' not found. Use nws_find_stations to discover valid station IDs.`,
+      );
+      const stationProps = stationData.properties as Record<string, unknown>;
+      stationName = (stationProps?.name as string) ?? stationId;
     } else {
       const lat = params.latitude as number;
       const lon = params.longitude as number;
@@ -397,6 +434,8 @@ export class NwsService {
     const data = await nwsFetch<Record<string, unknown>>(
       `${BASE_URL}/stations/${stationId}/observations/latest`,
       ctx,
+      MAX_RETRIES,
+      `Station '${stationId}' not found. Use nws_find_stations to discover valid station IDs.`,
     );
 
     const observation = parseObservation(data, stationId, stationName);

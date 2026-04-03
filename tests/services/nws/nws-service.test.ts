@@ -12,6 +12,7 @@ import {
   forecastResponse,
   observationResponse,
   pointsResponse,
+  stationInfoResponse,
   stationsResponse,
 } from '../../fixtures/nws-responses.js';
 
@@ -128,12 +129,17 @@ describe('NwsService', () => {
 
   describe('getObservation', () => {
     it('fetches by station ID directly', async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse(observationResponse));
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(stationInfoResponse))
+        .mockResolvedValueOnce(jsonResponse(observationResponse));
 
       const ctx = createMockContext({ tenantId: 'test' });
       const result = await service.getNwsService().getObservation({ stationId: 'KSEA' }, ctx);
 
       expect(result.observation.stationId).toBe('KSEA');
+      expect(result.observation.stationName).toBe(
+        'Seattle, Seattle-Tacoma International Airport',
+      );
       expect(result.observation.temperature.value).toBe(14.4);
       expect(result.observation.textDescription).toBe('Mostly Cloudy');
     });

@@ -46,7 +46,7 @@ describe('nws_search_alerts', () => {
     expect(input.status).toBe('Actual');
   });
 
-  it('returns alerts with count', async () => {
+  it('returns alerts with count and filters', async () => {
     mockSearchAlerts.mockResolvedValueOnce(alertResult);
 
     const ctx = createMockContext({ tenantId: 'test' });
@@ -54,6 +54,8 @@ describe('nws_search_alerts', () => {
     const result = await searchAlertsTool.handler(input, ctx);
 
     expect(result.count).toBe(1);
+    expect(result.shown).toBe(1);
+    expect(result.filters).toContain('area=WA');
     expect(result.alerts[0].event).toBe('Wind Advisory');
     expect(result.alerts[0].instruction).toBe('Secure outdoor objects.');
   });
@@ -66,7 +68,15 @@ describe('nws_search_alerts', () => {
     const result = await searchAlertsTool.handler(input, ctx);
 
     expect(result.count).toBe(0);
+    expect(result.shown).toBe(0);
+    expect(result.filters).toBe('national (no filters)');
     expect(result.alerts).toHaveLength(0);
+  });
+
+  it('validates point format', async () => {
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = searchAlertsTool.input.parse({ point: '999,999' });
+    await expect(searchAlertsTool.handler(input, ctx)).rejects.toThrow('Invalid point');
   });
 
   it('passes all filter params to service', async () => {
@@ -93,15 +103,24 @@ describe('nws_search_alerts', () => {
   });
 
   describe('format', () => {
-    it('renders "all clear" for empty results', () => {
-      const blocks = searchAlertsTool.format!({ count: 0, alerts: [] });
+    it('renders helpful guidance for empty results', () => {
+      const blocks = searchAlertsTool.format!({
+        count: 0,
+        shown: 0,
+        filters: 'area=WA',
+        alerts: [],
+      });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('All clear');
+      expect(text).toContain('No active alerts found');
+      expect(text).toContain('area=WA');
+      expect(text).toContain('broaden');
     });
 
     it('renders alert details', () => {
       const blocks = searchAlertsTool.format!({
         count: 1,
+        shown: 1,
+        filters: 'area=WA',
         alerts: [
           {
             id: 'test',
@@ -125,6 +144,17 @@ describe('nws_search_alerts', () => {
       expect(text).toContain('Extreme');
       expect(text).toContain('Take shelter');
       expect(text).toContain('Move to interior room');
+    });
+
+    it('shows truncation notice when capped', () => {
+      const blocks = searchAlertsTool.format!({
+        count: 50,
+        shown: 25,
+        filters: 'national (no filters)',
+        alerts: [],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('25 more alerts not shown');
     });
   });
 });

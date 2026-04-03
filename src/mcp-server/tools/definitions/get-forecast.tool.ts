@@ -82,8 +82,11 @@ export const getForecastTool = tool('nws_get_forecast', {
         shortForecast: p.shortForecast,
         detailedForecast: p.detailedForecast,
         precipChance: p.probabilityOfPrecipitation.value,
-        dewpoint: p.dewpoint.value,
-        relativeHumidity: p.relativeHumidity.value,
+        dewpoint: p.dewpoint.value != null ? Math.round(p.dewpoint.value * 10) / 10 : null,
+        relativeHumidity:
+          p.relativeHumidity.value != null
+            ? Math.round(p.relativeHumidity.value * 10) / 10
+            : null,
       })),
     };
   },
@@ -95,6 +98,11 @@ export const getForecastTool = tool('nws_get_forecast', {
       `**Office:** ${loc.office} | **Time Zone:** ${loc.timeZone} | **Generated:** ${result.generatedAt}`,
       '',
     ];
+
+    if (result.periods.length === 0) {
+      lines.push('No forecast periods available for this location.');
+      return [{ type: 'text', text: lines.join('\n') }];
+    }
 
     const periods = result.periods.slice(0, 48);
 

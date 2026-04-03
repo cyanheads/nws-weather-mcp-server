@@ -186,6 +186,23 @@ export const getObservationsTool = tool('nws_get_observations', {
       lines.push(`**Clouds:** ${clouds}`);
     }
 
+    // Flag when most measurements are missing
+    const measurable = [
+      result.temperature,
+      result.dewpoint,
+      result.windSpeed,
+      result.barometricPressure,
+      result.visibility,
+      result.relativeHumidity,
+    ];
+    const nullCount = measurable.filter((v) => v == null).length;
+    if (nullCount >= 4) {
+      lines.push('');
+      lines.push(
+        '_Limited data — most measurements unavailable from this station. Try a different station using nws_find_stations._',
+      );
+    }
+
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

@@ -126,6 +126,16 @@ export const observationResponse = {
   },
 };
 
+/** Mock /stations/{id} response (single station info) */
+export const stationInfoResponse = {
+  properties: {
+    stationIdentifier: 'KSEA',
+    name: 'Seattle, Seattle-Tacoma International Airport',
+    elevation: { value: 131, unitCode: 'wmoUnit:m' },
+    timeZone: 'America/Los_Angeles',
+  },
+};
+
 /** Mock observation stations response */
 export const stationsResponse = {
   features: [

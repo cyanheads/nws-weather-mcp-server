@@ -6,6 +6,24 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getNwsService } from '@/services/nws/nws-service.js';
 
+const MAX_ALERTS = 25;
+
+/** Build a human-readable summary of the applied search filters. */
+function describeFilters(input: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (input.area) parts.push(`area=${input.area}`);
+  if (input.point) parts.push(`point=${input.point}`);
+  if (input.zone) parts.push(`zone=${input.zone}`);
+  if (Array.isArray(input.event) && input.event.length) parts.push(`event=${input.event.join(', ')}`);
+  if (Array.isArray(input.severity) && input.severity.length)
+    parts.push(`severity=${input.severity.join(', ')}`);
+  if (Array.isArray(input.urgency) && input.urgency.length)
+    parts.push(`urgency=${input.urgency.join(', ')}`);
+  if (Array.isArray(input.certainty) && input.certainty.length)
+    parts.push(`certainty=${input.certainty.join(', ')}`);
+  return parts.length > 0 ? parts.join(', ') : 'national (no filters)';
+}
+
 export const searchAlertsTool = tool('nws_search_alerts', {
   description:
     'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, event type, severity, urgency, or certainty. Omit all filters for a national search.',
@@ -53,7 +71,9 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   }),
 
   output: z.object({
-    count: z.number().describe('Number of matching alerts'),
+    count: z.number().describe('Total number of matching alerts'),
+    shown: z.number().describe('Number of alerts included in this response'),
+    filters: z.string().describe('Summary of applied search filters'),
     alerts: z
       .array(
         z.object({
@@ -69,29 +89,65 @@ export const searchAlertsTool = tool('nws_search_alerts', {
           onset: z.string().nullable().describe('Expected onset (ISO 8601)'),
           expires: z.string().nullable().describe('Expiration time (ISO 8601)'),
           senderName: z.string().describe('Issuing office'),
-          affectedZones: z.array(z.string()).describe('Affected zone IDs'),
+          affectedZones: z.array(z.string()).describe('Affected zone codes'),
         }),
       )
-      .describe('Matching alerts'),
+      .describe('Matching alerts (capped at 25)'),
   }),
 
   async handler(input, ctx) {
-    const result = await getNwsService().searchAlerts(input, ctx);
+    // Validate point format before hitting the API
+    if (input.point) {
+      const parts = input.point.split(',').map(Number);
+      if (
+        parts.length !== 2 ||
+        isNaN(parts[0]!) ||
+        isNaN(parts[1]!) ||
+        parts[0]! < -90 ||
+        parts[0]! > 90 ||
+        parts[1]! < -180 ||
+        parts[1]! > 180
+      ) {
+        throw new Error(
+          `Invalid point "${input.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
+        );
+      }
+    }
 
-    ctx.log.info('Alerts search completed', { count: result.alerts.length });
+    const result = await getNwsService().searchAlerts(input, ctx);
+    const total = result.alerts.length;
+    const capped = result.alerts.slice(0, MAX_ALERTS);
+    const filters = describeFilters(input);
+
+    ctx.log.info('Alerts search completed', { total, shown: capped.length, filters });
 
     return {
-      count: result.alerts.length,
-      alerts: result.alerts.map((a) => ({ ...a, affectedZones: [...a.affectedZones] })),
+      count: total,
+      shown: capped.length,
+      filters,
+      alerts: capped.map((a) => ({ ...a, affectedZones: [...a.affectedZones] })),
     };
   },
 
   format: (result) => {
     if (result.count === 0) {
-      return [{ type: 'text', text: 'No active alerts found. All clear.' }];
+      const lines = [
+        `No active alerts found for: ${result.filters}.`,
+        '',
+        'To broaden your search, try:',
+        '- Use **area** (e.g., "WA") for state-wide alerts',
+        '- Remove severity/event filters',
+        '- Use nws_list_alert_types to verify event names',
+      ];
+      return [{ type: 'text', text: lines.join('\n') }];
     }
 
-    const lines = [`## ${result.count} Active Alert${result.count > 1 ? 's' : ''}\n`];
+    const truncated = result.shown < result.count;
+    const heading = truncated
+      ? `## Showing ${result.shown} of ${result.count} Active Alerts`
+      : `## ${result.count} Active Alert${result.count > 1 ? 's' : ''}`;
+
+    const lines = [`${heading}\n**Filters:** ${result.filters}\n`];
 
     for (const a of result.alerts) {
       lines.push(`### ${a.event}`);
@@ -112,6 +168,12 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       lines.push('');
       lines.push('---');
       lines.push('');
+    }
+
+    if (truncated) {
+      lines.push(
+        `_${result.count - result.shown} more alerts not shown. Narrow with area, severity, or event filters to see specific alerts._`,
+      );
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

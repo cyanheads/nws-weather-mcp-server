@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-04-03
+
+### Fixed
+
+- **Zone codes** — Extract zone codes (e.g., `WAC033`, `WAZ315`) from NWS API URLs instead of returning raw URLs for `county`, `forecastZone`, and `affectedZones` fields.
+- **Numeric precision** — Round elevation, dewpoint, and relative humidity values instead of passing raw floats.
+- **Point validation** — `nws_search_alerts` now validates `point` format and coordinate ranges before hitting the API.
+- **400 error handling** — Parse NWS API 400 responses for detail messages instead of generic failures.
+- **Station not-found** — Custom error messages when a station ID is invalid, directing users to `nws_find_stations`.
+
+### Changed
+
+- **Alert result cap** — `nws_search_alerts` caps output at 25 alerts with a truncation notice and guidance to narrow filters.
+- **Filter summaries** — Alert search results now include a human-readable summary of applied filters.
+- **Empty results guidance** — Zero-alert results show suggestions for broadening the search.
+- **Limited data warning** — `nws_get_observations` flags when most measurements are unavailable from a station.
+- **Empty forecast guard** — `nws_get_forecast` handles zero forecast periods gracefully.
+- **Station name resolution** — `nws_get_observations` with a station ID now fetches the station's proper name instead of echoing the ID.
+- **Test coverage** — Updated tests for all changed behaviors: filter summaries, truncation, point validation, station info fetch.
+
 ## [0.1.0] - 2026-04-03
 
 Initial release. Real-time US weather data via the National Weather Service API.

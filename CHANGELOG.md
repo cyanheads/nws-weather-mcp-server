@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-04-03
+
+### Changed
+
+- **Extracted format utilities** — Moved shared `cToF()` and `formatTimestamp()` into `src/mcp-server/tools/format-utils.ts`, deduplicated across forecast, observations, and alerts tools.
+- **Hardened `/points` resolution** — Validates that required URLs (forecast, forecastHourly, observationStations) exist in the NWS `/points` response before proceeding, with a descriptive `serviceUnavailable` error on failure.
+- **README.md** — Added Bun badge, `nws_list_alert_types` tool documentation, bunx/npx/Docker client configs, updated framework features (auth, storage, Workers), improved development guide.
+- **Package metadata** — Added funding links (GitHub Sponsors, Buy Me a Coffee), `@vitest/coverage-istanbul` dev dependency.
+
+### Removed
+
+- **`status` field from `nws_search_alerts`** — The NWS `/alerts/active` endpoint returns 400 when a `status` parameter is sent. Removed the non-functional field from the tool schema and service layer.
+
 ## [0.2.0] - 2026-04-03
 
 ### Added

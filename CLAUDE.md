@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.1.1
+**Version:** 0.2.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -73,34 +73,41 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { getNwsService } from '@/services/nws/nws-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
+export const findStationsTool = tool('nws_find_stations', {
+  description: 'Find weather observation stations near a location.',
   annotations: { readOnlyHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    latitude: z.number().min(-90).max(90).describe('Center latitude for proximity search.'),
+    longitude: z.number().min(-180).max(180).describe('Center longitude for proximity search.'),
+    limit: z.number().int().min(1).max(50).default(10).describe('Max stations to return (1-50).'),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    stations: z.array(z.object({
+      stationId: z.string().describe('Station identifier (e.g., "KSEA")'),
+      name: z.string().describe('Station name'),
+      distance: z.number().describe('Distance from query point in km'),
+      bearing: z.string().describe('Compass bearing from query point'),
+    })).describe('Nearby stations sorted by distance'),
   }),
-  auth: ['inventory:read'],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const result = await getNwsService().findStations(input.latitude, input.longitude, input.limit, ctx);
+    return { stations: result.stations.map((s) => ({ /* ... */ })) };
   },
 
   // format() populates content[] — the only field most LLM clients forward to
   // the model. Render all data the LLM needs, not just a count or title.
-  format: (result) => [{
-    type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
-  }],
+  format: (result) => {
+    const lines = [`## ${result.stations.length} Nearby Stations\n`];
+    lines.push('| Station | Name | Distance | Bearing |');
+    lines.push('|:--------|:-----|:---------|:--------|');
+    for (const s of result.stations) {
+      lines.push(`| ${s.stationId} | ${s.name} | ${s.distance} km | ${s.bearing} |`);
+    }
+    return [{ type: 'text', text: lines.join('\n') }];
+  },
 });
 ```
 
@@ -108,16 +115,27 @@ export const searchItems = tool('search_items', {
 
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
+import { getNwsService } from '@/services/nws/nws-service.js';
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw new Error(`Item ${params.itemId} not found`);
-    return item;
+export const alertTypesResource = resource('nws://alert-types', {
+  name: 'NWS Alert Event Types',
+  description: 'Static list of all valid NWS alert event type names.',
+  mimeType: 'application/json',
+  params: z.object({}),
+
+  async handler(_params, ctx) {
+    const types = await getNwsService().listAlertTypes(ctx);
+    return { count: types.length, eventTypes: [...types].sort() };
   },
+
+  list: async () => ({
+    resources: [{
+      uri: 'nws://alert-types',
+      name: 'NWS Alert Event Types',
+      description: 'All valid alert event type names for filtering.',
+      mimeType: 'application/json',
+    }],
+  }),
 });
 ```
 
@@ -126,14 +144,15 @@ export const itemData = resource('inventory://{itemId}', {
 ```ts
 // src/config/server-config.ts — lazy-parsed, separate from framework config
 const ServerConfigSchema = z.object({
-  myApiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
+  userAgent: z
+    .string()
+    .default('(nws-weather-mcp-server, github.com/cyanheads/nws-weather-mcp-server)')
+    .describe('User-Agent header for NWS API requests. Required by the API — 403 without it.'),
 });
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
   _config ??= ServerConfigSchema.parse({
-    myApiKey: process.env.MY_API_KEY,
-    maxResults: process.env.MY_MAX_RESULTS,
+    userAgent: process.env.NWS_USER_AGENT,
   });
   return _config;
 }
@@ -148,11 +167,8 @@ Handlers receive a unified `ctx` object. Key properties:
 | Property | Description |
 |:---------|:------------|
 | `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
-| `ctx.elicit` | Ask user for structured input. **Check for presence first:** `if (ctx.elicit) { ... }` |
-| `ctx.sample` | Request LLM completion from the client. **Check for presence first:** `if (ctx.sample) { ... }` |
+| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Used for grid cell caching. |
 | `ctx.signal` | `AbortSignal` for cancellation. |
-| `ctx.progress` | Task progress (present when `task: true`) — `.setTotal(n)`, `.increment()`, `.update(message)`. |
 | `ctx.requestId` | Unique request ID. |
 | `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
 
@@ -205,10 +221,10 @@ src/
 
 | What | Convention | Example |
 |:-----|:-----------|:--------|
-| Files | kebab-case with suffix | `search-docs.tool.ts` |
-| Tool/resource/prompt names | snake_case | `search_docs` |
-| Directories | kebab-case | `src/services/doc-search/` |
-| Descriptions | Single string or template literal, no `+` concatenation | `'Search items by query and filter.'` |
+| Files | kebab-case with suffix | `get-forecast.tool.ts` |
+| Tool/resource/prompt names | snake_case | `nws_get_forecast` |
+| Directories | kebab-case | `src/services/nws/` |
+| Descriptions | Single string or template literal, no `+` concatenation | `'Get the weather forecast for a US location.'` |
 
 ---
 
@@ -258,6 +274,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run devcheck` | Lint + format + typecheck + security |
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting |
+| `bun run lint:mcp` | Validate MCP tool/resource definitions |
 | `bun run test` | Run tests |
 | `bun run dev:stdio` | Dev mode (stdio) |
 | `bun run dev:http` | Dev mode (HTTP) |
@@ -274,7 +291,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 
 // Server's own code — via path alias
-import { getMyService } from '@/services/my-domain/my-service.js';
+import { getNwsService } from '@/services/nws/nws-service.js';
 ```
 
 ---

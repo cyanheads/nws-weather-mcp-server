@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-04-03
+
+### Added
+
+- **LICENSE file** — Apache 2.0 license text.
+- **bunfig.toml** — Bun runtime configuration with install and run settings.
+- **docs/tree.md** — Generated directory structure documentation.
+- **Expanded package metadata** — `mcpName`, `homepage`, `bugs`, `author`, `packageManager`, Bun engine requirement, and domain-specific keywords in `package.json`.
+- **NWS_USER_AGENT env var** — Documented in both stdio and HTTP transport configs in `server.json`.
+- **OCI image metadata** — Description and source URL labels in Dockerfile.
+
+### Changed
+
+- **README.md** — Complete rewrite with centered header, expanded badges, detailed per-tool documentation, features section, getting started guides (npx, MCP client, HTTP), configuration table, project structure, Docker instructions, and contributing section.
+- **CLAUDE.md** — Replaced generic placeholder examples with NWS-specific tool, resource, and config patterns. Removed unused context properties (`elicit`, `sample`, `progress`). Added `lint:mcp` command reference. Updated naming convention examples.
+- **server.json** — Updated name to `io.github.cyanheads/` format, updated description, changed `runtimeHint` from `node` to `bun`, reformatted package arguments.
+
 ## [0.1.1] - 2026-04-03
 
 ### Fixed

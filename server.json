@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "cyanheads/nws-weather-mcp-server",
-  "description": "Real-time US weather data via the National Weather Service API. Forecasts, alerts, and observations with zero auth.",
+  "description": "Real-time US weather via the NWS API. Forecasts, alerts, and observations — zero auth.",
   "repository": {
     "url": "https://github.com/cyanheads/nws-weather-mcp-server",
     "source": "github"

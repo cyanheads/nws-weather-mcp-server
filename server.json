@@ -1,30 +1,31 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "cyanheads/nws-weather-mcp-server",
-  "description": "Real-time US weather via the NWS API. Forecasts, alerts, and observations — zero auth.",
+  "name": "io.github.cyanheads/nws-weather-mcp-server",
+  "description": "Real-time US weather data via the National Weather Service API. Forecasts, alerts, and observations with zero auth.",
   "repository": {
     "url": "https://github.com/cyanheads/nws-weather-mcp-server",
     "source": "github"
   },
-  "version": "0.1.1",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/nws-weather-mcp-server",
-      "runtimeHint": "node",
-      "version": "0.1.1",
+      "runtimeHint": "bun",
+      "version": "0.2.0",
       "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:stdio"
-        }
+        { "type": "positional", "value": "run" },
+        { "type": "positional", "value": "start:stdio" }
       ],
       "environmentVariables": [
+        {
+          "name": "NWS_USER_AGENT",
+          "description": "User-Agent header for NWS API requests. The API requires this header but a default is provided.",
+          "format": "string",
+          "isRequired": false,
+          "default": "(nws-weather-mcp-server, github.com/cyanheads/nws-weather-mcp-server)"
+        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -41,19 +42,20 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/nws-weather-mcp-server",
-      "runtimeHint": "node",
-      "version": "0.1.1",
+      "runtimeHint": "bun",
+      "version": "0.2.0",
       "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:http"
-        }
+        { "type": "positional", "value": "run" },
+        { "type": "positional", "value": "start:http" }
       ],
       "environmentVariables": [
+        {
+          "name": "NWS_USER_AGENT",
+          "description": "User-Agent header for NWS API requests. The API requires this header but a default is provided.",
+          "format": "string",
+          "isRequired": false,
+          "default": "(nws-weather-mcp-server, github.com/cyanheads/nws-weather-mcp-server)"
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",

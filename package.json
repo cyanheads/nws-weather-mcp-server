@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/nws-weather-mcp-server",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Real-time US weather data via the National Weather Service API. Forecasts, alerts, and observations with zero auth.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,15 +23,34 @@
     "start:stdio": "MCP_TRANSPORT_TYPE=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT_TYPE=http node dist/index.js"
   },
-  "keywords": ["mcp", "mcp-server", "model-context-protocol"],
+  "mcpName": "io.github.cyanheads/nws-weather-mcp-server",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "weather",
+    "nws",
+    "national-weather-service",
+    "forecast",
+    "alerts",
+    "observations",
+    "typescript"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/cyanheads/nws-weather-mcp-server"
+    "url": "git+https://github.com/cyanheads/nws-weather-mcp-server.git"
   },
+  "homepage": "https://github.com/cyanheads/nws-weather-mcp-server",
+  "bugs": {
+    "url": "https://github.com/cyanheads/nws-weather-mcp-server/issues"
+  },
+  "author": "cyanheads (https://github.com/cyanheads)",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.0.0",
+    "bun": ">=1.2.0"
   },
+  "packageManager": "bun@1.3.11",
   "publishConfig": {
     "access": "public"
   },

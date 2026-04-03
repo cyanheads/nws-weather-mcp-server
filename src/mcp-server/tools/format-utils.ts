@@ -8,6 +8,11 @@ export function cToF(c: number): number {
   return Math.round(c * 1.8 + 32);
 }
 
+/** Convert Fahrenheit to Celsius. */
+export function fToC(f: number): number {
+  return Math.round(((f - 32) * 5) / 9);
+}
+
 /** Format an ISO 8601 timestamp as a short human-readable string. */
 export function formatTimestamp(iso: string): string {
   const d = new Date(iso);

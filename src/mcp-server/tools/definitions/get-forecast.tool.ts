@@ -5,7 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getNwsService } from '@/services/nws/nws-service.js';
-import { cToF, formatTimestamp } from '../format-utils.js';
+import { cToF, formatTimestamp, fToC } from '../format-utils.js';
 
 /** Derive a period label from startTime when name is empty (hourly periods). */
 function periodLabel(name: string, startTime: string): string {
@@ -126,8 +126,12 @@ export const getForecastTool = tool('nws_get_forecast', {
           : '';
 
       lines.push(`### ${periodLabel(p.name, p.startTime)}`);
+      const tempDual =
+        p.temperatureUnit === 'F'
+          ? `${p.temperature}°F (${fToC(p.temperature)}°C)`
+          : `${cToF(p.temperature)}°F (${p.temperature}°C)`;
       lines.push(
-        `**${p.temperature}°${p.temperatureUnit}** | **Wind:** ${p.windSpeed} ${p.windDirection}${precip}${humidity}${dew}`,
+        `**${tempDual}** | **Wind:** ${p.windSpeed} ${p.windDirection}${precip}${humidity}${dew}`,
       );
       if (p.detailedForecast) {
         lines.push(p.detailedForecast);

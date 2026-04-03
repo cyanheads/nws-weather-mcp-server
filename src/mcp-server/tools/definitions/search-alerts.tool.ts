@@ -63,11 +63,14 @@ const VALID_AREA_CODES = new Set([
   'WV',
   'WI',
   'WY',
-  // Territories
+  // Territories & freely associated states
   'AS',
+  'FM',
   'GU',
+  'MH',
   'MP',
   'PR',
+  'PW',
   'VI',
   // Marine areas
   'AM',
@@ -130,7 +133,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       .array(z.string())
       .optional()
       .describe(
-        'Filter to specific event types (e.g., ["Tornado Warning"]). Case-insensitive partial match. Use nws_list_alert_types to discover valid names.',
+        'Filter to specific event types (e.g., ["Tornado Warning"]). Exact match (case-insensitive). Use nws_list_alert_types to discover valid names.',
       ),
     severity: z
       .array(z.enum(['Extreme', 'Severe', 'Moderate', 'Minor', 'Unknown']))
@@ -172,11 +175,14 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   }),
 
   async handler(input, ctx) {
-    // Validate area code against known US states, territories, and marine areas
-    if (input.area && !VALID_AREA_CODES.has(input.area.toUpperCase())) {
-      throw new Error(
-        `Invalid area code "${input.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
-      );
+    // Normalize and validate area code — the NWS API is case-sensitive (lowercase → 400)
+    if (input.area) {
+      input.area = input.area.toUpperCase();
+      if (!VALID_AREA_CODES.has(input.area)) {
+        throw new Error(
+          `Invalid area code "${input.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
+        );
+      }
     }
 
     // Validate point format before hitting the API

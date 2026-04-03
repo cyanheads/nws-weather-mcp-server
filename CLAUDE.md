@@ -8,6 +8,37 @@
 
 ---
 
+## Domain
+
+Full design in `docs/design.md`. Key constraints:
+
+- **API base:** `https://api.weather.gov` — no auth, but requires a `User-Agent` header (403 without it).
+- **Coordinate-centric:** Most workflows start with `GET /points/{lat},{lon}`, which returns a grid cell with URLs for forecast, hourly forecast, observation stations, and zones. This is the routing layer — follow the returned URLs rather than constructing grid endpoints manually.
+- **Grid caching:** `/points` responses are highly cacheable (grid cells don't change). Cache via `ctx.state` with long TTL to avoid redundant lookups.
+- **Units are metric:** Temperature in Celsius, wind in km/h, pressure in Pa. Convert to readable format in `format()` (show both F/C, mph, inHg/hPa).
+- **No geocoding:** API is coordinates-only. Tools accept lat/lon directly.
+- **Alert quirks:** `/alerts/active` has no `limit` param (returns 400). Filter by area/severity instead.
+- **Transient 500s:** Grid forecast endpoints occasionally fail. Retry with backoff.
+- **Hourly = 156 periods:** Truncate in `format()` to avoid flooding context (next 24-48h, note remainder).
+
+### Tools (5)
+
+| Tool | Purpose |
+|:-----|:--------|
+| `nws_get_forecast` | 7-day or hourly forecast for coordinates (resolves grid internally) |
+| `nws_search_alerts` | Active weather alerts filtered by area, point, zone, event, severity |
+| `nws_get_observations` | Current conditions from nearest station (by coordinates or station ID) |
+| `nws_find_stations` | Discover nearby observation stations sorted by proximity |
+| `nws_list_alert_types` | List all valid alert event type names (for `event` filter discovery) |
+
+### Resources (1)
+
+| Resource | Purpose |
+|:---------|:--------|
+| `nws://alert-types` | Static list of alert event type names (convenience for resource-capable clients) |
+
+---
+
 ## What's Next?
 
 When the user asks what to do next, what's left, or needs direction, suggest relevant options based on the current project state:
@@ -90,23 +121,6 @@ export const itemData = resource('inventory://{itemId}', {
 });
 ```
 
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
-  }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
-  ],
-});
-```
-
 ### Server config
 
 ```ts
@@ -175,16 +189,14 @@ src/
   config/
     server-config.ts                    # Server-specific env vars (Zod schema)
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    nws/
+      nws-service.ts                    # NWS API client (init/accessor pattern)
+      types.ts                          # NWS API response types
   mcp-server/
     tools/definitions/
       [tool-name].tool.ts               # Tool definitions
     resources/definitions/
       [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
 ```
 
 ---
@@ -277,4 +289,4 @@ import { getMyService } from '@/services/my-domain/my-service.js';
 - [ ] `format()` renders all data the LLM needs — `content[]` is the only field most clients forward to the model
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
-- [ ] `npm run devcheck` passes
+- [ ] `bun run devcheck` passes

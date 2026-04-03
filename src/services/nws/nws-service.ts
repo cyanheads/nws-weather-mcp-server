@@ -123,13 +123,27 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
   const relativeLocation = (props.relativeLocation as Record<string, unknown>)
     ?.properties as Record<string, string>;
 
+  const forecastUrl = props.forecast as string | undefined;
+  const forecastHourlyUrl = props.forecastHourly as string | undefined;
+  const observationStationsUrl = props.observationStations as string | undefined;
+
+  if (!forecastUrl || !forecastHourlyUrl || !observationStationsUrl) {
+    throw serviceUnavailable('NWS /points response missing required URLs', {
+      lat: tLat,
+      lon: tLon,
+      forecastUrl: !!forecastUrl,
+      forecastHourlyUrl: !!forecastHourlyUrl,
+      observationStationsUrl: !!observationStationsUrl,
+    });
+  }
+
   const metadata: PointsMetadata = {
     office: props.gridId as string,
     gridX: props.gridX as number,
     gridY: props.gridY as number,
-    forecastUrl: props.forecast as string,
-    forecastHourlyUrl: props.forecastHourly as string,
-    observationStationsUrl: props.observationStations as string,
+    forecastUrl,
+    forecastHourlyUrl,
+    observationStationsUrl,
     city: relativeLocation?.city ?? '',
     state: relativeLocation?.state ?? '',
     timeZone: props.timeZone as string,
@@ -364,7 +378,6 @@ export class NwsService {
       severity?: string[] | undefined;
       urgency?: string[] | undefined;
       certainty?: string[] | undefined;
-      status?: string | undefined;
     },
     ctx: Context,
   ): Promise<AlertSearchResult> {
@@ -377,8 +390,6 @@ export class NwsService {
     if (params.severity?.length) url.searchParams.set('severity', params.severity.join(','));
     if (params.urgency?.length) url.searchParams.set('urgency', params.urgency.join(','));
     if (params.certainty?.length) url.searchParams.set('certainty', params.certainty.join(','));
-    // /alerts/active doesn't accept a status param (returns 400).
-    // Use /alerts if non-default status filtering is ever needed.
 
     ctx.log.info('Searching alerts', { url: url.toString() });
     const data = await nwsFetch<Record<string, unknown>>(url.toString(), ctx);

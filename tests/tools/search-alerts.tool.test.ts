@@ -40,10 +40,9 @@ describe('nws_search_alerts', () => {
     mockSearchAlerts.mockReset();
   });
 
-  it('parses input with default status', () => {
+  it('parses input with area filter', () => {
     const input = searchAlertsTool.input.parse({ area: 'WA' });
     expect(input.area).toBe('WA');
-    expect(input.status).toBe('Actual');
   });
 
   it('returns alerts with count and filters', async () => {

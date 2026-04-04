@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-04-04
+
+### Added
+
+- **Richer tool output** — `nws_find_stations` now includes county and forecast zone columns. `nws_get_forecast` displays explicit time ranges (start → end) for each period. `nws_search_alerts` shows alert IDs and affected zones in formatted output.
+
+### Changed
+
+- **Parallel observation fetch** — `nws_get_observations` with a direct station ID now fetches station metadata and the latest observation concurrently via `Promise.all`, reducing latency.
+
 ## [0.3.3] - 2026-04-04
 
 ### Changed

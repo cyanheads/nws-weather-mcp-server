@@ -283,6 +283,21 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 ---
 
+## Publishing
+
+After a version bump and final commit, publish to both npm and GHCR:
+
+```bash
+bun publish --access public
+
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/cyanheads/nws-weather-mcp-server:<version> \
+  -t ghcr.io/cyanheads/nws-weather-mcp-server:latest \
+  --push .
+```
+
+---
+
 ## Imports
 
 ```ts

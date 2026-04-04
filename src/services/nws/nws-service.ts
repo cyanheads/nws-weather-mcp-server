@@ -18,9 +18,12 @@ import type {
 } from './types.js';
 
 const BASE_URL = 'https://api.weather.gov';
-const POINTS_CACHE_TTL = 3600; // 1 hour — grid cells rarely change
+const POINTS_CACHE_TTL_MS = 3_600_000; // 1 hour — grid cells rarely change
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
+
+/** Instance-scoped cache for /points metadata. Grid cells are geography, not tenant-scoped. */
+const pointsCache = new Map<string, { data: PointsMetadata; expires: number }>();
 
 /** Extract the last path segment from an NWS API URL (e.g., zone code from zone URL). */
 function extractZoneCode(url: string): string {
@@ -104,13 +107,13 @@ async function nwsFetch<T>(
   throw serviceUnavailable('NWS API unavailable after retries', { url }, { cause: lastError });
 }
 
-/** Resolve coordinates to NWS grid metadata, cached via ctx.state. */
+/** Resolve coordinates to NWS grid metadata, cached in-process. */
 async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<PointsMetadata> {
   const key = pointsCacheKey(lat, lon);
-  const cached = await ctx.state.get<PointsMetadata>(key);
-  if (cached) {
+  const entry = pointsCache.get(key);
+  if (entry && entry.expires > Date.now()) {
     ctx.log.debug('Points cache hit', { lat, lon });
-    return cached;
+    return entry.data;
   }
 
   const tLat = truncateCoord(lat);
@@ -151,7 +154,7 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
     county: props.county as string,
   };
 
-  await ctx.state.set(key, metadata, { ttl: POINTS_CACHE_TTL });
+  pointsCache.set(key, { data: metadata, expires: Date.now() + POINTS_CACHE_TTL_MS });
   return metadata;
 }
 

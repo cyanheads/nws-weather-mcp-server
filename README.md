@@ -12,6 +12,12 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://nws.caseyjhand.com/mcp](https://nws.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Tools
@@ -101,6 +107,23 @@ NWS-specific:
 - Continental US, Alaska, Hawaii, and US territories coverage
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://nws.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "nws-weather": {
+      "type": "streamable-http",
+      "url": "https://nws.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file.
 

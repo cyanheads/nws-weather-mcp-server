@@ -5,8 +5,9 @@
       "pino-pretty",
       "typescript",
       "tsc-alias",
+      "@cyanheads/mcp-ts-core",
       "depcheck",
-      "@cyanheads/mcp-ts-core"
+      "@vitest/coverage-istanbul"
     ],
     "ignorePatterns": []
   },

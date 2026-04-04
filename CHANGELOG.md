@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-04-04
+
+### Added
+
+- **Public hosted instance** — `server.json` now includes a `remotes` entry pointing to `https://nws.caseyjhand.com/mcp`. README documents the public instance with a ready-to-use MCP client config snippet.
+
+### Changed
+
+- **Dev dependencies** — Bumped `@biomejs/biome` to 2.4.10, `@types/node` to 25.5.2, `typescript` to 6.0.2, `vitest` to 4.1.2.
+- **devcheck.config.json** — Added `@vitest/coverage-istanbul` to the ignored-deps list.
+
 ## [0.3.1] - 2026-04-03
 
 ### Fixed

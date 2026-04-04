@@ -242,6 +242,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
 
     for (const a of result.alerts) {
       lines.push(`### ${a.event}`);
+      lines.push(`_ID: ${a.id}_`);
       if (a.headline) lines.push(`**${a.headline}**`);
       lines.push(
         `**Severity:** ${a.severity} | **Urgency:** ${a.urgency} | **Certainty:** ${a.certainty}`,
@@ -250,6 +251,9 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       if (a.onset) lines.push(`**Onset:** ${formatTimestamp(a.onset)}`);
       if (a.expires) lines.push(`**Expires:** ${formatTimestamp(a.expires)}`);
       lines.push(`**From:** ${a.senderName}`);
+      if (a.affectedZones.length > 0) {
+        lines.push(`**Zones:** ${a.affectedZones.join(', ')}`);
+      }
       lines.push('');
       lines.push(a.description);
       if (a.instruction) {

@@ -410,39 +410,51 @@ export class NwsService {
     },
     ctx: Context,
   ): Promise<ObservationResult> {
-    let stationId: string;
-    let stationName: string;
-
+    // Direct station ID — fetch metadata and observation in parallel
     if (params.stationId) {
-      stationId = params.stationId.toUpperCase();
-      // Fetch station metadata to get the proper name
-      const stationData = await nwsFetch<Record<string, unknown>>(
-        `${BASE_URL}/stations/${stationId}`,
-        ctx,
-        0,
-        `Station '${stationId}' not found. Use nws_find_stations to discover valid station IDs.`,
-      );
+      const stationId = params.stationId.toUpperCase();
+      const notFoundMsg = `Station '${stationId}' not found. Use nws_find_stations to discover valid station IDs.`;
+
+      ctx.log.info('Fetching station metadata and latest observation', { stationId });
+      const [stationData, obsData] = await Promise.all([
+        nwsFetch<Record<string, unknown>>(`${BASE_URL}/stations/${stationId}`, ctx, 0, notFoundMsg),
+        nwsFetch<Record<string, unknown>>(
+          `${BASE_URL}/stations/${stationId}/observations/latest`,
+          ctx,
+          MAX_RETRIES,
+          notFoundMsg,
+        ),
+      ]);
+
       const stationProps = stationData.properties as Record<string, unknown>;
-      stationName = (stationProps?.name as string) ?? stationId;
-    } else {
-      const lat = params.latitude as number;
-      const lon = params.longitude as number;
-      const points = await resolvePoints(lat, lon, ctx);
-      ctx.log.info('Resolving nearest station', { url: points.observationStationsUrl });
-      const stationsData = await nwsFetch<Record<string, unknown>>(
-        points.observationStationsUrl,
-        ctx,
-        0,
-      );
-      const features = (stationsData.features ?? []) as Record<string, unknown>[];
-      const first = features[0];
-      if (!first) {
-        throw new Error('No observation stations found near this location.');
+      const stationName = (stationProps?.name as string) ?? stationId;
+      const observation = parseObservation(obsData, stationId, stationName);
+      if (!observation.timestamp) {
+        throw new Error(
+          `Station ${stationId} has no recent observations. Try a different station — use nws_find_stations to find alternatives nearby.`,
+        );
       }
-      const firstProps = first.properties as Record<string, unknown>;
-      stationId = firstProps.stationIdentifier as string;
-      stationName = firstProps.name as string;
+      return { observation };
     }
+
+    // Coordinates — resolve nearest station, then fetch observation sequentially
+    const lat = params.latitude as number;
+    const lon = params.longitude as number;
+    const points = await resolvePoints(lat, lon, ctx);
+    ctx.log.info('Resolving nearest station', { url: points.observationStationsUrl });
+    const stationsData = await nwsFetch<Record<string, unknown>>(
+      points.observationStationsUrl,
+      ctx,
+      0,
+    );
+    const features = (stationsData.features ?? []) as Record<string, unknown>[];
+    const first = features[0];
+    if (!first) {
+      throw new Error('No observation stations found near this location.');
+    }
+    const firstProps = first.properties as Record<string, unknown>;
+    const stationId = firstProps.stationIdentifier as string;
+    const stationName = firstProps.name as string;
 
     ctx.log.info('Fetching latest observation', { stationId });
     const data = await nwsFetch<Record<string, unknown>>(
@@ -458,7 +470,6 @@ export class NwsService {
         `Station ${stationId} has no recent observations. Try a different station — use nws_find_stations to find alternatives nearby.`,
       );
     }
-
     return { observation };
   }
 

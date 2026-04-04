@@ -125,7 +125,9 @@ export const getForecastTool = tool('nws_get_forecast', {
           ? ` | **Dewpoint:** ${cToF(p.dewpoint)}°F (${Math.round(p.dewpoint)}°C)`
           : '';
 
+      const timeRange = `${formatTimestamp(p.startTime)} → ${formatTimestamp(p.endTime)}`;
       lines.push(`### ${periodLabel(p.name, p.startTime)}`);
+      lines.push(`_${timeRange}_`);
       const tempDual =
         p.temperatureUnit === 'F'
           ? `${p.temperature}°F (${fToC(p.temperature)}°C)`

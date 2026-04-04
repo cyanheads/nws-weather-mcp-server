@@ -65,13 +65,13 @@ export const findStationsTool = tool('nws_find_stations', {
       `## ${result.stations.length} Nearby Station${result.stations.length > 1 ? 's' : ''}\n`,
     ];
 
-    lines.push('| Station | Name | Distance | Bearing | Elevation | Time Zone |');
-    lines.push('|:--------|:-----|:---------|:--------|:----------|:----------|');
+    lines.push('| Station | Name | Distance | Bearing | Elevation | Time Zone | County | Zone |');
+    lines.push('|:--------|:-----|:---------|:--------|:----------|:----------|:-------|:-----|');
 
     for (const s of result.stations) {
       const elev = s.elevation != null ? `${Math.round(s.elevation)}m` : '—';
       lines.push(
-        `| ${s.stationId} | ${s.name} | ${s.distance} km | ${s.bearing} | ${elev} | ${s.timeZone} |`,
+        `| ${s.stationId} | ${s.name} | ${s.distance} km | ${s.bearing} | ${elev} | ${s.timeZone} | ${s.county} | ${s.forecastZone} |`,
       );
     }
 

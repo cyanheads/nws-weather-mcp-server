@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.3.2
+**Version:** 0.3.3
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -14,7 +14,7 @@ Full design in `docs/design.md`. Key constraints:
 
 - **API base:** `https://api.weather.gov` — no auth, but requires a `User-Agent` header (403 without it).
 - **Coordinate-centric:** Most workflows start with `GET /points/{lat},{lon}`, which returns a grid cell with URLs for forecast, hourly forecast, observation stations, and zones. This is the routing layer — follow the returned URLs rather than constructing grid endpoints manually.
-- **Grid caching:** `/points` responses are highly cacheable (grid cells don't change). Cache via `ctx.state` with long TTL to avoid redundant lookups.
+- **Grid caching:** `/points` responses are highly cacheable (grid cells don't change). Cached in-process via a `Map` with 1h TTL — grid cells are geography, not tenant data.
 - **Units are metric:** Temperature in Celsius, wind in km/h, pressure in Pa. Convert to readable format in `format()` (show both F/C, mph, inHg/hPa).
 - **No geocoding:** API is coordinates-only. Tools accept lat/lon directly.
 - **Alert quirks:** `/alerts/active` has no `limit` param (returns 400). Filter by area/severity instead.

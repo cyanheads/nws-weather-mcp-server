@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2026-04-04
+
+### Changed
+
+- **In-process points cache** — Moved `/points` grid cell cache from `ctx.state` (tenant-scoped KV) to an in-process `Map` with TTL. Grid cells are geography, not tenant data — this avoids unnecessary serialization overhead and storage I/O for a read-heavy, write-once cache.
+
 ## [0.3.2] - 2026-04-04
 
 ### Added

@@ -3,6 +3,7 @@
  * @module tests/tools/search-alerts
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AlertSearchResult } from '@/services/nws/nws-service.js';
@@ -76,7 +77,19 @@ describe('nws_search_alerts', () => {
   it('validates point format', async () => {
     const ctx = createMockContext({ tenantId: 'test' });
     const input = searchAlertsTool.input.parse({ point: '999,999' });
-    await expect(searchAlertsTool.handler(input, ctx)).rejects.toThrow('Invalid point');
+    const result = searchAlertsTool.handler(input, ctx);
+
+    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
+    await expect(result).rejects.toThrow('Invalid point');
+  });
+
+  it('validates area code', async () => {
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = searchAlertsTool.input.parse({ area: 'zz' });
+    const result = searchAlertsTool.handler(input, ctx);
+
+    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
+    await expect(result).rejects.toThrow('Invalid area code');
   });
 
   it('passes all filter params to service', async () => {
@@ -101,6 +114,20 @@ describe('nws_search_alerts', () => {
       }),
       ctx,
     );
+  });
+
+  it('includes certainty and non-default status in the filter summary', async () => {
+    mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = searchAlertsTool.input.parse({
+      certainty: ['Observed'],
+      status: 'Test',
+    });
+    const result = await searchAlertsTool.handler(input, ctx);
+
+    expect(result.filters).toContain('certainty=Observed');
+    expect(result.filters).toContain('status=Test');
   });
 
   describe('format', () => {
@@ -145,6 +172,22 @@ describe('nws_search_alerts', () => {
       expect(text).toContain('Extreme');
       expect(text).toContain('Take shelter');
       expect(text).toContain('Move to interior room');
+    });
+
+    it('renders affected zones when present', () => {
+      const blocks = searchAlertsTool.format!({
+        count: 1,
+        shown: 1,
+        filters: 'area=WA',
+        alerts: [
+          {
+            ...alertResult.alerts[0],
+            affectedZones: ['WAZ558', 'WAC033'],
+          },
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('**Zones:** WAZ558, WAC033');
     });
 
     it('shows truncation notice when capped', () => {

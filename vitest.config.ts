@@ -13,5 +13,8 @@ export default defineConfig({
     pool: 'forks',
     isolate: true,
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+    coverage: {
+      provider: 'istanbul',
+    },
   },
 });

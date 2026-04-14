@@ -135,5 +135,57 @@ describe('nws_get_forecast', () => {
       expect(text).toContain('62°F');
       expect(text).toContain('Precip');
     });
+
+    it('renders a helpful message when no forecast periods are available', () => {
+      const output = {
+        location: {
+          city: 'Seattle',
+          state: 'WA',
+          office: 'SEW',
+          timeZone: 'America/Los_Angeles',
+          forecastZone: 'WAZ558',
+          county: 'WAC033',
+        },
+        generatedAt: '2026-04-03T12:00:00Z',
+        periods: [],
+      };
+
+      const blocks = getForecastTool.format!(output);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('No forecast periods available for this location.');
+    });
+
+    it('falls back to the short forecast and notes omitted periods', () => {
+      const output = {
+        location: {
+          city: 'Seattle',
+          state: 'WA',
+          office: 'SEW',
+          timeZone: 'America/Los_Angeles',
+          forecastZone: 'WAZ558',
+          county: 'WAC033',
+        },
+        generatedAt: '2026-04-03T12:00:00Z',
+        periods: Array.from({ length: 49 }, (_, index) => ({
+          name: `Period ${index + 1}`,
+          startTime: '2026-04-03T06:00:00-07:00',
+          endTime: '2026-04-03T07:00:00-07:00',
+          temperature: 62,
+          temperatureUnit: 'F',
+          windSpeed: '10 mph',
+          windDirection: 'NW',
+          shortForecast: `Short forecast ${index + 1}`,
+          detailedForecast: index === 0 ? '' : `Detailed forecast ${index + 1}`,
+          precipChance: null,
+          dewpoint: null,
+          relativeHumidity: null,
+        })),
+      };
+
+      const blocks = getForecastTool.format!(output);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('Short forecast 1');
+      expect(text).toContain('...and 1 more periods (49 total).');
+    });
   });
 });

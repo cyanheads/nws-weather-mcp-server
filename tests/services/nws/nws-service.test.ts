@@ -3,6 +3,7 @@
  * @module tests/services/nws/nws-service
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -104,6 +105,24 @@ describe('NwsService', () => {
       expect(result.alerts[0].severity).toBe('Moderate');
     });
 
+    it('normalizes each supported status value to lowercase for the upstream API', async () => {
+      mockFetch.mockImplementation(async () => jsonResponse(emptyAlertsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const statuses = ['Actual', 'Exercise', 'System', 'Test', 'Draft'] as const;
+
+      for (const status of statuses) {
+        await service.getNwsService().searchAlerts({ status }, ctx);
+      }
+
+      const urls = mockFetch.mock.calls.map(([url]) => String(url));
+      expect(urls).toEqual(
+        statuses.map(
+          (status) => `https://api.weather.gov/alerts/active?status=${status.toLowerCase()}`,
+        ),
+      );
+    });
+
     it('returns empty array when no alerts', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse(emptyAlertsResponse));
 
@@ -127,8 +146,45 @@ describe('NwsService', () => {
       const url = mockFetch.mock.calls[0][0] as string;
       expect(url).toContain('area=WA');
       expect(url).toContain('severity=Severe%2CExtreme');
-      expect(url).toContain('status=Actual');
+      expect(url).toContain('status=actual');
       expect(url).not.toContain('event=');
+    });
+
+    it('maps upstream 400 responses to validation errors', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ title: 'Bad Request', detail: 'Invalid alert query' }, 400),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.ValidationError });
+      await expect(result).rejects.toThrow('Invalid alert query');
+    });
+
+    it('maps title-only upstream 400 responses to validation errors', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ title: 'Bad Request' }, 400));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.ValidationError });
+      await expect(result).rejects.toThrow('Bad Request');
+    });
+
+    it('maps plain-text upstream 400 responses to validation errors', async () => {
+      mockFetch.mockResolvedValueOnce(
+        new Response('Upstream rejected the query', {
+          status: 400,
+          headers: { 'Content-Type': 'text/plain' },
+        }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.ValidationError });
+      await expect(result).rejects.toThrow('NWS API returned 400: Bad Request');
     });
   });
 
@@ -184,15 +240,48 @@ describe('NwsService', () => {
       expect(result.observation.stationId).toBe('KBFI');
     });
 
+    it('throws notFound when a station ID does not exist', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({}, 404))
+        .mockResolvedValueOnce(jsonResponse({}, 404));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().getObservation({ stationId: 'ZZZZ' }, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
+      await expect(result).rejects.toThrow("Station 'ZZZZ' not found");
+    });
+
+    it('throws notFound when the station has no recent observations', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(stationInfoResponse)).mockResolvedValueOnce(
+        jsonResponse({
+          ...observationResponse,
+          properties: {
+            ...observationResponse.properties,
+            timestamp: null,
+          },
+        }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().getObservation({ stationId: 'KSEA' }, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
+      await expect(result).rejects.toThrow('has no recent observations');
+    });
+
     it('throws when no stations found', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse(pointsResponse))
         .mockResolvedValueOnce(jsonResponse({ features: [] }));
 
       const ctx = createMockContext({ tenantId: 'test' });
-      await expect(
-        service.getNwsService().getObservation({ latitude: 47.6, longitude: -122.3 }, ctx),
-      ).rejects.toThrow('No observation stations found');
+      const result = service
+        .getNwsService()
+        .getObservation({ latitude: 47.6, longitude: -122.3 }, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
+      await expect(result).rejects.toThrow('No observation stations found');
     });
   });
 
@@ -256,9 +345,10 @@ describe('NwsService', () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({}, 404));
 
       const ctx = createMockContext({ tenantId: 'test' });
-      await expect(service.getNwsService().getForecast(99.0, 0.0, false, ctx)).rejects.toThrow(
-        'NWS only covers the US',
-      );
+      const result = service.getNwsService().getForecast(99.0, 0.0, false, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.ValidationError });
+      await expect(result).rejects.toThrow('NWS only covers the US');
     });
 
     it('retries on 500 and succeeds', async () => {

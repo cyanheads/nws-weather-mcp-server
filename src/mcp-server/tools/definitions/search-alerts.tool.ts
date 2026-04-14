@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { formatTimestamp } from '../format-utils.js';
 
@@ -186,7 +187,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     if (input.area) {
       input.area = input.area.toUpperCase();
       if (!VALID_AREA_CODES.has(input.area)) {
-        throw new Error(
+        throw invalidParams(
           `Invalid area code "${input.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
         );
       }
@@ -206,7 +207,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
         lon < -180 ||
         lon > 180
       ) {
-        throw new Error(
+        throw invalidParams(
           `Invalid point "${input.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
         );
       }

@@ -3,6 +3,7 @@
  * @module tests/tools/get-observations
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ObservationResult } from '@/services/nws/nws-service.js';
@@ -87,8 +88,10 @@ describe('nws_get_observations', () => {
   it('throws when neither station_id nor coordinates provided', async () => {
     const ctx = createMockContext({ tenantId: 'test' });
     const input = getObservationsTool.input.parse({});
+    const result = getObservationsTool.handler(input, ctx);
 
-    await expect(getObservationsTool.handler(input, ctx)).rejects.toThrow(
+    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
+    await expect(result).rejects.toThrow(
       'Provide either station_id or both latitude and longitude',
     );
   });
@@ -96,8 +99,10 @@ describe('nws_get_observations', () => {
   it('throws when only latitude provided', async () => {
     const ctx = createMockContext({ tenantId: 'test' });
     const input = getObservationsTool.input.parse({ latitude: 47.6 });
+    const result = getObservationsTool.handler(input, ctx);
 
-    await expect(getObservationsTool.handler(input, ctx)).rejects.toThrow(
+    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
+    await expect(result).rejects.toThrow(
       'Provide either station_id or both latitude and longitude',
     );
   });

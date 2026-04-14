@@ -8,9 +8,11 @@ import type { Context } from '@cyanheads/mcp-ts-core';
 import {
   JsonRpcErrorCode,
   McpError,
+  notFound,
   rateLimited,
   serviceUnavailable,
   timeout,
+  validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import { requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
@@ -49,8 +51,11 @@ function pointsCacheKey(lat: number, lon: number): string {
   return `nws/points/${truncateCoord(lat)}_${truncateCoord(lon)}`;
 }
 
-const DEFAULT_NOT_FOUND =
+const DEFAULT_NOT_FOUND = 'Requested NWS resource not found.';
+const POINTS_NOT_FOUND =
   'NWS only covers the US. Provide coordinates within US states, territories, or adjacent marine areas.';
+
+type NotFoundFactory = (message: string) => Error;
 
 /** Try to extract a detail message from an NWS error response body. */
 function parseNwsErrorDetail(text: string): string | null {
@@ -151,6 +156,7 @@ function nwsFetch<T>(
   ctx: Context,
   retries = MAX_RETRIES,
   notFoundMessage = DEFAULT_NOT_FOUND,
+  notFoundFactory: NotFoundFactory = (message) => notFound(message),
 ): Promise<T> {
   let attempts = 0;
   const retryContext = createRetryContext(ctx);
@@ -170,12 +176,15 @@ function nwsFetch<T>(
       }
 
       if (response.status === 404) {
-        throw new Error(notFoundMessage);
+        throw notFoundFactory(notFoundMessage);
       }
 
       if (response.status === 400) {
         const detail = parseNwsErrorDetail(text);
-        throw new Error(detail ?? `NWS API returned 400: Bad Request for ${url}`);
+        throw validationError(detail ?? `NWS API returned 400: Bad Request for ${url}`, {
+          url,
+          status: response.status,
+        });
       }
 
       if (response.status === 429) {
@@ -226,7 +235,13 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
   const tLon = truncateCoord(lon);
   ctx.log.info('Resolving /points', { lat: tLat, lon: tLon });
 
-  const data = await nwsFetch<Record<string, unknown>>(`${BASE_URL}/points/${tLat},${tLon}`, ctx);
+  const data = await nwsFetch<Record<string, unknown>>(
+    `${BASE_URL}/points/${tLat},${tLon}`,
+    ctx,
+    MAX_RETRIES,
+    POINTS_NOT_FOUND,
+    (message) => validationError(message, { lat: tLat, lon: tLon }),
+  );
 
   const props = data.properties as Record<string, unknown>;
   const relativeLocation = (props.relativeLocation as Record<string, unknown>)
@@ -510,7 +525,8 @@ export class NwsService {
     if (params.severity?.length) url.searchParams.set('severity', params.severity.join(','));
     if (params.urgency?.length) url.searchParams.set('urgency', params.urgency.join(','));
     if (params.certainty?.length) url.searchParams.set('certainty', params.certainty.join(','));
-    if (params.status) url.searchParams.set('status', params.status);
+    const normalizedStatus = params.status?.trim().toLowerCase();
+    if (normalizedStatus) url.searchParams.set('status', normalizedStatus);
 
     ctx.log.info('Searching alerts', { url: url.toString() });
     const data = await nwsFetch<Record<string, unknown>>(url.toString(), ctx);
@@ -558,8 +574,9 @@ export class NwsService {
         typeof stationProps?.timeZone === 'string' ? (stationProps.timeZone as string) : null;
       const observation = parseObservation(obsData, stationId, stationName, timeZone);
       if (!observation.timestamp) {
-        throw new Error(
+        throw notFound(
           `Station ${stationId} has no recent observations. Try a different station — use nws_find_stations to find alternatives nearby.`,
+          { stationId },
         );
       }
       return { observation };
@@ -583,7 +600,10 @@ export class NwsService {
       .sort((a, b) => a.distance - b.distance)[0]?.station;
 
     if (!nearestStation) {
-      throw new Error('No observation stations found near this location.');
+      throw notFound('No observation stations found near this location.', {
+        latitude: lat,
+        longitude: lon,
+      });
     }
     const stationId = nearestStation.stationId;
     const stationName = nearestStation.name;
@@ -598,8 +618,9 @@ export class NwsService {
 
     const observation = parseObservation(data, stationId, stationName, nearestStation.timeZone);
     if (!observation.timestamp) {
-      throw new Error(
+      throw notFound(
         `Station ${stationId} has no recent observations. Try a different station — use nws_find_stations to find alternatives nearby.`,
+        { stationId },
       );
     }
     return { observation };

@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp } from '../format-utils.js';
 
@@ -111,7 +112,7 @@ export const getObservationsTool = tool('nws_get_observations', {
 
   async handler(input, ctx) {
     if (!input.station_id && (input.latitude == null || input.longitude == null)) {
-      throw new Error('Provide either station_id or both latitude and longitude.');
+      throw invalidParams('Provide either station_id or both latitude and longitude.');
     }
 
     const result = await getNwsService().getObservation(

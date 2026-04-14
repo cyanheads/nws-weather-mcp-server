@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-04-14
+
+### Added
+
+- **HTTP error-contract regression coverage** — Added end-to-end Streamable HTTP tests that verify MCP JSON-RPC error metadata and the default alert-status path through the real transport.
+
+### Changed
+
+- **Release metadata** — Bumped package, manifest, README badge, and agent-protocol versions to `0.5.1`.
+
+### Fixed
+
+- **Alert status normalization** — Lowercased alert `status` values before calling the NWS API so the default live-alert path no longer triggers upstream `400 Bad Request` responses.
+- **Validation error classification** — Replaced plain `Error` throws in user/domain validation paths with explicit framework error types so clients receive stable `InvalidParams`, `ValidationError`, and `NotFound` codes instead of generic internal errors.
+
 ## [0.5.0] - 2026-04-13
 
 ### Added

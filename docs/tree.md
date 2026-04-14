@@ -1,9 +1,10 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-04-03 20:47:23
+Generated on: 2026-04-14 14:13:22
 
 ```text
 nws-weather-mcp-server/
+├── .agents/
 ├── .claude/
 ├── .github/
 │   └── ISSUE_TEMPLATE/
@@ -23,6 +24,8 @@ nws-weather-mcp-server/
 │   ├── lint-mcp.ts
 │   └── tree.ts
 ├── skills/
+│   ├── add-app-tool/
+│   │   └── SKILL.md
 │   ├── add-prompt/
 │   │   └── SKILL.md
 │   ├── add-resource/
@@ -107,6 +110,8 @@ nws-weather-mcp-server/
 │   │   └── server-config.test.ts
 │   ├── fixtures/
 │   │   └── nws-responses.ts
+│   ├── http/
+│   │   └── error-contract.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   │   └── alert-types.resource.test.ts
@@ -122,6 +127,7 @@ nws-weather-mcp-server/
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
+├── AGENTS.md
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml

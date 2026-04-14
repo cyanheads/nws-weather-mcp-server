@@ -22,6 +22,7 @@ const observationResult: ObservationResult = {
     stationId: 'KSEA',
     stationName: 'Seattle-Tacoma International Airport',
     timestamp: '2026-04-03T11:53:00+00:00',
+    timeZone: 'America/Los_Angeles',
     textDescription: 'Mostly Cloudy',
     temperature: { value: 14.4, unitCode: 'wmoUnit:degC' },
     dewpoint: { value: 8.3, unitCode: 'wmoUnit:degC' },
@@ -61,6 +62,7 @@ describe('nws_get_observations', () => {
     const result = await getObservationsTool.handler(input, ctx);
 
     expect(result.stationId).toBe('KSEA');
+    expect(result.timeZone).toBe('America/Los_Angeles');
     expect(result.temperature).toBe(14.4);
     expect(result.textDescription).toBe('Mostly Cloudy');
     expect(result.windGust).toBeNull();
@@ -106,6 +108,7 @@ describe('nws_get_observations', () => {
         stationId: 'KSEA',
         stationName: 'Seattle-Tacoma International Airport',
         timestamp: '2026-04-03T11:53:00+00:00',
+        timeZone: 'America/Los_Angeles',
         textDescription: 'Mostly Cloudy',
         temperature: 14.4,
         dewpoint: 8.3,
@@ -140,7 +143,8 @@ describe('nws_get_observations', () => {
       const output = {
         stationId: 'KSEA',
         stationName: 'KSEA',
-        timestamp: '2026-04-03T12:00:00Z',
+        timestamp: '2026-04-03T06:00:00-10:00',
+        timeZone: 'Pacific/Honolulu',
         textDescription: 'Clear',
         temperature: null,
         dewpoint: null,
@@ -159,7 +163,8 @@ describe('nws_get_observations', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('KSEA');
       expect(text).toContain('Clear');
-      expect(text).toContain('Calm');
+      expect(text).toContain('6:00 AM HST');
+      expect(text).toContain('Not available');
     });
   });
 });

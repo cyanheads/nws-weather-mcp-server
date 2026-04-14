@@ -78,6 +78,7 @@ export interface Observation {
   readonly temperature: NwsValue;
   readonly textDescription: string;
   readonly timestamp: string;
+  readonly timeZone: string | null;
   readonly visibility: NwsValue;
   readonly windChill: NwsValue;
   readonly windDirection: NwsValue;

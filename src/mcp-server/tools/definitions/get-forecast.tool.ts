@@ -50,6 +50,8 @@ export const getForecastTool = tool('nws_get_forecast', {
         state: z.string().describe('State name'),
         office: z.string().describe('NWS Weather Forecast Office code'),
         timeZone: z.string().describe('IANA time zone'),
+        forecastZone: z.string().describe('Forecast zone code for chaining to nws_search_alerts'),
+        county: z.string().describe('County zone code for chaining to nws_search_alerts'),
       })
       .describe('Resolved location metadata'),
     generatedAt: z.string().describe('When the forecast was generated (ISO 8601)'),
@@ -106,7 +108,8 @@ export const getForecastTool = tool('nws_get_forecast', {
     const loc = result.location;
     const lines = [
       `## Forecast for ${loc.city}, ${loc.state}`,
-      `**Office:** ${loc.office} | **Time Zone:** ${loc.timeZone} | **Generated:** ${formatTimestamp(result.generatedAt)}`,
+      `**Office:** ${loc.office} | **Time Zone:** ${loc.timeZone} | **Forecast Zone:** ${loc.forecastZone} | **County Zone:** ${loc.county}`,
+      `**Generated:** ${formatTimestamp(result.generatedAt, loc.timeZone)}`,
       '',
     ];
 
@@ -125,7 +128,7 @@ export const getForecastTool = tool('nws_get_forecast', {
           ? ` | **Dewpoint:** ${cToF(p.dewpoint)}°F (${Math.round(p.dewpoint)}°C)`
           : '';
 
-      const timeRange = `${formatTimestamp(p.startTime)} → ${formatTimestamp(p.endTime)}`;
+      const timeRange = `${formatTimestamp(p.startTime, loc.timeZone)} → ${formatTimestamp(p.endTime, loc.timeZone)}`;
       lines.push(`### ${periodLabel(p.name, p.startTime)}`);
       lines.push(`_${timeRange}_`);
       const tempDual =

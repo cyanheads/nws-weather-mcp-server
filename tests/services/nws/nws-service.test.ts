@@ -56,6 +56,8 @@ describe('NwsService', () => {
       expect(result.location.city).toBe('Seattle');
       expect(result.location.state).toBe('WA');
       expect(result.location.office).toBe('SEW');
+      expect(result.location.forecastZone).toBe('WAZ558');
+      expect(result.location.county).toBe('WAC033');
       expect(result.forecast.periods).toHaveLength(2);
       expect(result.forecast.periods[0].name).toBe('Today');
       expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -93,7 +95,9 @@ describe('NwsService', () => {
       mockFetch.mockResolvedValueOnce(jsonResponse(alertsResponse));
 
       const ctx = createMockContext({ tenantId: 'test' });
-      const result = await service.getNwsService().searchAlerts({ area: 'WA' }, ctx);
+      const result = await service
+        .getNwsService()
+        .searchAlerts({ area: 'WA', event: ['wind'], status: 'Actual' }, ctx);
 
       expect(result.alerts).toHaveLength(1);
       expect(result.alerts[0].event).toBe('Wind Advisory');
@@ -109,21 +113,22 @@ describe('NwsService', () => {
       expect(result.alerts).toHaveLength(0);
     });
 
-    it('passes query params to the API', async () => {
+    it('passes query params to the API and keeps event matching local', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse(emptyAlertsResponse));
 
       const ctx = createMockContext({ tenantId: 'test' });
       await service
         .getNwsService()
         .searchAlerts(
-          { area: 'WA', severity: ['Severe', 'Extreme'], event: ['Tornado Warning'] },
+          { area: 'WA', severity: ['Severe', 'Extreme'], event: ['tornado'], status: 'Actual' },
           ctx,
         );
 
       const url = mockFetch.mock.calls[0][0] as string;
       expect(url).toContain('area=WA');
       expect(url).toContain('severity=Severe%2CExtreme');
-      expect(url).toContain('event=Tornado+Warning');
+      expect(url).toContain('status=Actual');
+      expect(url).not.toContain('event=');
     });
   });
 
@@ -138,6 +143,7 @@ describe('NwsService', () => {
 
       expect(result.observation.stationId).toBe('KSEA');
       expect(result.observation.stationName).toBe('Seattle, Seattle-Tacoma International Airport');
+      expect(result.observation.timeZone).toBe('America/Los_Angeles');
       expect(result.observation.temperature.value).toBe(14.4);
       expect(result.observation.textDescription).toBe('Mostly Cloudy');
     });
@@ -153,7 +159,29 @@ describe('NwsService', () => {
         .getNwsService()
         .getObservation({ latitude: 47.6062, longitude: -122.3321 }, ctx);
 
-      expect(result.observation.stationId).toBe('KSEA');
+      expect(result.observation.stationId).toBe('KBFI');
+    });
+
+    it('selects the nearest station instead of the first returned station', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(pointsResponse))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            features: [
+              stationsResponse.features[0],
+              stationsResponse.features[2],
+              stationsResponse.features[1],
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(jsonResponse(observationResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service
+        .getNwsService()
+        .getObservation({ latitude: 47.6062, longitude: -122.3321 }, ctx);
+
+      expect(result.observation.stationId).toBe('KBFI');
     });
 
     it('throws when no stations found', async () => {
@@ -237,6 +265,19 @@ describe('NwsService', () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse(pointsResponse))
         .mockResolvedValueOnce(jsonResponse({}, 500))
+        .mockResolvedValueOnce(jsonResponse(forecastResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().getForecast(47.6062, -122.3321, false, ctx);
+
+      expect(result.forecast.periods).toHaveLength(2);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('retries on transient network errors and succeeds', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(pointsResponse))
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
         .mockResolvedValueOnce(jsonResponse(forecastResponse));
 
       const ctx = createMockContext({ tenantId: 'test' });

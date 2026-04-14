@@ -5,7 +5,14 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import {
+  JsonRpcErrorCode,
+  McpError,
+  rateLimited,
+  serviceUnavailable,
+  timeout,
+} from '@cyanheads/mcp-ts-core/errors';
+import { requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import type {
   Alert,
@@ -21,6 +28,7 @@ const BASE_URL = 'https://api.weather.gov';
 const POINTS_CACHE_TTL_MS = 3_600_000; // 1 hour — grid cells rarely change
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
+const REQUEST_TIMEOUT_MS = 10_000;
 
 /** Instance-scoped cache for /points metadata. Grid cells are geography, not tenant-scoped. */
 const pointsCache = new Map<string, { data: PointsMetadata; expires: number }>();
@@ -45,9 +53,9 @@ const DEFAULT_NOT_FOUND =
   'NWS only covers the US. Provide coordinates within US states, territories, or adjacent marine areas.';
 
 /** Try to extract a detail message from an NWS error response body. */
-async function parseNwsErrorDetail(response: Response): Promise<string | null> {
+function parseNwsErrorDetail(text: string): string | null {
   try {
-    const body = (await response.json()) as Record<string, unknown>;
+    const body = JSON.parse(text) as Record<string, unknown>;
     if (typeof body.detail === 'string') return body.detail;
     if (typeof body.title === 'string') return body.title;
   } catch {
@@ -56,55 +64,153 @@ async function parseNwsErrorDetail(response: Response): Promise<string | null> {
   return null;
 }
 
-/** Fetch JSON from the NWS API with User-Agent and optional retries. */
-async function nwsFetch<T>(
+function isRetryableNwsError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (error instanceof McpError) {
+    return [
+      JsonRpcErrorCode.ServiceUnavailable,
+      JsonRpcErrorCode.Timeout,
+      JsonRpcErrorCode.RateLimited,
+    ].includes(error.code);
+  }
+  return false;
+}
+
+async function fetchNwsResponse(url: string, ctx: Context): Promise<Response> {
+  const { userAgent } = getServerConfig();
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort(new DOMException('Timed out', 'TimeoutError'));
+  }, REQUEST_TIMEOUT_MS);
+
+  const onAbort = () => {
+    controller.abort(ctx.signal.reason);
+  };
+  if (ctx.signal.aborted) {
+    controller.abort(ctx.signal.reason);
+  } else {
+    ctx.signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  try {
+    return await fetch(url, {
+      headers: {
+        'User-Agent': userAgent,
+        Accept: 'application/geo+json',
+      },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (ctx.signal.aborted) {
+      throw error;
+    }
+
+    const name = error instanceof Error ? error.name : '';
+    if (name === 'AbortError' || name === 'TimeoutError') {
+      throw timeout(
+        `NWS API request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds. Retry in a few seconds.`,
+        { url, timeoutMs: REQUEST_TIMEOUT_MS },
+        { cause: error },
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    ctx.signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function parseNwsJson<T>(text: string, url: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    const isHtml = /^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text);
+    const msg = isHtml
+      ? 'NWS API returned HTML instead of JSON. Retry in a few seconds.'
+      : 'NWS API returned invalid JSON. Retry in a few seconds.';
+    throw serviceUnavailable(msg, { url }, { cause: error });
+  }
+}
+
+function createRetryContext(ctx: Context) {
+  return requestContextService.createRequestContext({
+    operation: 'nwsFetch',
+    parentContext: {
+      requestId: ctx.requestId,
+      tenantId: ctx.tenantId,
+      ...(ctx.auth ? { auth: ctx.auth } : {}),
+    },
+  });
+}
+
+/** Fetch JSON from the NWS API with User-Agent, timeout, and retries around the full pipeline. */
+function nwsFetch<T>(
   url: string,
   ctx: Context,
   retries = MAX_RETRIES,
   notFoundMessage = DEFAULT_NOT_FOUND,
 ): Promise<T> {
-  const { userAgent } = getServerConfig();
-  let lastError: unknown;
+  let attempts = 0;
+  const retryContext = createRetryContext(ctx);
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (attempt > 0) {
-      ctx.log.info('Retrying NWS request', { url, attempt });
-      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
-    }
+  return withRetry(
+    async () => {
+      attempts += 1;
+      if (attempts > 1) {
+        ctx.log.info('Retrying NWS request', { url, attempt: attempts - 1 });
+      }
 
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': userAgent,
-        Accept: 'application/geo+json',
-      },
+      const response = await fetchNwsResponse(url, ctx);
+      const text = await response.text();
+
+      if (response.ok) {
+        return parseNwsJson<T>(text, url);
+      }
+
+      if (response.status === 404) {
+        throw new Error(notFoundMessage);
+      }
+
+      if (response.status === 400) {
+        const detail = parseNwsErrorDetail(text);
+        throw new Error(detail ?? `NWS API returned 400: Bad Request for ${url}`);
+      }
+
+      if (response.status === 429) {
+        throw rateLimited('NWS API rate-limited the request. Retry in a few seconds.', {
+          url,
+          status: response.status,
+        });
+      }
+
+      throw serviceUnavailable(`NWS API returned ${response.status}: ${response.statusText}`, {
+        url,
+        status: response.status,
+      });
+    },
+    {
+      maxRetries: retries,
+      baseDelayMs: RETRY_DELAY_MS,
+      maxDelayMs: RETRY_DELAY_MS * Math.max(retries, 1),
+      jitter: 0,
+      operation: 'nwsFetch',
+      context: retryContext,
       signal: ctx.signal,
-    });
-
-    if (response.ok) {
-      return (await response.json()) as T;
+      isTransient: isRetryableNwsError,
+    },
+  ).catch((error) => {
+    if (!isRetryableNwsError(error) || ctx.signal.aborted) {
+      throw error;
     }
 
-    if (response.status >= 500 && attempt < retries) {
-      lastError = new Error(`NWS API returned ${response.status}`);
-      continue;
-    }
-
-    if (response.status === 404) {
-      throw new Error(notFoundMessage);
-    }
-
-    if (response.status === 400) {
-      const detail = await parseNwsErrorDetail(response);
-      throw new Error(detail ?? `NWS API returned 400: Bad Request for ${url}`);
-    }
-
-    throw serviceUnavailable(`NWS API returned ${response.status}: ${response.statusText}`, {
-      url,
-      status: response.status,
-    });
-  }
-
-  throw serviceUnavailable('NWS API unavailable after retries', { url }, { cause: lastError });
+    throw serviceUnavailable(
+      `NWS API unavailable after ${attempts} attempt${attempts === 1 ? '' : 's'}.`,
+      { url, retryAttempts: attempts },
+      { cause: error },
+    );
+  });
 }
 
 /** Resolve coordinates to NWS grid metadata, cached in-process. */
@@ -150,8 +256,8 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
     city: relativeLocation?.city ?? '',
     state: relativeLocation?.state ?? '',
     timeZone: props.timeZone as string,
-    forecastZone: props.forecastZone as string,
-    county: props.county as string,
+    forecastZone: extractZoneCode((props.forecastZone as string) ?? ''),
+    county: extractZoneCode((props.county as string) ?? ''),
   };
 
   pointsCache.set(key, { data: metadata, expires: Date.now() + POINTS_CACHE_TTL_MS });
@@ -218,6 +324,7 @@ function parseObservation(
   data: Record<string, unknown>,
   stationId: string,
   stationName: string,
+  timeZone: string | null,
 ): Observation {
   const props = data.properties as Record<string, unknown>;
   const nullValue: NwsValue = { value: null, unitCode: '' };
@@ -227,6 +334,7 @@ function parseObservation(
     stationName,
     timestamp: props.timestamp as string,
     textDescription: (props.textDescription as string) ?? '',
+    timeZone,
     temperature: (props.temperature as NwsValue) ?? nullValue,
     dewpoint: (props.dewpoint as NwsValue) ?? nullValue,
     windSpeed: (props.windSpeed as NwsValue) ?? nullValue,
@@ -320,7 +428,14 @@ function bearingToCompass(deg: number): string {
 
 export interface ForecastResult {
   readonly forecast: ForecastResponse;
-  readonly location: { city: string; state: string; office: string; timeZone: string };
+  readonly location: {
+    city: string;
+    state: string;
+    office: string;
+    timeZone: string;
+    forecastZone: string;
+    county: string;
+  };
 }
 
 export interface AlertSearchResult {
@@ -366,6 +481,8 @@ export class NwsService {
         state: points.state,
         office: points.office,
         timeZone: points.timeZone,
+        forecastZone: points.forecastZone,
+        county: points.county,
       },
       forecast: parseForecastPeriods(data),
     };
@@ -381,6 +498,7 @@ export class NwsService {
       severity?: string[] | undefined;
       urgency?: string[] | undefined;
       certainty?: string[] | undefined;
+      status?: string | undefined;
     },
     ctx: Context,
   ): Promise<AlertSearchResult> {
@@ -389,16 +507,24 @@ export class NwsService {
     if (params.area) url.searchParams.set('area', params.area);
     if (params.point) url.searchParams.set('point', params.point);
     if (params.zone) url.searchParams.set('zone', params.zone);
-    if (params.event?.length) url.searchParams.set('event', params.event.join(','));
     if (params.severity?.length) url.searchParams.set('severity', params.severity.join(','));
     if (params.urgency?.length) url.searchParams.set('urgency', params.urgency.join(','));
     if (params.certainty?.length) url.searchParams.set('certainty', params.certainty.join(','));
+    if (params.status) url.searchParams.set('status', params.status);
 
     ctx.log.info('Searching alerts', { url: url.toString() });
     const data = await nwsFetch<Record<string, unknown>>(url.toString(), ctx);
 
     const features = (data.features ?? []) as Record<string, unknown>[];
-    return { alerts: features.map(parseAlert) };
+    const eventFilters = params.event
+      ?.map((event) => event.trim().toLowerCase())
+      .filter((event) => event.length > 0);
+    const alerts = features.map(parseAlert).filter((alert) => {
+      if (!eventFilters?.length) return true;
+      const normalizedEvent = alert.event.toLowerCase();
+      return eventFilters.some((event) => normalizedEvent.includes(event));
+    });
+    return { alerts };
   }
 
   /** Get latest observation, either by station ID or by resolving nearest station from coordinates. */
@@ -428,7 +554,9 @@ export class NwsService {
 
       const stationProps = stationData.properties as Record<string, unknown>;
       const stationName = (stationProps?.name as string) ?? stationId;
-      const observation = parseObservation(obsData, stationId, stationName);
+      const timeZone =
+        typeof stationProps?.timeZone === 'string' ? (stationProps.timeZone as string) : null;
+      const observation = parseObservation(obsData, stationId, stationName, timeZone);
       if (!observation.timestamp) {
         throw new Error(
           `Station ${stationId} has no recent observations. Try a different station — use nws_find_stations to find alternatives nearby.`,
@@ -447,14 +575,18 @@ export class NwsService {
       ctx,
       0,
     );
-    const features = (stationsData.features ?? []) as Record<string, unknown>[];
-    const first = features[0];
-    if (!first) {
+    const nearestStation = parseStations(stationsData)
+      .map((station) => ({
+        station,
+        distance: haversine(lat, lon, station.coordinates[1], station.coordinates[0]),
+      }))
+      .sort((a, b) => a.distance - b.distance)[0]?.station;
+
+    if (!nearestStation) {
       throw new Error('No observation stations found near this location.');
     }
-    const firstProps = first.properties as Record<string, unknown>;
-    const stationId = firstProps.stationIdentifier as string;
-    const stationName = firstProps.name as string;
+    const stationId = nearestStation.stationId;
+    const stationName = nearestStation.name;
 
     ctx.log.info('Fetching latest observation', { stationId });
     const data = await nwsFetch<Record<string, unknown>>(
@@ -464,7 +596,7 @@ export class NwsService {
       `Station '${stationId}' not found. Use nws_find_stations to discover valid station IDs.`,
     );
 
-    const observation = parseObservation(data, stationId, stationName);
+    const observation = parseObservation(data, stationId, stationName, nearestStation.timeZone);
     if (!observation.timestamp) {
       throw new Error(
         `Station ${stationId} has no recent observations. Try a different station — use nws_find_stations to find alternatives nearby.`,

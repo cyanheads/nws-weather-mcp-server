@@ -104,6 +104,7 @@ function describeFilters(input: Record<string, unknown>): string {
     parts.push(`urgency=${input.urgency.join(', ')}`);
   if (Array.isArray(input.certainty) && input.certainty.length)
     parts.push(`certainty=${input.certainty.join(', ')}`);
+  if (input.status && input.status !== 'Actual') parts.push(`status=${input.status}`);
   return parts.length > 0 ? parts.join(', ') : 'national (no filters)';
 }
 
@@ -133,7 +134,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       .array(z.string())
       .optional()
       .describe(
-        'Filter to specific event types (e.g., ["Tornado Warning"]). Exact match (case-insensitive). Use nws_list_alert_types to discover valid names.',
+        'Filter to specific event types (e.g., ["Tornado Warning"]). Matches are case-insensitive and partial, so "tornado" matches both "Tornado Warning" and "Tornado Watch". Use nws_list_alert_types to discover valid names.',
       ),
     severity: z
       .array(z.enum(['Extreme', 'Severe', 'Moderate', 'Minor', 'Unknown']))
@@ -147,6 +148,12 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       .array(z.enum(['Observed', 'Likely', 'Possible', 'Unlikely', 'Unknown']))
       .optional()
       .describe('Filter by certainty level.'),
+    status: z
+      .enum(['Actual', 'Exercise', 'System', 'Test', 'Draft'])
+      .default('Actual')
+      .describe(
+        'Alert status filter. Default "Actual". Use a different value only when you specifically need non-live alerts.',
+      ),
   }),
 
   output: z.object({

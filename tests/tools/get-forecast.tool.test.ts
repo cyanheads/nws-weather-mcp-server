@@ -16,7 +16,14 @@ vi.mock('@/services/nws/nws-service.js', () => ({
 const { getForecastTool } = await import('@/mcp-server/tools/definitions/get-forecast.tool.js');
 
 const forecastResult: ForecastResult = {
-  location: { city: 'Seattle', state: 'WA', office: 'SEW', timeZone: 'America/Los_Angeles' },
+  location: {
+    city: 'Seattle',
+    state: 'WA',
+    office: 'SEW',
+    timeZone: 'America/Los_Angeles',
+    forecastZone: 'WAZ558',
+    county: 'WAC033',
+  },
   forecast: {
     generatedAt: '2026-04-03T12:00:00Z',
     updateTime: '2026-04-03T12:00:00Z',
@@ -63,6 +70,8 @@ describe('nws_get_forecast', () => {
     const result = await getForecastTool.handler(input, ctx);
 
     expect(result.location.city).toBe('Seattle');
+    expect(result.location.forecastZone).toBe('WAZ558');
+    expect(result.location.county).toBe('WAC033');
     expect(result.generatedAt).toBe('2026-04-03T12:00:00Z');
     expect(result.periods).toHaveLength(1);
     expect(result.periods[0].name).toBe('Today');
@@ -89,7 +98,14 @@ describe('nws_get_forecast', () => {
       mockGetForecast.mockResolvedValueOnce(forecastResult);
 
       const output = {
-        location: { city: 'Seattle', state: 'WA', office: 'SEW', timeZone: 'America/Los_Angeles' },
+        location: {
+          city: 'Seattle',
+          state: 'WA',
+          office: 'SEW',
+          timeZone: 'America/Los_Angeles',
+          forecastZone: 'WAZ558',
+          county: 'WAC033',
+        },
         generatedAt: '2026-04-03T12:00:00Z',
         periods: [
           {
@@ -113,6 +129,8 @@ describe('nws_get_forecast', () => {
       expect(blocks[0].type).toBe('text');
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('Seattle, WA');
+      expect(text).toContain('Forecast Zone:** WAZ558');
+      expect(text).toContain('County Zone:** WAC033');
       expect(text).toContain('Today');
       expect(text).toContain('62°F');
       expect(text).toContain('Precip');

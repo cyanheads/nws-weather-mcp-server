@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-04-13
+
+### Added
+
+- **Forecast and alert chaining metadata** — `nws_get_forecast` now returns forecast and county zone codes, and `nws_search_alerts` now supports a `status` filter while keeping live `Actual` alerts as the default.
+- **Agent protocol sync** — Added `AGENTS.md` and the `add-app-tool` skill alongside the refreshed project skill docs.
+
+### Changed
+
+- **Time-zone-aware output** — Forecasts and observations now format timestamps in the resolved local/station time zone instead of relying on generic offset rendering.
+- **Observation station selection** — Coordinate-based observations now choose the nearest returned station rather than assuming the first station in the API response is best.
+- **Alert event filtering** — Event filters are now case-insensitive partial matches, so broader queries like `"tornado"` match multiple related NWS event names.
+- **Framework/tooling sync** — Upgraded `@cyanheads/mcp-ts-core` to `^0.3.5`, refreshed the Bun lockfile, and synced the project skills/docs with the newer framework templates.
+
+### Fixed
+
+- **NWS client resilience** — Wrapped NWS requests with explicit timeouts, retry handling for transient network failures, and clearer rate-limit / invalid-response errors.
+
 ## [0.4.0] - 2026-04-04
 
 ### Added

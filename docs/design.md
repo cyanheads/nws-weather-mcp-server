@@ -46,7 +46,7 @@ Retrieves the weather forecast for a US location. Provide coordinates and get ba
 
 **API flow:** `GET /points/{lat},{lon}` -> follow `forecast` or `forecastHourly` URL from response properties.
 
-**Returns:** Location context (city, state, WFO office) plus array of forecast periods: `name`, `startTime`, `endTime`, `temperature`, `temperatureUnit`, `windSpeed`, `windDirection`, `shortForecast`, `detailedForecast`, `probabilityOfPrecipitation`. Hourly adds `dewpoint`, `relativeHumidity`.
+**Returns:** Location context (city, state, WFO office, time zone, forecast zone, county zone) plus array of forecast periods: `name`, `startTime`, `endTime`, `temperature`, `temperatureUnit`, `windSpeed`, `windDirection`, `shortForecast`, `detailedForecast`, `probabilityOfPrecipitation`. Hourly adds `dewpoint`, `relativeHumidity`.
 
 **Error modes:**
 - Coordinates outside US coverage -> "NWS only covers the US. Provide coordinates within US states, territories, or adjacent marine areas."
@@ -89,7 +89,7 @@ One of `station_id` or `latitude`+`longitude` is required.
 
 **API flow:** If coordinates given: `GET /points/{lat},{lon}` -> follow `observationStations` -> pick first station -> `GET /stations/{id}/observations/latest`. If station_id given: direct fetch.
 
-**Returns:** Station name and ID, observation timestamp, plus measured values: `temperature`, `dewpoint`, `windSpeed`, `windDirection`, `windGust`, `barometricPressure`, `visibility`, `relativeHumidity`, `heatIndex`, `windChill`, `textDescription` (e.g., "Mostly Cloudy"), `cloudLayers`. Values include units. Some fields may be null if the station doesn't report that metric (common for windGust, heatIndex, windChill).
+**Returns:** Station name and ID, observation timestamp, station time zone, plus measured values: `temperature`, `dewpoint`, `windSpeed`, `windDirection`, `windGust`, `barometricPressure`, `visibility`, `relativeHumidity`, `heatIndex`, `windChill`, `textDescription` (e.g., "Mostly Cloudy"), `cloudLayers`. Values include units. Some fields may be null if the station doesn't report that metric (common for windGust, heatIndex, windChill).
 
 **Error modes:**
 - Station has no recent observations -> "Station {id} has no recent observations. Try a different station -- use nws_find_stations to find alternatives nearby."

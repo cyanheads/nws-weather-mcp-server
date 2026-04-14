@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![Version](https://img.shields.io/badge/Version-0.4.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) 
+[![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![Version](https://img.shields.io/badge/Version-0.5.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) 
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.2+-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
@@ -27,7 +27,7 @@ Five tools for real-time US weather data:
 | Tool | Description |
 |:----------|:------------|
 | `nws_get_forecast` | 7-day or hourly forecast for coordinates. Resolves NWS grid internally. |
-| `nws_search_alerts` | Active weather alerts filtered by area, point, zone, event, severity. |
+| `nws_search_alerts` | Active weather alerts filtered by area, point, zone, event, severity, urgency, certainty, and status. |
 | `nws_get_observations` | Current conditions by coordinates (nearest station) or station ID. |
 | `nws_find_stations` | Nearby observation stations sorted by distance with bearing. |
 | `nws_list_alert_types` | All valid alert event type names for filter discovery. |
@@ -39,6 +39,8 @@ Get the weather forecast for a US location.
 - Default returns named 12-hour periods (14 total, ~7 days)
 - Hourly mode returns up to 156 one-hour periods with dewpoint and humidity
 - Coordinates resolve to NWS grid internally via `/points` endpoint
+- Formatted timestamps use the resolved local time zone
+- Returns forecast zone and county zone codes for chaining into `nws_search_alerts`
 
 ---
 
@@ -46,8 +48,10 @@ Get the weather forecast for a US location.
 
 Search active weather alerts with flexible filtering.
 
-- Filter by area (state/territory/marine codes), point (lat,lon), zone, event type, severity, urgency, certainty
+- Filter by area (state/territory/marine codes), point (lat,lon), zone, event type, severity, urgency, certainty, or status
 - National search when no filters provided
+- Event matching is case-insensitive and partial, so `"tornado"` matches both watches and warnings
+- `status` defaults to live `Actual` alerts, but can be set to `Exercise`, `System`, `Test`, or `Draft`
 - Results capped at 25 with truncation notice and guidance to narrow filters
 - Validates area codes and point format before API call
 
@@ -58,7 +62,9 @@ Search active weather alerts with flexible filtering.
 Current measured conditions from a weather station.
 
 - Look up by coordinates (finds nearest station) or station ID directly
+- Coordinate lookups choose the nearest station from the candidates returned by NWS
 - Dual-unit display: F/C, mph/km/h, inHg/hPa, mi/km
+- Observation timestamps use the station's local time zone when available
 - Warns when most measurements are unavailable from a station
 
 ---
@@ -102,7 +108,7 @@ NWS-specific:
 
 - Zero-auth access to the NWS API — no API keys required
 - Automatic coordinate-to-grid resolution with caching (1h TTL)
-- Retry with backoff for transient NWS API failures
+- Request timeouts plus retry/backoff for transient NWS API failures
 - Dual-unit display for observations (F/C, mph/km/h, inHg/hPa, mi/km)
 - Continental US, Alaska, Hawaii, and US territories coverage
 

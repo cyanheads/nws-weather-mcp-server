@@ -30,7 +30,7 @@ const alertResult: AlertSearchResult = {
       onset: '2026-04-03T12:00:00-07:00',
       expires: '2026-04-04T00:00:00-07:00',
       senderName: 'NWS Seattle WA',
-      affectedZones: ['https://api.weather.gov/zones/forecast/WAZ558'],
+      affectedZones: ['WAZ558'],
     },
   ],
 };
@@ -43,6 +43,7 @@ describe('nws_search_alerts', () => {
   it('parses input with area filter', () => {
     const input = searchAlertsTool.input.parse({ area: 'WA' });
     expect(input.area).toBe('WA');
+    expect(input.status).toBe('Actual');
   });
 
   it('returns alerts with count and filters', async () => {
@@ -86,7 +87,7 @@ describe('nws_search_alerts', () => {
       area: 'OK',
       severity: ['Extreme'],
       urgency: ['Immediate'],
-      event: ['Tornado Warning'],
+      event: ['tornado'],
     });
     await searchAlertsTool.handler(input, ctx);
 
@@ -95,7 +96,8 @@ describe('nws_search_alerts', () => {
         area: 'OK',
         severity: ['Extreme'],
         urgency: ['Immediate'],
-        event: ['Tornado Warning'],
+        event: ['tornado'],
+        status: 'Actual',
       }),
       ctx,
     );

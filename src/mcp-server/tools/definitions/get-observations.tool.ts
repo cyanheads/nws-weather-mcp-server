@@ -41,13 +41,14 @@ function formatTemp(value: number | null): string | null {
 
 /** Format wind speed with both mph and km/h. */
 function formatWind(speed: number | null, direction: number | null, gust: number | null): string {
-  if (speed == null) return 'Calm';
+  if (speed == null) return 'Not available';
+  if (Math.round(speed) === 0 && gust == null) return 'Calm';
   const mph = kmhToMph(speed);
   const kmh = Math.round(speed);
   const dir = direction != null ? `${Math.round(direction)}°` : '';
   let result = `${dir} ${mph} mph (${kmh} km/h)`.trim();
   if (gust != null) {
-    result += `, gusts ${kmhToMph(gust)} mph`;
+    result += `, gusts ${kmhToMph(gust)} mph (${Math.round(gust)} km/h)`;
   }
   return result;
 }
@@ -86,6 +87,7 @@ export const getObservationsTool = tool('nws_get_observations', {
     stationId: z.string().describe('Observation station ID'),
     stationName: z.string().describe('Station name'),
     timestamp: z.string().describe('Observation time (ISO 8601)'),
+    timeZone: z.string().nullable().describe('Station time zone when known'),
     textDescription: z.string().describe('Conditions summary (e.g., "Mostly Cloudy")'),
     temperature: z.number().nullable().describe('Temperature in Celsius'),
     dewpoint: z.number().nullable().describe('Dewpoint in Celsius'),
@@ -126,6 +128,7 @@ export const getObservationsTool = tool('nws_get_observations', {
       stationId: obs.stationId,
       stationName: obs.stationName,
       timestamp: obs.timestamp,
+      timeZone: obs.timeZone,
       textDescription: obs.textDescription,
       temperature: obs.temperature.value,
       dewpoint: obs.dewpoint.value,
@@ -147,7 +150,7 @@ export const getObservationsTool = tool('nws_get_observations', {
   format: (result) => {
     const lines = [
       `## Current Conditions — ${result.stationName} (${result.stationId})`,
-      `**${result.textDescription}** | Observed: ${formatTimestamp(result.timestamp)}`,
+      `**${result.textDescription}** | Observed: ${formatTimestamp(result.timestamp, result.timeZone)}`,
       '',
     ];
 

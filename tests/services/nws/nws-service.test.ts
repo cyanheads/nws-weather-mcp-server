@@ -270,6 +270,29 @@ describe('NwsService', () => {
       await expect(result).rejects.toThrow('has no recent observations');
     });
 
+    it('throws notFound when the nearest station has no recent observations', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(pointsResponse))
+        .mockResolvedValueOnce(jsonResponse(stationsResponse))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            ...observationResponse,
+            properties: {
+              ...observationResponse.properties,
+              timestamp: null,
+            },
+          }),
+        );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service
+        .getNwsService()
+        .getObservation({ latitude: 47.6062, longitude: -122.3321 }, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
+      await expect(result).rejects.toThrow('has no recent observations');
+    });
+
     it('throws when no stations found', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse(pointsResponse))
@@ -349,6 +372,63 @@ describe('NwsService', () => {
 
       await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.ValidationError });
       await expect(result).rejects.toThrow('NWS only covers the US');
+    });
+
+    it('throws serviceUnavailable when the forecast response is HTML instead of JSON', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(pointsResponse)).mockImplementation(
+        async () =>
+          new Response('<!DOCTYPE html><html><body>Service unavailable</body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html' },
+          }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().getForecast(47.6062, -122.3321, false, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.ServiceUnavailable });
+      await expect(result).rejects.toThrow('NWS API returned HTML instead of JSON');
+    });
+
+    it('throws serviceUnavailable when /points omits required URLs', async () => {
+      mockFetch.mockImplementation(async () =>
+        jsonResponse({
+          properties: {
+            gridId: 'SEW',
+            gridX: 123,
+            gridY: 45,
+            relativeLocation: {
+              properties: {
+                city: 'Seattle',
+                state: 'WA',
+              },
+            },
+            timeZone: 'America/Los_Angeles',
+          },
+        }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().getForecast(47.6062, -122.3321, false, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.ServiceUnavailable });
+      await expect(result).rejects.toThrow('NWS /points response missing required URLs');
+    });
+
+    it('preserves rateLimited errors after repeated 429 responses', async () => {
+      mockFetch.mockImplementation(
+        async () =>
+          new Response('', {
+            status: 429,
+            statusText: 'Too Many Requests',
+          }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.RateLimited });
+      await expect(result).rejects.toThrow('rate-limited the request');
     });
 
     it('retries on 500 and succeeds', async () => {

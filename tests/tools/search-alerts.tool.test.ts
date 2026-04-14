@@ -116,6 +116,20 @@ describe('nws_search_alerts', () => {
     );
   });
 
+  it('includes certainty and non-default status in the filter summary', async () => {
+    mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = searchAlertsTool.input.parse({
+      certainty: ['Observed'],
+      status: 'Test',
+    });
+    const result = await searchAlertsTool.handler(input, ctx);
+
+    expect(result.filters).toContain('certainty=Observed');
+    expect(result.filters).toContain('status=Test');
+  });
+
   describe('format', () => {
     it('renders helpful guidance for empty results', () => {
       const blocks = searchAlertsTool.format!({
@@ -158,6 +172,22 @@ describe('nws_search_alerts', () => {
       expect(text).toContain('Extreme');
       expect(text).toContain('Take shelter');
       expect(text).toContain('Move to interior room');
+    });
+
+    it('renders affected zones when present', () => {
+      const blocks = searchAlertsTool.format!({
+        count: 1,
+        shown: 1,
+        filters: 'area=WA',
+        alerts: [
+          {
+            ...alertResult.alerts[0],
+            affectedZones: ['WAZ558', 'WAC033'],
+          },
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('**Zones:** WAZ558, WAC033');
     });
 
     it('shows truncation notice when capped', () => {

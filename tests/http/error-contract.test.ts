@@ -410,6 +410,41 @@ describe('HTTP JSON-RPC error contracts', () => {
     }
   });
 
+  it('returns ValidationError for out-of-scope nws_find_stations coordinates over HTTP', async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}, 404));
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        {
+          jsonrpc: '2.0',
+          id: 'find-stations-out-of-scope',
+          method: 'tools/call',
+          params: {
+            name: 'nws_find_stations',
+            arguments: {
+              latitude: 47.6032,
+              longitude: 122.3303,
+              limit: 5,
+            },
+          },
+        },
+        sessionId,
+      );
+
+      const body = response.body as { result?: unknown };
+      expect(response.statusCode).toBe(200);
+      expect(body.result).toMatchObject({
+        isError: true,
+        _meta: { error: { code: JsonRpcErrorCode.ValidationError } },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('returns NotFound when a direct station has no recent observations over HTTP', async () => {
     const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = String(input);

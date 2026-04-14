@@ -214,6 +214,10 @@ function nwsFetch<T>(
       throw error;
     }
 
+    if (error instanceof McpError) {
+      throw error;
+    }
+
     throw serviceUnavailable(
       `NWS API unavailable after ${attempts} attempt${attempts === 1 ? '' : 's'}.`,
       { url, retryAttempts: attempts },

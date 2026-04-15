@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![Version](https://img.shields.io/badge/Version-0.5.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) 
+[![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![Version](https://img.shields.io/badge/Version-0.5.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) 
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.2+-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
@@ -49,7 +49,9 @@ Get the weather forecast for a US location.
 Search active weather alerts with flexible filtering.
 
 - Filter by area (state/territory/marine codes), point (lat,lon), zone, event type, severity, urgency, certainty, or status
+- `area`, `point`, and `zone` are mutually exclusive; specify at most one location filter
 - National search when no filters provided
+- Blank optional location filters are ignored so form-based clients can submit empty fields safely
 - Event matching is case-insensitive and partial, so `"tornado"` matches both watches and warnings
 - `status` defaults to live `Actual` alerts, but can be set to `Exercise`, `System`, `Test`, or `Draft`
 - Results capped at 25 with truncation notice and guidance to narrow filters
@@ -62,6 +64,7 @@ Search active weather alerts with flexible filtering.
 Current measured conditions from a weather station.
 
 - Look up by coordinates (finds nearest station) or station ID directly
+- Blank or whitespace-only `station_id` values are ignored so clients can fall back to coordinates cleanly
 - Coordinate lookups choose the nearest station from the candidates returned by NWS
 - Dual-unit display: F/C, mph/km/h, inHg/hPa, mi/km
 - Observation timestamps use the station's local time zone when available

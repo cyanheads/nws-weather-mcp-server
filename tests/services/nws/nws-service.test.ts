@@ -162,6 +162,35 @@ describe('NwsService', () => {
       await expect(result).rejects.toThrow('Invalid alert query');
     });
 
+    it('maps upstream parameterErrors to actionable validation errors', async () => {
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            correlationId: '5ac24233',
+            parameterErrors: [
+              {
+                parameter: 'query.area',
+                message: 'parameters may not be used together: area, point',
+              },
+            ],
+            title: 'Bad Request',
+            detail: 'Bad Request',
+            status: 400,
+          }),
+          {
+            status: 400,
+            headers: { 'Content-Type': 'application/problem+json' },
+          },
+        ),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.ValidationError });
+      await expect(result).rejects.toThrow('parameters may not be used together: area, point');
+    });
+
     it('maps title-only upstream 400 responses to validation errors', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ title: 'Bad Request' }, 400));
 

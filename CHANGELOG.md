@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.2] - 2026-04-14
+
+### Changed
+
+- **Release metadata** — Bumped package, manifest, README badge, and agent-protocol versions to `0.5.2`.
+
+### Fixed
+
+- **Alert filter validation** — Rejected mutually exclusive non-empty `area`, `point`, and `zone` combinations in `nws_search_alerts` before hitting the NWS API, while normalizing blank optional location fields away for form-style clients.
+- **Alert error details** — Surfaced NWS `parameterErrors` messages for alert-query `400` responses so clients receive actionable validation feedback instead of generic `Bad Request` failures.
+- **Observation station ID normalization** — Trimmed `station_id` inputs in `nws_get_observations` and treated blank values as omitted so coordinate lookups still work when form-based clients send empty optional fields.
+
 ## [0.5.1] - 2026-04-14
 
 ### Added

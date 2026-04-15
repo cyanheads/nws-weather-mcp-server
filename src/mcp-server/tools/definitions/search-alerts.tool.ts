@@ -9,6 +9,7 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 import { formatTimestamp } from '../format-utils.js';
 
 const MAX_ALERTS = 25;
+const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
 
 /** Valid area codes: US states, DC, territories, and marine areas. */
 const VALID_AREA_CODES = new Set([
@@ -109,53 +110,85 @@ function describeFilters(input: Record<string, unknown>): string {
   return parts.length > 0 ? parts.join(', ') : 'national (no filters)';
 }
 
+/** Trim optional string filters and treat blank values as omitted. */
+function normalizeOptionalFilter(value: string | undefined): string | undefined {
+  if (value == null) return;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+/** Normalize location filters and reject combinations the NWS API treats as incompatible. */
+function normalizeSearchAlertsInput(input: SearchAlertsInput): SearchAlertsInput {
+  const normalized = {
+    ...input,
+    area: normalizeOptionalFilter(input.area)?.toUpperCase(),
+    point: normalizeOptionalFilter(input.point),
+    zone: normalizeOptionalFilter(input.zone),
+  };
+
+  const activeLocationFilters = LOCATION_FILTER_FIELDS.filter((fieldName) => normalized[fieldName]);
+  if (activeLocationFilters.length > 1) {
+    throw invalidParams(
+      'area, point, and zone are mutually exclusive. Specify at most one location filter.',
+    );
+  }
+
+  return normalized;
+}
+
+const searchAlertsInputSchema = z.object({
+  area: z
+    .string()
+    .optional()
+    .describe(
+      'US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM"). Mutually exclusive with point and zone.',
+    ),
+  point: z
+    .string()
+    .optional()
+    .describe(
+      'Coordinates as "lat,lon" (e.g., "47.6,-122.3"). Returns alerts whose geometry contains this point. Mutually exclusive with area and zone.',
+    ),
+  zone: z
+    .string()
+    .optional()
+    .describe(
+      'NWS forecast zone (e.g., "WAZ558") or county zone (e.g., "WAC033"). Mutually exclusive with area and point.',
+    ),
+  event: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Filter to specific event types (e.g., ["Tornado Warning"]). Matches are case-insensitive and partial, so "tornado" matches both "Tornado Warning" and "Tornado Watch". Use nws_list_alert_types to discover valid names.',
+    ),
+  severity: z
+    .array(z.enum(['Extreme', 'Severe', 'Moderate', 'Minor', 'Unknown']))
+    .optional()
+    .describe('Filter by severity level.'),
+  urgency: z
+    .array(z.enum(['Immediate', 'Expected', 'Future', 'Past']))
+    .optional()
+    .describe('Filter by urgency level.'),
+  certainty: z
+    .array(z.enum(['Observed', 'Likely', 'Possible', 'Unlikely', 'Unknown']))
+    .optional()
+    .describe('Filter by certainty level.'),
+  status: z
+    .enum(['Actual', 'Exercise', 'System', 'Test', 'Draft'])
+    .default('Actual')
+    .describe(
+      'Alert status filter. Default "Actual". Use a different value only when you specifically need non-live alerts.',
+    ),
+});
+
+type SearchAlertsInput = z.infer<typeof searchAlertsInputSchema>;
+
 export const searchAlertsTool = tool('nws_search_alerts', {
   description:
-    'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, event type, severity, urgency, or certainty. Omit all filters for a national search.',
+    'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, event type, severity, urgency, or certainty. area, point, and zone are mutually exclusive. Omit all filters for a national search.',
   annotations: { readOnlyHint: true },
 
-  input: z.object({
-    area: z
-      .string()
-      .optional()
-      .describe(
-        'US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").',
-      ),
-    point: z
-      .string()
-      .optional()
-      .describe(
-        'Coordinates as "lat,lon" (e.g., "47.6,-122.3"). Returns alerts whose geometry contains this point.',
-      ),
-    zone: z
-      .string()
-      .optional()
-      .describe('NWS forecast zone (e.g., "WAZ558") or county zone (e.g., "WAC033").'),
-    event: z
-      .array(z.string())
-      .optional()
-      .describe(
-        'Filter to specific event types (e.g., ["Tornado Warning"]). Matches are case-insensitive and partial, so "tornado" matches both "Tornado Warning" and "Tornado Watch". Use nws_list_alert_types to discover valid names.',
-      ),
-    severity: z
-      .array(z.enum(['Extreme', 'Severe', 'Moderate', 'Minor', 'Unknown']))
-      .optional()
-      .describe('Filter by severity level.'),
-    urgency: z
-      .array(z.enum(['Immediate', 'Expected', 'Future', 'Past']))
-      .optional()
-      .describe('Filter by urgency level.'),
-    certainty: z
-      .array(z.enum(['Observed', 'Likely', 'Possible', 'Unlikely', 'Unknown']))
-      .optional()
-      .describe('Filter by certainty level.'),
-    status: z
-      .enum(['Actual', 'Exercise', 'System', 'Test', 'Draft'])
-      .default('Actual')
-      .describe(
-        'Alert status filter. Default "Actual". Use a different value only when you specifically need non-live alerts.',
-      ),
-  }),
+  input: searchAlertsInputSchema,
 
   output: z.object({
     count: z.number().describe('Total number of matching alerts'),
@@ -183,19 +216,20 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   }),
 
   async handler(input, ctx) {
+    const normalizedInput = normalizeSearchAlertsInput(input);
+
     // Normalize and validate area code — the NWS API is case-sensitive (lowercase → 400)
-    if (input.area) {
-      input.area = input.area.toUpperCase();
-      if (!VALID_AREA_CODES.has(input.area)) {
+    if (normalizedInput.area) {
+      if (!VALID_AREA_CODES.has(normalizedInput.area)) {
         throw invalidParams(
-          `Invalid area code "${input.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
+          `Invalid area code "${normalizedInput.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
         );
       }
     }
 
     // Validate point format before hitting the API
-    if (input.point) {
-      const [lat, lon, ...rest] = input.point.split(',').map(Number);
+    if (normalizedInput.point) {
+      const [lat, lon, ...rest] = normalizedInput.point.split(',').map(Number);
       if (
         rest.length > 0 ||
         lat == null ||
@@ -208,15 +242,15 @@ export const searchAlertsTool = tool('nws_search_alerts', {
         lon > 180
       ) {
         throw invalidParams(
-          `Invalid point "${input.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
+          `Invalid point "${normalizedInput.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
         );
       }
     }
 
-    const result = await getNwsService().searchAlerts(input, ctx);
+    const result = await getNwsService().searchAlerts(normalizedInput, ctx);
     const total = result.alerts.length;
     const capped = result.alerts.slice(0, MAX_ALERTS);
-    const filters = describeFilters(input);
+    const filters = describeFilters(normalizedInput);
 
     ctx.log.info('Alerts search completed', { total, shown: capped.length, filters });
 

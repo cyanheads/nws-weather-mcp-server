@@ -71,6 +71,19 @@ describe('nws_get_observations', () => {
     expect(result.cloudLayers[0].amount).toBe('BKN');
   });
 
+  it('trims station_id before calling the service', async () => {
+    mockGetObservation.mockResolvedValueOnce(observationResult);
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = getObservationsTool.input.parse({ station_id: ' KSEA ' });
+    await getObservationsTool.handler(input, ctx);
+
+    expect(mockGetObservation).toHaveBeenCalledWith(
+      expect.objectContaining({ stationId: 'KSEA' }),
+      ctx,
+    );
+  });
+
   it('returns observation data by coordinates', async () => {
     mockGetObservation.mockResolvedValueOnce(observationResult);
 
@@ -85,9 +98,41 @@ describe('nws_get_observations', () => {
     );
   });
 
+  it('ignores blank station_id when coordinates are provided', async () => {
+    mockGetObservation.mockResolvedValueOnce(observationResult);
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = getObservationsTool.input.parse({
+      station_id: '   ',
+      latitude: 47.6,
+      longitude: -122.3,
+    });
+    await getObservationsTool.handler(input, ctx);
+
+    expect(mockGetObservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stationId: undefined,
+        latitude: 47.6,
+        longitude: -122.3,
+      }),
+      ctx,
+    );
+  });
+
   it('throws when neither station_id nor coordinates provided', async () => {
     const ctx = createMockContext({ tenantId: 'test' });
     const input = getObservationsTool.input.parse({});
+    const result = getObservationsTool.handler(input, ctx);
+
+    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
+    await expect(result).rejects.toThrow(
+      'Provide either station_id or both latitude and longitude',
+    );
+  });
+
+  it('treats whitespace-only station_id as omitted when coordinates are missing', async () => {
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = getObservationsTool.input.parse({ station_id: '   ' });
     const result = getObservationsTool.handler(input, ctx);
 
     await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });

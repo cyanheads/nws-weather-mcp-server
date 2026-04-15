@@ -57,12 +57,39 @@ const POINTS_NOT_FOUND =
 
 type NotFoundFactory = (message: string) => Error;
 
+/** Return a cleaned message when an NWS field contains useful text. */
+function normalizeNwsMessage(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 /** Try to extract a detail message from an NWS error response body. */
 function parseNwsErrorDetail(text: string): string | null {
   try {
     const body = JSON.parse(text) as Record<string, unknown>;
-    if (typeof body.detail === 'string') return body.detail;
-    if (typeof body.title === 'string') return body.title;
+    const parameterErrors = Array.isArray(body.parameterErrors)
+      ? [
+          ...new Set(
+            body.parameterErrors
+              .map((error) =>
+                error && typeof error === 'object'
+                  ? normalizeNwsMessage((error as Record<string, unknown>).message)
+                  : null,
+              )
+              .filter((message): message is string => message != null),
+          ),
+        ]
+      : [];
+    if (parameterErrors.length > 0) return parameterErrors.join('; ');
+
+    const detail = normalizeNwsMessage(body.detail);
+    if (detail && detail !== 'Bad Request') return detail;
+
+    const title = normalizeNwsMessage(body.title);
+    if (title) return title;
+
+    if (detail) return detail;
   } catch {
     /* not JSON — ignore */
   }

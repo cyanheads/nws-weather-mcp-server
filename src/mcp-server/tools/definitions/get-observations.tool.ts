@@ -54,6 +54,13 @@ function formatWind(speed: number | null, direction: number | null, gust: number
   return result;
 }
 
+/** Trim optional station IDs and treat blank values as omitted. */
+function normalizeStationId(stationId: string | undefined): string | undefined {
+  if (stationId == null) return;
+  const normalized = stationId.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export const getObservationsTool = tool('nws_get_observations', {
   description:
     'Get current weather observations (actual measured conditions). Accepts coordinates (resolves nearest station automatically) or a station ID directly (e.g., "KSEA").',
@@ -111,7 +118,9 @@ export const getObservationsTool = tool('nws_get_observations', {
   }),
 
   async handler(input, ctx) {
-    if (!input.station_id && (input.latitude == null || input.longitude == null)) {
+    const normalizedStationId = normalizeStationId(input.station_id);
+
+    if (!normalizedStationId && (input.latitude == null || input.longitude == null)) {
       throw invalidParams('Provide either station_id or both latitude and longitude.');
     }
 
@@ -119,7 +128,7 @@ export const getObservationsTool = tool('nws_get_observations', {
       {
         latitude: input.latitude,
         longitude: input.longitude,
-        stationId: input.station_id,
+        stationId: normalizedStationId,
       },
       ctx,
     );

@@ -92,6 +92,50 @@ describe('nws_search_alerts', () => {
     await expect(result).rejects.toThrow('Invalid area code');
   });
 
+  it('normalizes empty-string location filters away before calling the service', async () => {
+    mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = searchAlertsTool.input.parse({ area: '', point: '', zone: '' });
+    const result = await searchAlertsTool.handler(input, ctx);
+
+    expect(result.filters).toBe('national (no filters)');
+    expect(mockSearchAlerts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        area: undefined,
+        point: undefined,
+        zone: undefined,
+      }),
+      ctx,
+    );
+  });
+
+  it('rejects mutually exclusive area and point filters before calling the service', async () => {
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = searchAlertsTool.input.parse({ area: 'TX', point: '32.7767,-96.7970' });
+    const result = searchAlertsTool.handler(input, ctx);
+
+    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
+    await expect(result).rejects.toThrow('area, point, and zone are mutually exclusive');
+    expect(mockSearchAlerts).not.toHaveBeenCalled();
+  });
+
+  it('ignores whitespace-only location filters when another real filter is present', async () => {
+    mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = searchAlertsTool.input.parse({ area: 'TX', zone: '   ' });
+    await searchAlertsTool.handler(input, ctx);
+
+    expect(mockSearchAlerts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        area: 'TX',
+        zone: undefined,
+      }),
+      ctx,
+    );
+  });
+
   it('passes all filter params to service', async () => {
     mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
@@ -111,6 +155,21 @@ describe('nws_search_alerts', () => {
         urgency: ['Immediate'],
         event: ['tornado'],
         status: 'Actual',
+      }),
+      ctx,
+    );
+  });
+
+  it('trims and normalizes area before passing filters to the service', async () => {
+    mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = searchAlertsTool.input.parse({ area: ' wa ' });
+    await searchAlertsTool.handler(input, ctx);
+
+    expect(mockSearchAlerts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        area: 'WA',
       }),
       ctx,
     );

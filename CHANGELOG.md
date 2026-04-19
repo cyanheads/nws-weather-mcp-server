@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.3] - 2026-04-19
+
+### Changed
+
+- **Dependencies** — Ran `bun update --latest`; bumped `typescript` to `^6.0.3`. All other dependencies were already at their latest versions.
+- **Release metadata** — Bumped package, manifest, README badge, and agent-protocol versions to `0.5.3`.
+
 ## [0.5.2] - 2026-04-14
 
 ### Changed

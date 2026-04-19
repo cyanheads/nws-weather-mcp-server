@@ -155,6 +155,121 @@ describe('nws_get_forecast', () => {
       expect(text).toContain('No forecast periods available for this location.');
     });
 
+    it('renders hourly period headers in the forecast location TZ (regression: issue #6)', () => {
+      // 15:00 UTC = 8:00 AM PDT — header should reflect PDT, not the host's TZ.
+      // When `name` is empty (hourly periods), the label is derived from startTime.
+      const output = {
+        location: {
+          city: 'Seattle',
+          state: 'WA',
+          office: 'SEW',
+          timeZone: 'America/Los_Angeles',
+          forecastZone: 'WAZ558',
+          county: 'WAC033',
+        },
+        generatedAt: '2026-04-19T12:00:00Z',
+        periods: [
+          {
+            name: '', // empty name → triggers periodLabel() derivation
+            startTime: '2026-04-19T15:00:00Z',
+            endTime: '2026-04-19T16:00:00Z',
+            temperature: 51,
+            temperatureUnit: 'F',
+            windSpeed: '2 mph',
+            windDirection: 'N',
+            shortForecast: 'Cloudy',
+            detailedForecast: '',
+            precipChance: 0,
+            dewpoint: 8.5,
+            relativeHumidity: 75,
+          },
+        ],
+      };
+
+      const blocks = getForecastTool.format!(output);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      // Header should be "Sun 8:00 AM" (PDT), not "Sun 3:00 PM" (UTC) or
+      // anything from the host TZ. Match the header line precisely so it's
+      // resilient to any unrelated formatter changes.
+      expect(text).toMatch(/^### Sun 8:00 AM$/m);
+      expect(text).not.toMatch(/^### Sun 3:00 PM$/m);
+    });
+
+    it('renders hourly headers consistently with the time range below them', () => {
+      // The header and the range line below it should agree on the time. Before
+      // the fix they disagreed by the host-vs-location TZ delta.
+      const output = {
+        location: {
+          city: 'Boston',
+          state: 'MA',
+          office: 'BOX',
+          timeZone: 'America/New_York',
+          forecastZone: 'MAZ014',
+          county: 'MAC025',
+        },
+        generatedAt: '2026-07-04T12:00:00Z',
+        periods: [
+          {
+            name: '',
+            startTime: '2026-07-04T18:00:00Z', // 2:00 PM EDT
+            endTime: '2026-07-04T19:00:00Z',
+            temperature: 78,
+            temperatureUnit: 'F',
+            windSpeed: '5 mph',
+            windDirection: 'SW',
+            shortForecast: 'Sunny',
+            detailedForecast: '',
+            precipChance: null,
+            dewpoint: null,
+            relativeHumidity: null,
+          },
+        ],
+      };
+
+      const blocks = getForecastTool.format!(output);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      // Header should match the start time of the range (2:00 PM EDT).
+      expect(text).toContain('### Sat 2:00 PM');
+      expect(text).toContain('2:00 PM EDT → ');
+    });
+
+    it('preserves NWS-supplied named periods on the standard 12-hour forecast', () => {
+      // Sanity: when name is non-empty (standard forecast), we use it verbatim
+      // and the time-zone fix does not apply. Verifies the bug fix didn't
+      // regress the default forecast path.
+      const output = {
+        location: {
+          city: 'Seattle',
+          state: 'WA',
+          office: 'SEW',
+          timeZone: 'America/Los_Angeles',
+          forecastZone: 'WAZ558',
+          county: 'WAC033',
+        },
+        generatedAt: '2026-04-03T12:00:00Z',
+        periods: [
+          {
+            name: 'Tonight',
+            startTime: '2026-04-03T18:00:00-07:00',
+            endTime: '2026-04-04T06:00:00-07:00',
+            temperature: 48,
+            temperatureUnit: 'F',
+            windSpeed: '5 mph',
+            windDirection: 'S',
+            shortForecast: 'Mostly Clear',
+            detailedForecast: 'Mostly clear with a low near 48.',
+            precipChance: null,
+            dewpoint: null,
+            relativeHumidity: null,
+          },
+        ],
+      };
+
+      const blocks = getForecastTool.format!(output);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('### Tonight');
+    });
+
     it('falls back to the short forecast and notes omitted periods', () => {
       const output = {
         location: {

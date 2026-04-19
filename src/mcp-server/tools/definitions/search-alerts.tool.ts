@@ -6,7 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
-import { formatTimestamp } from '../format-utils.js';
+import { formatTimestamp, zoneCodeToTimeZone } from '../format-utils.js';
 
 const MAX_ALERTS = 25;
 const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
@@ -206,8 +206,16 @@ export const searchAlertsTool = tool('nws_search_alerts', {
           urgency: z.string().describe('Urgency level'),
           certainty: z.string().describe('Certainty level'),
           areaDesc: z.string().describe('Affected area description'),
-          onset: z.string().nullable().describe('Expected onset (ISO 8601)'),
-          expires: z.string().nullable().describe('Expiration time (ISO 8601)'),
+          onset: z
+            .string()
+            .nullable()
+            .describe('Expected hazard onset (ISO 8601). When the hazard is expected to begin.'),
+          expires: z
+            .string()
+            .nullable()
+            .describe(
+              'Message expiration (ISO 8601) — when NWS will issue a superseding statement. NOT when the hazard ends; the hazard window is described in the headline.',
+            ),
           senderName: z.string().describe('Issuing office'),
           affectedZones: z.array(z.string()).describe('Affected zone codes'),
         }),
@@ -283,6 +291,11 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     const lines = [`${heading}\n**Filters:** ${result.filters}\n`];
 
     for (const a of result.alerts) {
+      // Derive a representative IANA zone from the first affected zone code so
+      // alert timestamps render with named US abbreviations (PDT/CDT/EDT) like
+      // forecast/observations, rather than falling back to numeric UTC offsets.
+      const alertTimeZone = zoneCodeToTimeZone(a.affectedZones[0]);
+
       lines.push(`### ${a.event}`);
       lines.push(`_ID: ${a.id}_`);
       if (a.headline) lines.push(`**${a.headline}**`);
@@ -290,8 +303,10 @@ export const searchAlertsTool = tool('nws_search_alerts', {
         `**Severity:** ${a.severity} | **Urgency:** ${a.urgency} | **Certainty:** ${a.certainty}`,
       );
       lines.push(`**Area:** ${a.areaDesc}`);
-      if (a.onset) lines.push(`**Onset:** ${formatTimestamp(a.onset)}`);
-      if (a.expires) lines.push(`**Expires:** ${formatTimestamp(a.expires)}`);
+      if (a.onset) lines.push(`**Hazard onset:** ${formatTimestamp(a.onset, alertTimeZone)}`);
+      if (a.expires) {
+        lines.push(`**Message valid until:** ${formatTimestamp(a.expires, alertTimeZone)}`);
+      }
       lines.push(`**From:** ${a.senderName}`);
       if (a.affectedZones.length > 0) {
         lines.push(`**Zones:** ${a.affectedZones.join(', ')}`);

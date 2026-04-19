@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.4] - 2026-04-19
+
+### Fixed
+
+- **Hourly forecast time-zone alignment** ([#6](https://github.com/cyanheads/nws-weather-mcp-server/issues/6)) — Hourly period headers in `nws_get_forecast` now render in the forecast location's IANA zone, matching the time range below them. Previously the header label fell back to the host TZ (UTC in containers) while the range used the resolved local zone, so the two disagreed by the UTC↔local delta. Default 12-hour forecast was unaffected (uses NWS-supplied named periods).
+- **Misleading alert label** ([#7](https://github.com/cyanheads/nws-weather-mcp-server/issues/7)) — Renamed the alert `Expires` label to `Message valid until` and `Onset` to `Hazard onset` in `nws_search_alerts` output. The CAP `expires` field is the message TTL (when NWS will issue a superseding statement), not the hazard end — flat "Expires" misled readers when the message refreshed before the hazard began. Schema `.describe()` text updated to reflect the correct semantics.
+
+### Changed
+
+- **Consistent alert time-zone format** ([#8](https://github.com/cyanheads/nws-weather-mcp-server/issues/8)) — `nws_search_alerts` now renders timestamps with named US zone abbreviations (PDT/CDT/EDT/etc.) like `nws_get_forecast` and `nws_get_observations`, instead of falling back to numeric `UTC{±HH:MM}` offsets. New `zoneCodeToTimeZone()` helper derives a representative IANA zone from the first affected zone code; falls back to numeric offsets when no zones are present (e.g., open-ocean marine warnings).
+- **Release metadata** — Bumped package, manifest, README badge, and agent-protocol versions to `0.5.4`.
+
 ## [0.5.3] - 2026-04-19
 
 ### Changed

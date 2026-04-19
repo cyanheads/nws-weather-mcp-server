@@ -249,6 +249,129 @@ describe('nws_search_alerts', () => {
       expect(text).toContain('**Zones:** WAZ558, WAC033');
     });
 
+    it('labels expires as "Message valid until" rather than "Expires" (regression: issue #7)', () => {
+      // The CAP `expires` field is the message TTL, not the hazard end. Render
+      // it with a label that reflects that — flat "Expires" misleads readers
+      // when the message refreshes before the hazard begins.
+      const blocks = searchAlertsTool.format!({
+        count: 1,
+        shown: 1,
+        filters: 'event=Flood Watch',
+        alerts: [
+          {
+            id: 'urn:test:1',
+            event: 'Flood Watch',
+            headline: 'Flood Watch in effect from Monday morning through Tuesday afternoon',
+            description: 'Heavy rain expected.',
+            instruction: null,
+            severity: 'Moderate',
+            urgency: 'Future',
+            certainty: 'Possible',
+            areaDesc: 'Green Lake WI',
+            onset: '2026-04-20T07:00:00-05:00', // Mon 7 AM CDT — hazard begins later
+            expires: '2026-04-19T18:45:00-05:00', // Sun 6:45 PM CDT — message refreshes earlier
+            senderName: 'NWS Milwaukee/Sullivan WI',
+            affectedZones: ['WIZ046'],
+          },
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      expect(text).toContain('**Message valid until:**');
+      expect(text).toContain('**Hazard onset:**');
+      // Old, misleading labels should be gone
+      expect(text).not.toMatch(/^\*\*Expires:\*\*/m);
+      expect(text).not.toMatch(/^\*\*Onset:\*\*/m);
+    });
+
+    it('renders alert times with a named US zone when affectedZones are present (regression: issue #8)', () => {
+      const blocks = searchAlertsTool.format!({
+        count: 1,
+        shown: 1,
+        filters: 'area=WA',
+        alerts: [
+          {
+            id: 'urn:test:2',
+            event: 'Wind Advisory',
+            headline: 'Wind Advisory in effect',
+            description: 'Strong winds.',
+            instruction: null,
+            severity: 'Moderate',
+            urgency: 'Expected',
+            certainty: 'Likely',
+            areaDesc: 'King County',
+            onset: '2026-07-04T15:00:00Z', // 8:00 AM PDT
+            expires: '2026-07-04T20:00:00Z', // 1:00 PM PDT
+            senderName: 'NWS Seattle WA',
+            affectedZones: ['WAZ558'],
+          },
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      expect(text).toContain('PDT');
+      // The numeric-offset fallback should NOT be used when a state-derived TZ exists
+      expect(text).not.toContain('UTC-07:00');
+      expect(text).not.toContain('UTC-08:00');
+    });
+
+    it('falls back to numeric offset when affectedZones cannot be resolved to a TZ', () => {
+      const blocks = searchAlertsTool.format!({
+        count: 1,
+        shown: 1,
+        filters: 'event=Marine Warning',
+        alerts: [
+          {
+            id: 'urn:test:3',
+            event: 'Special Marine Warning',
+            headline: 'Marine warning',
+            description: 'Hazardous seas.',
+            instruction: null,
+            severity: 'Moderate',
+            urgency: 'Expected',
+            certainty: 'Likely',
+            areaDesc: 'Open ocean',
+            onset: '2026-04-19T15:00:00-04:00',
+            expires: '2026-04-19T21:00:00-04:00',
+            senderName: 'NWS Marine',
+            affectedZones: [], // no zones → no derivable TZ
+          },
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      // No state prefix to derive from → fall back to numeric offset
+      expect(text).toContain('UTC-04:00');
+    });
+
+    it('uses CDT for central-zone state codes', () => {
+      const blocks = searchAlertsTool.format!({
+        count: 1,
+        shown: 1,
+        filters: 'area=OK',
+        alerts: [
+          {
+            id: 'urn:test:4',
+            event: 'Tornado Warning',
+            headline: 'Tornado',
+            description: 'Take shelter.',
+            instruction: null,
+            severity: 'Extreme',
+            urgency: 'Immediate',
+            certainty: 'Observed',
+            areaDesc: 'Cleveland County',
+            onset: '2026-07-04T19:00:00Z', // 2:00 PM CDT
+            expires: '2026-07-04T20:00:00Z',
+            senderName: 'NWS Norman OK',
+            affectedZones: ['OKC027'],
+          },
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('CDT');
+      expect(text).not.toContain('UTC-');
+    });
+
     it('shows truncation notice when capped', () => {
       const blocks = searchAlertsTool.format!({
         count: 50,

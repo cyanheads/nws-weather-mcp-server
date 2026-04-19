@@ -7,8 +7,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp, fToC } from '../format-utils.js';
 
-/** Derive a period label from startTime when name is empty (hourly periods). */
-function periodLabel(name: string, startTime: string): string {
+/**
+ * Derive a period label from startTime when name is empty (hourly periods).
+ * Renders in the forecast location's IANA zone so headers agree with the time
+ * range rendered immediately below them.
+ */
+function periodLabel(name: string, startTime: string, timeZone: string): string {
   if (name) return name;
   const d = new Date(startTime);
   if (Number.isNaN(d.getTime())) return startTime;
@@ -16,6 +20,7 @@ function periodLabel(name: string, startTime: string): string {
     weekday: 'short',
     hour: 'numeric',
     minute: '2-digit',
+    timeZone,
   });
 }
 
@@ -129,7 +134,7 @@ export const getForecastTool = tool('nws_get_forecast', {
           : '';
 
       const timeRange = `${formatTimestamp(p.startTime, loc.timeZone)} → ${formatTimestamp(p.endTime, loc.timeZone)}`;
-      lines.push(`### ${periodLabel(p.name, p.startTime)}`);
+      lines.push(`### ${periodLabel(p.name, p.startTime, loc.timeZone)}`);
       lines.push(`_${timeRange}_`);
       const tempDual =
         p.temperatureUnit === 'F'

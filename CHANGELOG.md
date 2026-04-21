@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.5] - 2026-04-20
+
+### Fixed
+
+- **`format-parity` lint regressions** — Framework 0.5.2 introduced a lint rule that verifies every field in a tool's `output` schema is actually rendered by `format()`. Six fields across three tools were caught and fixed:
+  - `nws_get_forecast`: `periods[].shortForecast` now appears in the period header (`### Today — Mostly Sunny`) instead of only when `detailedForecast` was empty; `periods[].temperatureUnit` is now rendered directly in the temperature string (both F and C branches).
+  - `nws_get_observations`: `timeZone` is now shown alongside the observation timestamp (`Observed: Sun, Apr 20 at 5:00 AM PDT (America/Los_Angeles)`); `barometricPressure` and `visibility` now include their raw Pa/m values next to the converted inHg/hPa and mi/km readouts.
+  - `nws_search_alerts`: `shown` is now always rendered in the heading (`## N Active Alerts — M shown`), not only when the result list was truncated.
+
+### Changed
+
+- **Framework upgrade** — `@cyanheads/mcp-ts-core` `^0.3.5` → `^0.5.3`. Notable upstream changes: `format-parity` lint rule (0.5.2), `parseEnvConfig` helper (0.5.0), framework-level `ZodError` → `ConfigurationError` banner on startup (0.5.0), prompt OTel symmetry (0.4.1), `createMockLogger`/`createInMemoryStorage`/custom Vitest matchers (0.4.0), logger crash fix for Node 25+ `AbortSignal` (0.3.7), and cleaner tool-error content without the doubled `Error:` prefix (0.3.8).
+- **Adopted `parseEnvConfig`** — `src/config/server-config.ts` now uses `parseEnvConfig(schema, { userAgent: 'NWS_USER_AGENT' })` instead of `schema.parse(...)`. Validation errors now name the actual env var (`NWS_USER_AGENT`) rather than the internal Zod path (`userAgent`).
+- **Synced project skills from framework 0.5.3** — Updated `add-tool`, `api-config`, `design-mcp-server`, `field-test`, `maintenance`, `polish-docs-meta`, and `setup` skills to their latest package versions; mirrored into `.claude/skills/` along with `add-app-tool`.
+- **`CLAUDE.md` modernization** — Rewrote the `format()` guidance around dual-surface parity (Claude Code reads `structuredContent`, Claude Desktop reads `content[]`; both must carry the same data, now enforced at lint time) and updated the server-config example to use `parseEnvConfig`.
+- **Lockfile refresh** — Deleted and regenerated `bun.lock` from a clean slate; pulled a patched transitive `hono` version that closes a moderate GHSA advisory (`bun audit` now reports `No vulnerabilities found`).
+- **Release metadata** — Bumped package, manifest, README badge, and agent-protocol versions to `0.5.5`.
+
 ## [0.5.4] - 2026-04-19
 
 ### Fixed

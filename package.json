@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/nws-weather-mcp-server",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Real-time US weather data via the National Weather Service API. Forecasts, alerts, and observations with zero auth.",
   "type": "module",
   "main": "dist/index.js",
@@ -65,7 +65,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.3.5",
+    "@cyanheads/mcp-ts-core": "^0.5.3",
     "@opentelemetry/api": "^1.9.1",
     "pino-pretty": "^13.1.3"
   },

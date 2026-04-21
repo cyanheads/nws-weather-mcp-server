@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.5.4
+**Version:** 0.5.5
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -97,8 +97,10 @@ export const findStationsTool = tool('nws_find_stations', {
     return { stations: result.stations.map((s) => ({ /* ... */ })) };
   },
 
-  // format() populates content[] — the only field most LLM clients forward to
-  // the model. Render all data the LLM needs, not just a count or title.
+  // format() populates content[] — the markdown twin of structuredContent.
+  // Different clients read different surfaces (Claude Code → structuredContent,
+  // Claude Desktop → content[]); both must carry the same data.
+  // Enforced at lint time: every field in `output` must appear in the rendered text.
   format: (result) => {
     const lines = [`## ${result.stations.length} Nearby Stations\n`];
     lines.push('| Station | Name | Distance | Bearing |');
@@ -143,6 +145,8 @@ export const alertTypesResource = resource('nws://alert-types', {
 
 ```ts
 // src/config/server-config.ts — lazy-parsed, separate from framework config
+import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
+
 const ServerConfigSchema = z.object({
   userAgent: z
     .string()
@@ -151,8 +155,8 @@ const ServerConfigSchema = z.object({
 });
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
-  _config ??= ServerConfigSchema.parse({
-    userAgent: process.env.NWS_USER_AGENT,
+  _config ??= parseEnvConfig(ServerConfigSchema, {
+    userAgent: 'NWS_USER_AGENT',
   });
   return _config;
 }
@@ -319,7 +323,7 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 - [ ] JSDoc `@fileoverview` + `@module` on every file
 - [ ] `ctx.log` for logging, `ctx.state` for storage
 - [ ] Handlers throw on failure — error factories or plain `Error`, no try/catch
-- [ ] `format()` renders all data the LLM needs — `content[]` is the only field most clients forward to the model
+- [ ] `format()` renders all data the LLM needs — different clients forward different surfaces (Claude Code → `structuredContent`, Claude Desktop → `content[]`); both must carry the same data (enforced at lint time)
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
 - [ ] `bun run devcheck` passes

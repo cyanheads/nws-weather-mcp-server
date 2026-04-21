@@ -158,9 +158,10 @@ export const getObservationsTool = tool('nws_get_observations', {
   },
 
   format: (result) => {
+    const zoneSuffix = result.timeZone ? ` (${result.timeZone})` : '';
     const lines = [
       `## Current Conditions — ${result.stationName} (${result.stationId})`,
-      `**${result.textDescription}** | Observed: ${formatTimestamp(result.timestamp, result.timeZone)}`,
+      `**${result.textDescription}** | Observed: ${formatTimestamp(result.timestamp, result.timeZone)}${zoneSuffix}`,
       '',
     ];
 
@@ -177,12 +178,16 @@ export const getObservationsTool = tool('nws_get_observations', {
     lines.push(`**Wind:** ${formatWind(result.windSpeed, result.windDirection, result.windGust)}`);
 
     if (result.barometricPressure != null) {
-      const pressure = `${paToInHg(result.barometricPressure)} inHg (${Math.round(result.barometricPressure / 100)} hPa)`;
+      const pa = Math.round(result.barometricPressure);
+      const pressure = `${paToInHg(result.barometricPressure)} inHg (${Math.round(result.barometricPressure / 100)} hPa, ${pa} Pa)`;
       lines.push(`**Pressure:** ${pressure}`);
     }
 
     if (result.visibility != null) {
-      lines.push(`**Visibility:** ${mToMi(result.visibility)} mi (${mToKm(result.visibility)} km)`);
+      const m = Math.round(result.visibility);
+      lines.push(
+        `**Visibility:** ${mToMi(result.visibility)} mi (${mToKm(result.visibility)} km, ${m} m)`,
+      );
     }
 
     const heat = formatTemp(result.heatIndex);

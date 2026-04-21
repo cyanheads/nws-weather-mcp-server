@@ -284,9 +284,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     }
 
     const truncated = result.shown < result.count;
-    const heading = truncated
-      ? `## Showing ${result.shown} of ${result.count} Active Alerts`
-      : `## ${result.count} Active Alert${result.count > 1 ? 's' : ''}`;
+    const heading = `## ${result.count} Active Alert${result.count === 1 ? '' : 's'} — ${result.shown} shown`;
 
     const lines = [`${heading}\n**Filters:** ${result.filters}\n`];
 

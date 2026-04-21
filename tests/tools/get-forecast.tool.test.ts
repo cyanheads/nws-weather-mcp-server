@@ -191,7 +191,7 @@ describe('nws_get_forecast', () => {
       // Header should be "Sun 8:00 AM" (PDT), not "Sun 3:00 PM" (UTC) or
       // anything from the host TZ. Match the header line precisely so it's
       // resilient to any unrelated formatter changes.
-      expect(text).toMatch(/^### Sun 8:00 AM$/m);
+      expect(text).toMatch(/^### Sun 8:00 AM — /m);
       expect(text).not.toMatch(/^### Sun 3:00 PM$/m);
     });
 

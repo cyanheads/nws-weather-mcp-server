@@ -134,19 +134,17 @@ export const getForecastTool = tool('nws_get_forecast', {
           : '';
 
       const timeRange = `${formatTimestamp(p.startTime, loc.timeZone)} → ${formatTimestamp(p.endTime, loc.timeZone)}`;
-      lines.push(`### ${periodLabel(p.name, p.startTime, loc.timeZone)}`);
+      lines.push(`### ${periodLabel(p.name, p.startTime, loc.timeZone)} — ${p.shortForecast}`);
       lines.push(`_${timeRange}_`);
       const tempDual =
         p.temperatureUnit === 'F'
-          ? `${p.temperature}°F (${fToC(p.temperature)}°C)`
-          : `${cToF(p.temperature)}°F (${p.temperature}°C)`;
+          ? `${p.temperature}°${p.temperatureUnit} (${fToC(p.temperature)}°C)`
+          : `${cToF(p.temperature)}°F (${p.temperature}°${p.temperatureUnit})`;
       lines.push(
         `**${tempDual}** | **Wind:** ${p.windSpeed} ${p.windDirection}${precip}${humidity}${dew}`,
       );
       if (p.detailedForecast) {
         lines.push(p.detailedForecast);
-      } else {
-        lines.push(p.shortForecast);
       }
       lines.push('');
     }

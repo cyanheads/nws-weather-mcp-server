@@ -4,6 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
+import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
   userAgent: z
@@ -17,8 +18,8 @@ export type ServerConfig = z.infer<typeof ServerConfigSchema>;
 let _config: ServerConfig | undefined;
 
 export function getServerConfig(): ServerConfig {
-  _config ??= ServerConfigSchema.parse({
-    userAgent: process.env.NWS_USER_AGENT,
+  _config ??= parseEnvConfig(ServerConfigSchema, {
+    userAgent: 'NWS_USER_AGENT',
   });
   return _config;
 }

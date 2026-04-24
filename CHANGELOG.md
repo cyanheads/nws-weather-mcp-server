@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.6] - 2026-04-24
+
+### Changed
+
+- **Framework upgrade** — `@cyanheads/mcp-ts-core` `^0.5.3` → `^0.7.0`. Notable upstream changes: SEP-1649 landing page and Server Card at `/.well-known/mcp.json` (0.6.0), `MCP_PUBLIC_URL` override for TLS-terminating reverse proxies (0.6.6), recursive `describe-on-fields` linter covering nested objects and array elements (0.6.16), per-server notifier race fix in the HTTP transport (0.6.17), flattened `ZodError` messages with structured `issues` on `McpError.data` (0.7.0), locale-aware `format-parity` (0.7.0), and new devcheck `Docs Sync` / `Skills Sync` / `Changelog Sync` steps.
+- **Adopted the recursive `describe-on-fields` rule** — Added a single `.describe()` on the array element object in four tools where 0.6.16's deeper walk surfaced a gap: `nws_find_stations.stations[]`, `nws_get_forecast.periods[]`, `nws_search_alerts.alerts[]`, and `nws_get_observations.cloudLayers[]`. Pure schema metadata — no runtime behavior change.
+- **Modernized NWS fetch abort/timeout** — Replaced `fetchNwsResponse`'s manual `AbortController` + `setTimeout` + `ctx.signal.addEventListener('abort', ...)` + `finally { clearTimeout(); removeEventListener() }` pattern with `AbortSignal.any([AbortSignal.timeout(REQUEST_TIMEOUT_MS), ctx.signal])`. Same observable behavior (timeout surfaces as `TimeoutError` DOMException, external abort re-throws untouched), ~17 lines lighter, declarative signal composition. Available in Node 20.3+ / Bun — the project's engines already require Node ≥22.
+- **Synced project skills and scripts from framework 0.7.0** — Updated 15 existing skills (`add-app-tool`, `add-prompt`, `add-resource`, `add-service`, `add-tool`, `api-context`, `api-services`, `api-utils`, `design-mcp-server`, `field-test`, `maintenance`, `polish-docs-meta`, `report-issue-framework`, `report-issue-local`, `setup`) and added three new ones (`api-linter` 1.1, `release-and-publish` 2.1, `security-pass` 1.1). Added three framework scripts (`build-changelog.ts`, `check-docs-sync.ts`, `check-skills-sync.ts`) and synced `devcheck.ts` + `tree.ts`. Mirrored into `.claude/skills/` and `.agents/skills/` per the `maintenance` skill's Phase B.
+- **`CLAUDE.md` / `AGENTS.md`** — Added `security-pass` to "What's Next?" (new step 8) and the skills table. Updated the agent-skill-directory note to reference the `maintenance` skill's Phase B auto-sync. Files kept byte-identical per the new `Docs Sync` devcheck step.
+- **GitHub issue templates** — Added secondary-label guidance (`regression`, `performance`, `security`, `breaking-change`) and a commented-out `# assignees:` hint, per framework 0.7.0.
+- **Release metadata** — Bumped package, manifest, README badge, and agent-protocol versions to `0.5.6`.
+
 ## [0.5.5] - 2026-04-20
 
 ### Fixed

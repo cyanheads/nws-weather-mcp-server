@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/nws-weather-mcp-server",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Real-time US weather data via the National Weather Service API. Forecasts, alerts, and observations with zero auth.",
   "type": "module",
   "main": "dist/index.js",

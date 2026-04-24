@@ -109,10 +109,12 @@ export const getObservationsTool = tool('nws_get_observations', {
     windChill: z.number().nullable().describe('Wind chill in Celsius'),
     cloudLayers: z
       .array(
-        z.object({
-          amount: z.string().describe('Cloud cover (e.g., "FEW", "SCT", "BKN", "OVC")'),
-          base: z.number().nullable().describe('Cloud base height in meters'),
-        }),
+        z
+          .object({
+            amount: z.string().describe('Cloud cover (e.g., "FEW", "SCT", "BKN", "OVC")'),
+            base: z.number().nullable().describe('Cloud base height in meters'),
+          })
+          .describe('Single cloud layer with cover amount and base height'),
       )
       .describe('Cloud layer information'),
   }),

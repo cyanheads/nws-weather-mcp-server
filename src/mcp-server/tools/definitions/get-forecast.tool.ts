@@ -62,20 +62,22 @@ export const getForecastTool = tool('nws_get_forecast', {
     generatedAt: z.string().describe('When the forecast was generated (ISO 8601)'),
     periods: z
       .array(
-        z.object({
-          name: z.string().describe('Period name (e.g., "Today", "Tonight") or hour label'),
-          startTime: z.string().describe('Period start (ISO 8601)'),
-          endTime: z.string().describe('Period end (ISO 8601)'),
-          temperature: z.number().describe('Temperature value'),
-          temperatureUnit: z.string().describe('Temperature unit (F or C)'),
-          windSpeed: z.string().describe('Wind speed (e.g., "10 mph")'),
-          windDirection: z.string().describe('Wind direction (e.g., "NW")'),
-          shortForecast: z.string().describe('Brief forecast (e.g., "Mostly Sunny")'),
-          detailedForecast: z.string().describe('Full narrative forecast'),
-          precipChance: z.number().nullable().describe('Probability of precipitation (%)'),
-          dewpoint: z.number().nullable().describe('Dewpoint in Celsius (hourly only)'),
-          relativeHumidity: z.number().nullable().describe('Relative humidity % (hourly only)'),
-        }),
+        z
+          .object({
+            name: z.string().describe('Period name (e.g., "Today", "Tonight") or hour label'),
+            startTime: z.string().describe('Period start (ISO 8601)'),
+            endTime: z.string().describe('Period end (ISO 8601)'),
+            temperature: z.number().describe('Temperature value'),
+            temperatureUnit: z.string().describe('Temperature unit (F or C)'),
+            windSpeed: z.string().describe('Wind speed (e.g., "10 mph")'),
+            windDirection: z.string().describe('Wind direction (e.g., "NW")'),
+            shortForecast: z.string().describe('Brief forecast (e.g., "Mostly Sunny")'),
+            detailedForecast: z.string().describe('Full narrative forecast'),
+            precipChance: z.number().nullable().describe('Probability of precipitation (%)'),
+            dewpoint: z.number().nullable().describe('Dewpoint in Celsius (hourly only)'),
+            relativeHumidity: z.number().nullable().describe('Relative humidity % (hourly only)'),
+          })
+          .describe('Single forecast period with time range, conditions, and narrative'),
       )
       .describe('Forecast periods'),
   }),

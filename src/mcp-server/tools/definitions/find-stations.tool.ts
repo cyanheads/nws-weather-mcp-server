@@ -20,16 +20,18 @@ export const findStationsTool = tool('nws_find_stations', {
   output: z.object({
     stations: z
       .array(
-        z.object({
-          stationId: z.string().describe('Station identifier (e.g., "KSEA")'),
-          name: z.string().describe('Station name'),
-          distance: z.number().describe('Distance from query point in km'),
-          bearing: z.string().describe('Compass bearing from query point (e.g., "NW")'),
-          elevation: z.number().nullable().describe('Elevation in meters'),
-          timeZone: z.string().describe('IANA time zone'),
-          county: z.string().describe('County zone code (e.g., "WAC033")'),
-          forecastZone: z.string().describe('Forecast zone code (e.g., "WAZ315")'),
-        }),
+        z
+          .object({
+            stationId: z.string().describe('Station identifier (e.g., "KSEA")'),
+            name: z.string().describe('Station name'),
+            distance: z.number().describe('Distance from query point in km'),
+            bearing: z.string().describe('Compass bearing from query point (e.g., "NW")'),
+            elevation: z.number().nullable().describe('Elevation in meters'),
+            timeZone: z.string().describe('IANA time zone'),
+            county: z.string().describe('County zone code (e.g., "WAC033")'),
+            forecastZone: z.string().describe('Forecast zone code (e.g., "WAZ315")'),
+          })
+          .describe('Observation station record with identity, location, and zone codes'),
       )
       .describe('Nearby stations sorted by distance'),
   }),

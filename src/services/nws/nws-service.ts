@@ -110,20 +110,7 @@ function isRetryableNwsError(error: unknown): boolean {
 
 async function fetchNwsResponse(url: string, ctx: Context): Promise<Response> {
   const { userAgent } = getServerConfig();
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort(new DOMException('Timed out', 'TimeoutError'));
-  }, REQUEST_TIMEOUT_MS);
-
-  const onAbort = () => {
-    controller.abort(ctx.signal.reason);
-  };
-  if (ctx.signal.aborted) {
-    controller.abort(ctx.signal.reason);
-  } else {
-    ctx.signal.addEventListener('abort', onAbort, { once: true });
-  }
+  const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_TIMEOUT_MS), ctx.signal]);
 
   try {
     return await fetch(url, {
@@ -131,12 +118,10 @@ async function fetchNwsResponse(url: string, ctx: Context): Promise<Response> {
         'User-Agent': userAgent,
         Accept: 'application/geo+json',
       },
-      signal: controller.signal,
+      signal,
     });
   } catch (error) {
-    if (ctx.signal.aborted) {
-      throw error;
-    }
+    if (ctx.signal.aborted) throw error;
 
     const name = error instanceof Error ? error.name : '';
     if (name === 'AbortError' || name === 'TimeoutError') {
@@ -148,9 +133,6 @@ async function fetchNwsResponse(url: string, ctx: Context): Promise<Response> {
     }
 
     throw error;
-  } finally {
-    clearTimeout(timeoutId);
-    ctx.signal.removeEventListener('abort', onAbort);
   }
 }
 

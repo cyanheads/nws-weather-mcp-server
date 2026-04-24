@@ -196,29 +196,31 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     filters: z.string().describe('Summary of applied search filters'),
     alerts: z
       .array(
-        z.object({
-          id: z.string().describe('Alert ID'),
-          event: z.string().describe('Event type (e.g., "Tornado Warning")'),
-          headline: z.string().nullable().describe('Alert headline'),
-          description: z.string().describe('Full alert description'),
-          instruction: z.string().nullable().describe('Recommended actions'),
-          severity: z.string().describe('Severity level'),
-          urgency: z.string().describe('Urgency level'),
-          certainty: z.string().describe('Certainty level'),
-          areaDesc: z.string().describe('Affected area description'),
-          onset: z
-            .string()
-            .nullable()
-            .describe('Expected hazard onset (ISO 8601). When the hazard is expected to begin.'),
-          expires: z
-            .string()
-            .nullable()
-            .describe(
-              'Message expiration (ISO 8601) — when NWS will issue a superseding statement. NOT when the hazard ends; the hazard window is described in the headline.',
-            ),
-          senderName: z.string().describe('Issuing office'),
-          affectedZones: z.array(z.string()).describe('Affected zone codes'),
-        }),
+        z
+          .object({
+            id: z.string().describe('Alert ID'),
+            event: z.string().describe('Event type (e.g., "Tornado Warning")'),
+            headline: z.string().nullable().describe('Alert headline'),
+            description: z.string().describe('Full alert description'),
+            instruction: z.string().nullable().describe('Recommended actions'),
+            severity: z.string().describe('Severity level'),
+            urgency: z.string().describe('Urgency level'),
+            certainty: z.string().describe('Certainty level'),
+            areaDesc: z.string().describe('Affected area description'),
+            onset: z
+              .string()
+              .nullable()
+              .describe('Expected hazard onset (ISO 8601). When the hazard is expected to begin.'),
+            expires: z
+              .string()
+              .nullable()
+              .describe(
+                'Message expiration (ISO 8601) — when NWS will issue a superseding statement. NOT when the hazard ends; the hazard window is described in the headline.',
+              ),
+            senderName: z.string().describe('Issuing office'),
+            affectedZones: z.array(z.string()).describe('Affected zone codes'),
+          })
+          .describe('Single active alert with event, severity, area, and timing'),
       )
       .describe('Matching alerts (capped at 25)'),
   }),

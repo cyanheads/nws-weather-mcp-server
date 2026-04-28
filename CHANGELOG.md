@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.7] - 2026-04-27
+
+### Changed
+
+- **Framework upgrade** — `@cyanheads/mcp-ts-core` `^0.7.0` → `^0.7.6`. Six patch releases pulled in, all `breaking: false`. Notable upstream changes: HTTP `Origin` guard now fails closed to loopback when `MCP_ALLOWED_ORIGINS` is unset (0.7.1), landing-page `requireAuth` now validates the bearer token through the configured strategy (0.7.1), default request logs no longer persist raw caller payloads (0.7.1), new `Framework Antipatterns` devcheck step guarding three SDK-coupling shortcuts (0.7.2), `format-parity` numeric normalization tightened with a context-aware thousands-group pattern that rejects digit-shift transforms (0.7.3), `describe-on-fields` linter exempts `z.literal` union variants for the form-client blank-tolerance pattern (0.7.4), `init` CLI now derives the scaffold script list from `package.json` `files:` to prevent drift (0.7.5), `field-test` and `design-mcp-server` skills now audit `.describe()` text for implementation-detail/meta-coaching/consumer-aware leaks (0.7.5), and `maintenance` Phase C now enumerates the installed `scripts/` directory rather than a hardcoded list so newly-shipped framework scripts are picked up automatically (0.7.6). No source-level adoption needed in this server — all changes are either automatic, framework-internal, or already aligned with existing patterns.
+- **Synced project skills and scripts from framework 0.7.6** — Updated four skills via the `maintenance` skill's Phase A: `api-linter` 1.1 → 1.2 (literal-variant exemption table row), `maintenance` 1.5 → 1.7 (Phase C enumeration, new "New/changed skills available" summary bullet, tool-agnostic git references), `release-and-publish` 2.1 → 2.2 (tool-agnostic git references throughout), `setup` 1.5 → 1.6 (tool-agnostic git init reference). Mirrored the four into `.claude/skills/` and `.agents/skills/` per Phase B (preserving the local `.claude/skills/code-simplifier`). Phase C added `scripts/check-framework-antipatterns.ts` and updated `scripts/devcheck.ts` to wire it into the check suite.
+- **`package.json`** — Added a bare `start` script (`node dist/index.js`) per the framework's 0.7.6 template change, so external MCP runners and hosted environments that assume the npm-canonical `start` work out of the box. The new script defers to `.env` for transport selection (no inline `MCP_TRANSPORT_TYPE` override). The existing `start:stdio` and `start:http` variants are unchanged.
+- **`.env.example`** — Added `MCP_PUBLIC_URL` (commented-out) for HTTP deployments behind a TLS-terminating reverse proxy, matching the framework template.
+- **`CLAUDE.md` / `AGENTS.md`** — Extended the form-client safety checklist line with the framework 0.7.4 union+literal alternative (`z.union([z.literal(''), z.string().regex(...).describe(...)])`) for cases where regex/length constraints matter enough to surface in JSON Schema. Files kept byte-identical per the `Docs Sync` devcheck step.
+- **Release metadata** — Bumped package, server descriptor, README badge, and agent-protocol versions to `0.5.7`.
+
 ## [0.5.6] - 2026-04-24
 
 ### Changed

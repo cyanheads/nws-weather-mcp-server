@@ -4,12 +4,21 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 
 export const findStationsTool = tool('nws_find_stations', {
   description:
     'Find weather observation stations near a location. Returns stations sorted by proximity with distance and bearing. Use to discover station IDs for nws_get_observations.',
   annotations: { readOnlyHint: true },
+  errors: [
+    {
+      reason: 'out_of_scope',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Coordinates fall outside US National Weather Service coverage',
+      recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
+    },
+  ],
 
   input: z.object({
     latitude: z.number().min(-90).max(90).describe('Center latitude for proximity search.'),

@@ -259,7 +259,7 @@ afterEach(() => {
 });
 
 describe('HTTP JSON-RPC error contracts', () => {
-  it('returns InvalidParams for missing nws_get_observations input over HTTP', async () => {
+  it('returns ValidationError for missing nws_get_observations input over HTTP', async () => {
     const mockFetch = vi.fn<typeof fetch>();
     const server = await startHttpTestServer(mockFetch);
 
@@ -283,7 +283,12 @@ describe('HTTP JSON-RPC error contracts', () => {
       expect(response.statusCode).toBe(200);
       expect(body.result).toMatchObject({
         isError: true,
-        _meta: { error: { code: JsonRpcErrorCode.InvalidParams } },
+        structuredContent: {
+          error: {
+            code: JsonRpcErrorCode.ValidationError,
+            data: { reason: 'missing_input' },
+          },
+        },
       });
       expect(mockFetch).not.toHaveBeenCalled();
     } finally {
@@ -319,7 +324,7 @@ describe('HTTP JSON-RPC error contracts', () => {
       expect(response.statusCode).toBe(200);
       expect(body.result).toMatchObject({
         isError: true,
-        _meta: { error: { code: JsonRpcErrorCode.ValidationError } },
+        structuredContent: { error: { code: JsonRpcErrorCode.ValidationError } },
       });
     } finally {
       await server.close();
@@ -362,7 +367,7 @@ describe('HTTP JSON-RPC error contracts', () => {
       expect(response.statusCode).toBe(200);
       expect(body.result).toMatchObject({
         isError: true,
-        _meta: { error: { code: JsonRpcErrorCode.NotFound } },
+        structuredContent: { error: { code: JsonRpcErrorCode.NotFound } },
       });
     } finally {
       await server.close();
@@ -438,7 +443,7 @@ describe('HTTP JSON-RPC error contracts', () => {
       expect(response.statusCode).toBe(200);
       expect(body.result).toMatchObject({
         isError: true,
-        _meta: { error: { code: JsonRpcErrorCode.ValidationError } },
+        structuredContent: { error: { code: JsonRpcErrorCode.ValidationError } },
       });
     } finally {
       await server.close();
@@ -485,7 +490,7 @@ describe('HTTP JSON-RPC error contracts', () => {
       expect(response.statusCode).toBe(200);
       expect(body.result).toMatchObject({
         isError: true,
-        _meta: { error: { code: JsonRpcErrorCode.NotFound } },
+        structuredContent: { error: { code: JsonRpcErrorCode.NotFound } },
       });
     } finally {
       await server.close();

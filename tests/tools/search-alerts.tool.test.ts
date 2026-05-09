@@ -75,20 +75,26 @@ describe('nws_search_alerts', () => {
   });
 
   it('validates point format', async () => {
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({ point: '999,999' });
     const result = searchAlertsTool.handler(input, ctx);
 
-    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
+    await expect(result).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: { reason: 'invalid_point' },
+    });
     await expect(result).rejects.toThrow('Invalid point');
   });
 
   it('validates area code', async () => {
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({ area: 'zz' });
     const result = searchAlertsTool.handler(input, ctx);
 
-    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
+    await expect(result).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: { reason: 'invalid_area_code' },
+    });
     await expect(result).rejects.toThrow('Invalid area code');
   });
 
@@ -111,12 +117,15 @@ describe('nws_search_alerts', () => {
   });
 
   it('rejects mutually exclusive area and point filters before calling the service', async () => {
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({ area: 'TX', point: '32.7767,-96.7970' });
     const result = searchAlertsTool.handler(input, ctx);
 
-    await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.InvalidParams });
-    await expect(result).rejects.toThrow('area, point, and zone are mutually exclusive');
+    await expect(result).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: { reason: 'mutually_exclusive_filters' },
+    });
+    await expect(result).rejects.toThrow('only one of area, point, or zone is allowed');
     expect(mockSearchAlerts).not.toHaveBeenCalled();
   });
 

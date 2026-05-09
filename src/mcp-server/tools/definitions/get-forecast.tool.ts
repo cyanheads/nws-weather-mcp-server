@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp, fToC } from '../format-utils.js';
 
@@ -28,6 +29,14 @@ export const getForecastTool = tool('nws_get_forecast', {
   description:
     'Get the weather forecast for a US location. Returns either named 12-hour periods (default) or hourly breakdowns. Internally resolves coordinates to the NWS grid.',
   annotations: { readOnlyHint: true },
+  errors: [
+    {
+      reason: 'out_of_scope',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Coordinates fall outside US National Weather Service coverage',
+      recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
+    },
+  ],
 
   input: z.object({
     latitude: z

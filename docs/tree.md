@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-04-19 16:34:31
+Generated on: 2026-05-09 10:15:17
 
 ```text
 nws-weather-mcp-server/
@@ -18,10 +18,15 @@ nws-weather-mcp-server/
 ├── docs/
 │   └── design.md
 ├── scripts/
+│   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-docs-sync.ts
+│   ├── check-framework-antipatterns.ts
+│   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
+│   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/
 │   ├── add-app-tool/
@@ -38,17 +43,23 @@ nws-weather-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-auth/
 │   │   └── SKILL.md
+│   ├── api-canvas/
+│   │   └── SKILL.md
 │   ├── api-config/
 │   │   └── SKILL.md
 │   ├── api-context/
 │   │   └── SKILL.md
 │   ├── api-errors/
 │   │   └── SKILL.md
+│   ├── api-linter/
+│   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
 │   │   │   ├── graph.md
 │   │   │   ├── llm.md
 │   │   │   └── speech.md
+│   │   └── SKILL.md
+│   ├── api-telemetry/
 │   │   └── SKILL.md
 │   ├── api-testing/
 │   │   └── SKILL.md
@@ -77,11 +88,17 @@ nws-weather-mcp-server/
 │   │   │   ├── readme.md
 │   │   │   └── server-json.md
 │   │   └── SKILL.md
+│   ├── release-and-publish/
+│   │   └── SKILL.md
 │   ├── report-issue-framework/
 │   │   └── SKILL.md
 │   ├── report-issue-local/
 │   │   └── SKILL.md
-│   └── setup/
+│   ├── security-pass/
+│   │   └── SKILL.md
+│   ├── setup/
+│   │   └── SKILL.md
+│   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── src/
 │   ├── config/

@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp } from '../format-utils.js';
 
@@ -65,6 +65,38 @@ export const getObservationsTool = tool('nws_get_observations', {
   description:
     'Get current weather observations (actual measured conditions). Accepts coordinates (resolves nearest station automatically) or a station ID directly (e.g., "KSEA").',
   annotations: { readOnlyHint: true },
+  errors: [
+    {
+      reason: 'missing_input',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Neither station_id nor a (latitude, longitude) pair was provided',
+      recovery: 'Provide either station_id or both latitude and longitude.',
+    },
+    {
+      reason: 'station_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Station ID does not exist in the NWS network',
+      recovery: 'Use nws_find_stations to discover valid station IDs near a coordinate.',
+    },
+    {
+      reason: 'no_observations',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Station has no recent observations available',
+      recovery: 'Try a different station — use nws_find_stations to find alternatives nearby.',
+    },
+    {
+      reason: 'no_stations_nearby',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'No observation stations exist near the requested coordinates',
+      recovery: 'Try a different location or broaden the search by moving inland.',
+    },
+    {
+      reason: 'out_of_scope',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Coordinates fall outside US National Weather Service coverage',
+      recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
+    },
+  ],
 
   input: z.object({
     latitude: z
@@ -123,7 +155,9 @@ export const getObservationsTool = tool('nws_get_observations', {
     const normalizedStationId = normalizeStationId(input.station_id);
 
     if (!normalizedStationId && (input.latitude == null || input.longitude == null)) {
-      throw invalidParams('Provide either station_id or both latitude and longitude.');
+      throw ctx.fail('missing_input', undefined, {
+        ...ctx.recoveryFor('missing_input'),
+      });
     }
 
     const result = await getNwsService().getObservation(

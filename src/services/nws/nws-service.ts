@@ -9,12 +9,16 @@ import {
   JsonRpcErrorCode,
   McpError,
   notFound,
-  rateLimited,
+  serializationError,
   serviceUnavailable,
   timeout,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { requestContextService, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import {
+  httpErrorFromResponse,
+  requestContextService,
+  withRetry,
+} from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import type {
   Alert,
@@ -140,11 +144,17 @@ function parseNwsJson<T>(text: string, url: string): T {
   try {
     return JSON.parse(text) as T;
   } catch (error) {
+    // HTML body usually signals a transient CDN/edge intercept — keep retryable
+    // (ServiceUnavailable). Anything else is a real serialization failure.
     const isHtml = /^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text);
-    const msg = isHtml
-      ? 'NWS API returned HTML instead of JSON. Retry in a few seconds.'
-      : 'NWS API returned invalid JSON. Retry in a few seconds.';
-    throw serviceUnavailable(msg, { url }, { cause: error });
+    if (isHtml) {
+      throw serviceUnavailable(
+        'NWS API returned HTML instead of JSON. Retry in a few seconds.',
+        { url },
+        { cause: error },
+      );
+    }
+    throw serializationError('NWS API returned invalid JSON.', { url }, { cause: error });
   }
 }
 
@@ -188,6 +198,8 @@ function nwsFetch<T>(
         throw notFoundFactory(notFoundMessage);
       }
 
+      // 400 carries an upstream parameter-validation message we want to surface
+      // verbatim — our params were valid JSON-RPC, NWS rejected the semantics.
       if (response.status === 400) {
         const detail = parseNwsErrorDetail(text);
         throw validationError(detail ?? `NWS API returned 400: Bad Request for ${url}`, {
@@ -196,16 +208,16 @@ function nwsFetch<T>(
         });
       }
 
-      if (response.status === 429) {
-        throw rateLimited('NWS API rate-limited the request. Retry in a few seconds.', {
-          url,
-          status: response.status,
-        });
-      }
-
-      throw serviceUnavailable(`NWS API returned ${response.status}: ${response.statusText}`, {
-        url,
-        status: response.status,
+      // Body already consumed via `response.text()` above — captureBody: false
+      // avoids the helper trying to read it again. NWS 500s are well-known
+      // transient failures (especially grid forecast endpoints), so remap
+      // 500/501 from InternalError → ServiceUnavailable to keep them retryable.
+      throw await httpErrorFromResponse(response, {
+        service: 'NWS',
+        data: { url },
+        captureBody: false,
+        codeOverride: (status) =>
+          status === 500 || status === 501 ? JsonRpcErrorCode.ServiceUnavailable : undefined,
       });
     },
     {
@@ -253,7 +265,13 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
     ctx,
     MAX_RETRIES,
     POINTS_NOT_FOUND,
-    (message) => validationError(message, { lat: tLat, lon: tLon }),
+    (message) =>
+      validationError(message, {
+        lat: tLat,
+        lon: tLon,
+        reason: 'out_of_scope',
+        ...ctx.recoveryFor('out_of_scope'),
+      }),
   );
 
   const props = data.properties as Record<string, unknown>;
@@ -568,16 +586,29 @@ export class NwsService {
     // Direct station ID — fetch metadata and observation in parallel
     if (params.stationId) {
       const stationId = params.stationId.toUpperCase();
-      const notFoundMsg = `Station '${stationId}' not found. Use nws_find_stations to discover valid station IDs.`;
+      const notFoundMsg = `Station '${stationId}' not found.`;
+      const stationNotFoundFactory: NotFoundFactory = (message) =>
+        notFound(message, {
+          stationId,
+          reason: 'station_not_found',
+          ...ctx.recoveryFor('station_not_found'),
+        });
 
       ctx.log.info('Fetching station metadata and latest observation', { stationId });
       const [stationData, obsData] = await Promise.all([
-        nwsFetch<Record<string, unknown>>(`${BASE_URL}/stations/${stationId}`, ctx, 0, notFoundMsg),
+        nwsFetch<Record<string, unknown>>(
+          `${BASE_URL}/stations/${stationId}`,
+          ctx,
+          0,
+          notFoundMsg,
+          stationNotFoundFactory,
+        ),
         nwsFetch<Record<string, unknown>>(
           `${BASE_URL}/stations/${stationId}/observations/latest`,
           ctx,
           MAX_RETRIES,
           notFoundMsg,
+          stationNotFoundFactory,
         ),
       ]);
 
@@ -587,10 +618,11 @@ export class NwsService {
         typeof stationProps?.timeZone === 'string' ? (stationProps.timeZone as string) : null;
       const observation = parseObservation(obsData, stationId, stationName, timeZone);
       if (!observation.timestamp) {
-        throw notFound(
-          `Station ${stationId} has no recent observations. Try a different station — use nws_find_stations to find alternatives nearby.`,
-          { stationId },
-        );
+        throw notFound(`Station ${stationId} has no recent observations.`, {
+          stationId,
+          reason: 'no_observations',
+          ...ctx.recoveryFor('no_observations'),
+        });
       }
       return { observation };
     }
@@ -616,6 +648,8 @@ export class NwsService {
       throw notFound('No observation stations found near this location.', {
         latitude: lat,
         longitude: lon,
+        reason: 'no_stations_nearby',
+        ...ctx.recoveryFor('no_stations_nearby'),
       });
     }
     const stationId = nearestStation.stationId;
@@ -626,15 +660,22 @@ export class NwsService {
       `${BASE_URL}/stations/${stationId}/observations/latest`,
       ctx,
       MAX_RETRIES,
-      `Station '${stationId}' not found. Use nws_find_stations to discover valid station IDs.`,
+      `Station '${stationId}' not found.`,
+      (message) =>
+        notFound(message, {
+          stationId,
+          reason: 'station_not_found',
+          ...ctx.recoveryFor('station_not_found'),
+        }),
     );
 
     const observation = parseObservation(data, stationId, stationName, nearestStation.timeZone);
     if (!observation.timestamp) {
-      throw notFound(
-        `Station ${stationId} has no recent observations. Try a different station — use nws_find_stations to find alternatives nearby.`,
-        { stationId },
-      );
+      throw notFound(`Station ${stationId} has no recent observations.`, {
+        stationId,
+        reason: 'no_observations',
+        ...ctx.recoveryFor('no_observations'),
+      });
     }
     return { observation };
   }

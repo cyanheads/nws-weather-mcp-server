@@ -457,7 +457,7 @@ describe('NwsService', () => {
       const result = service.getNwsService().searchAlerts({}, ctx);
 
       await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.RateLimited });
-      await expect(result).rejects.toThrow('rate-limited the request');
+      await expect(result).rejects.toThrow(/HTTP 429/);
     });
 
     it('retries on 500 and succeeds', async () => {

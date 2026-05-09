@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.5.7
+**Version:** 0.5.8
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -181,24 +181,42 @@ Handlers receive a unified `ctx` object. Key properties:
 
 ## Errors
 
-Handlers throw — the framework catches, classifies, and formats. Three escalation levels:
+Handlers throw — the framework catches, classifies, and formats.
+
+**Recommended: typed error contract.** Tools that surface domain-specific failures declare `errors: [{ reason, code, when, recovery, retryable? }]`. The handler then receives `ctx.fail(reason, msg?, data?)` typed against the reason union (`ctx.fail('typo')` is a TS error). Spread `ctx.recoveryFor('reason')` to copy the contract's recovery hint onto the wire — the framework mirrors `data.recovery.hint` into `content[]` text. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`) bubble freely without declaration.
 
 ```ts
-// 1. Plain Error — framework auto-classifies from message patterns
-throw new Error('Item not found');           // → NotFound
-throw new Error('Invalid query format');     // → ValidationError
+errors: [
+  { reason: 'out_of_scope', code: JsonRpcErrorCode.ValidationError,
+    when: 'Coordinates fall outside US National Weather Service coverage',
+    recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.' },
+],
+async handler(input, ctx) {
+  if (badCoords(input)) throw ctx.fail('out_of_scope', undefined, { ...ctx.recoveryFor('out_of_scope') });
+  // ...
+}
+```
 
-// 2. Error factories — explicit code, concise
-import { notFound, validationError, forbidden, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+In services that throw on behalf of contract-bearing tools, pass `data: { reason: 'X', ...ctx.recoveryFor('X') }` to error factories. The conformance lint scans handler source only — services are wire-correct via `data.reason` but not lint-enforced.
+
+**Fallback (no contract entry fits):** factories or plain `Error`.
+
+```ts
+// Error factories — explicit code, concise
+import { notFound, validationError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 throw notFound('Item not found', { itemId });
 throw serviceUnavailable('API unavailable', { url }, { cause: err });
 
-// 3. McpError — full control over code and data
+// Plain Error — framework auto-classifies from message patterns
+throw new Error('Item not found');           // → NotFound
+throw new Error('Invalid query format');     // → ValidationError
+
+// McpError — when no factory exists for the code
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 throw new McpError(JsonRpcErrorCode.DatabaseError, 'Connection failed', { pool: 'primary' });
 ```
 
-Plain `Error` is fine for most cases. Use factories when the error code matters. See framework CLAUDE.md for the full auto-classification table and all available factories.
+Use `validationError` for semantic post-shape validation (the wrong-field-shape kind is rare post-Zod); `invalidParams` is for malformed JSON-RPC params. See framework CLAUDE.md for the full auto-classification table, all available factories, and the contract reference.
 
 ---
 
@@ -258,11 +276,14 @@ Available skills:
 | `maintenance` | Investigate changelogs, adopt upstream changes, sync skills to agent dirs |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
 | `report-issue-local` | File a bug or feature request against this server's own repo via `gh` CLI |
+| `tool-defs-analysis` | Read-only audit of tool/resource/prompt language: voice, leaks, defaults, recovery hints, sparsity |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
+| `api-canvas` | DataCanvas: tabular SQL workspace + `spillover()` for big result sets (Tier 3 opt-in) |
 | `api-config` | AppConfig, parseConfig, env vars |
 | `api-context` | Context interface, logger, state, progress |
-| `api-errors` | McpError, JsonRpcErrorCode, error patterns |
+| `api-errors` | McpError, JsonRpcErrorCode, error contracts, factory patterns |
 | `api-services` | LLM, Speech, Graph services |
+| `api-telemetry` | OTel catalog: spans, metrics, completion logs, env config, cardinality rules |
 | `api-testing` | createMockContext, test patterns |
 | `api-utils` | Formatting, parsing, security, pagination, scheduling |
 | `api-workers` | Cloudflare Workers runtime |
@@ -283,8 +304,6 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run format` | Auto-fix formatting |
 | `bun run lint:mcp` | Validate MCP tool/resource definitions |
 | `bun run test` | Run tests |
-| `bun run dev:stdio` | Dev mode (stdio) |
-| `bun run dev:http` | Dev mode (HTTP) |
 | `bun run start:stdio` | Production mode (stdio) |
 | `bun run start:http` | Production mode (HTTP) |
 

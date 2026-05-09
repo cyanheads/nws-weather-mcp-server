@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { formatTimestamp, zoneCodeToTimeZone } from '../format-utils.js';
 
@@ -117,23 +117,14 @@ function normalizeOptionalFilter(value: string | undefined): string | undefined 
   return normalized.length > 0 ? normalized : undefined;
 }
 
-/** Normalize location filters and reject combinations the NWS API treats as incompatible. */
+/** Trim and case-fold optional location filters; mutex enforcement happens in the handler. */
 function normalizeSearchAlertsInput(input: SearchAlertsInput): SearchAlertsInput {
-  const normalized = {
+  return {
     ...input,
     area: normalizeOptionalFilter(input.area)?.toUpperCase(),
     point: normalizeOptionalFilter(input.point),
     zone: normalizeOptionalFilter(input.zone),
   };
-
-  const activeLocationFilters = LOCATION_FILTER_FIELDS.filter((fieldName) => normalized[fieldName]);
-  if (activeLocationFilters.length > 1) {
-    throw invalidParams(
-      'area, point, and zone are mutually exclusive. Specify at most one location filter.',
-    );
-  }
-
-  return normalized;
 }
 
 const searchAlertsInputSchema = z.object({
@@ -187,6 +178,29 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   description:
     'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, event type, severity, urgency, or certainty. area, point, and zone are mutually exclusive. Omit all filters for a national search.',
   annotations: { readOnlyHint: true },
+  errors: [
+    {
+      reason: 'mutually_exclusive_filters',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'More than one of area, point, or zone provided',
+      recovery:
+        'Provide at most one of area, point, or zone — they are mutually exclusive filters.',
+    },
+    {
+      reason: 'invalid_area_code',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Area code is not a recognized US state, territory, or marine area',
+      recovery:
+        'Provide a 2-letter US state/territory code (e.g., "WA") or marine area code (e.g., "GM").',
+    },
+    {
+      reason: 'invalid_point',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Point coordinates are malformed or outside valid bounds',
+      recovery:
+        'Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").',
+    },
+  ],
 
   input: searchAlertsInputSchema,
 
@@ -228,16 +242,25 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   async handler(input, ctx) {
     const normalizedInput = normalizeSearchAlertsInput(input);
 
-    // Normalize and validate area code — the NWS API is case-sensitive (lowercase → 400)
-    if (normalizedInput.area) {
-      if (!VALID_AREA_CODES.has(normalizedInput.area)) {
-        throw invalidParams(
-          `Invalid area code "${normalizedInput.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
-        );
-      }
+    const activeLocationFilters = LOCATION_FILTER_FIELDS.filter(
+      (fieldName) => normalizedInput[fieldName],
+    );
+    if (activeLocationFilters.length > 1) {
+      throw ctx.fail(
+        'mutually_exclusive_filters',
+        `Provided ${activeLocationFilters.join(', ')}; only one of area, point, or zone is allowed.`,
+        { ...ctx.recoveryFor('mutually_exclusive_filters') },
+      );
     }
 
-    // Validate point format before hitting the API
+    if (normalizedInput.area && !VALID_AREA_CODES.has(normalizedInput.area)) {
+      throw ctx.fail(
+        'invalid_area_code',
+        `Invalid area code "${normalizedInput.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
+        { ...ctx.recoveryFor('invalid_area_code') },
+      );
+    }
+
     if (normalizedInput.point) {
       const [lat, lon, ...rest] = normalizedInput.point.split(',').map(Number);
       if (
@@ -251,8 +274,10 @@ export const searchAlertsTool = tool('nws_search_alerts', {
         lon < -180 ||
         lon > 180
       ) {
-        throw invalidParams(
+        throw ctx.fail(
+          'invalid_point',
           `Invalid point "${normalizedInput.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
+          { ...ctx.recoveryFor('invalid_point') },
         );
       }
     }

@@ -129,22 +129,22 @@ export const getObservationsTool = tool('nws_get_observations', {
     timestamp: z.string().describe('Observation time (ISO 8601)'),
     timeZone: z.string().nullable().describe('Station time zone when known'),
     textDescription: z.string().describe('Conditions summary (e.g., "Mostly Cloudy")'),
-    temperature: z.number().nullable().describe('Temperature in Celsius'),
-    dewpoint: z.number().nullable().describe('Dewpoint in Celsius'),
-    windSpeed: z.number().nullable().describe('Wind speed in km/h'),
-    windDirection: z.number().nullable().describe('Wind direction in degrees'),
-    windGust: z.number().nullable().describe('Wind gust in km/h'),
-    barometricPressure: z.number().nullable().describe('Barometric pressure in Pascals'),
-    visibility: z.number().nullable().describe('Visibility in meters'),
-    relativeHumidity: z.number().nullable().describe('Relative humidity (%)'),
-    heatIndex: z.number().nullable().describe('Heat index in Celsius'),
-    windChill: z.number().nullable().describe('Wind chill in Celsius'),
+    temperatureC: z.number().nullable().describe('Temperature in Celsius'),
+    dewpointC: z.number().nullable().describe('Dewpoint in Celsius'),
+    windSpeedKmh: z.number().nullable().describe('Wind speed in km/h'),
+    windDirectionDeg: z.number().nullable().describe('Wind direction in degrees (0-360)'),
+    windGustKmh: z.number().nullable().describe('Wind gust in km/h'),
+    barometricPressurePa: z.number().nullable().describe('Barometric pressure in Pascals'),
+    visibilityM: z.number().nullable().describe('Visibility in meters'),
+    relativeHumidityPct: z.number().nullable().describe('Relative humidity in percent (0-100)'),
+    heatIndexC: z.number().nullable().describe('Heat index in Celsius'),
+    windChillC: z.number().nullable().describe('Wind chill in Celsius'),
     cloudLayers: z
       .array(
         z
           .object({
             amount: z.string().describe('Cloud cover (e.g., "FEW", "SCT", "BKN", "OVC")'),
-            base: z.number().nullable().describe('Cloud base height in meters'),
+            baseM: z.number().nullable().describe('Cloud base height in meters'),
           })
           .describe('Single cloud layer with cover amount and base height'),
       )
@@ -176,19 +176,19 @@ export const getObservationsTool = tool('nws_get_observations', {
       timestamp: obs.timestamp,
       timeZone: obs.timeZone,
       textDescription: obs.textDescription,
-      temperature: obs.temperature.value,
-      dewpoint: obs.dewpoint.value,
-      windSpeed: obs.windSpeed.value,
-      windDirection: obs.windDirection.value,
-      windGust: obs.windGust.value,
-      barometricPressure: obs.barometricPressure.value,
-      visibility: obs.visibility.value,
-      relativeHumidity: obs.relativeHumidity.value,
-      heatIndex: obs.heatIndex.value,
-      windChill: obs.windChill.value,
+      temperatureC: obs.temperature.value,
+      dewpointC: obs.dewpoint.value,
+      windSpeedKmh: obs.windSpeed.value,
+      windDirectionDeg: obs.windDirection.value,
+      windGustKmh: obs.windGust.value,
+      barometricPressurePa: obs.barometricPressure.value,
+      visibilityM: obs.visibility.value,
+      relativeHumidityPct: obs.relativeHumidity.value,
+      heatIndexC: obs.heatIndex.value,
+      windChillC: obs.windChill.value,
       cloudLayers: obs.cloudLayers.map((l) => ({
         amount: l.amount,
-        base: l.base.value,
+        baseM: l.base.value,
       })),
     };
   },
@@ -201,41 +201,43 @@ export const getObservationsTool = tool('nws_get_observations', {
       '',
     ];
 
-    const temp = formatTemp(result.temperature);
+    const temp = formatTemp(result.temperatureC);
     if (temp) lines.push(`**Temperature:** ${temp}`);
 
-    const dew = formatTemp(result.dewpoint);
+    const dew = formatTemp(result.dewpointC);
     if (dew) lines.push(`**Dewpoint:** ${dew}`);
 
-    if (result.relativeHumidity != null) {
-      lines.push(`**Humidity:** ${Math.round(result.relativeHumidity)}%`);
+    if (result.relativeHumidityPct != null) {
+      lines.push(`**Humidity:** ${Math.round(result.relativeHumidityPct)}%`);
     }
 
-    lines.push(`**Wind:** ${formatWind(result.windSpeed, result.windDirection, result.windGust)}`);
+    lines.push(
+      `**Wind:** ${formatWind(result.windSpeedKmh, result.windDirectionDeg, result.windGustKmh)}`,
+    );
 
-    if (result.barometricPressure != null) {
-      const pa = Math.round(result.barometricPressure);
-      const pressure = `${paToInHg(result.barometricPressure)} inHg (${Math.round(result.barometricPressure / 100)} hPa, ${pa} Pa)`;
+    if (result.barometricPressurePa != null) {
+      const pa = Math.round(result.barometricPressurePa);
+      const pressure = `${paToInHg(result.barometricPressurePa)} inHg (${Math.round(result.barometricPressurePa / 100)} hPa, ${pa} Pa)`;
       lines.push(`**Pressure:** ${pressure}`);
     }
 
-    if (result.visibility != null) {
-      const m = Math.round(result.visibility);
+    if (result.visibilityM != null) {
+      const m = Math.round(result.visibilityM);
       lines.push(
-        `**Visibility:** ${mToMi(result.visibility)} mi (${mToKm(result.visibility)} km, ${m} m)`,
+        `**Visibility:** ${mToMi(result.visibilityM)} mi (${mToKm(result.visibilityM)} km, ${m} m)`,
       );
     }
 
-    const heat = formatTemp(result.heatIndex);
+    const heat = formatTemp(result.heatIndexC);
     if (heat) lines.push(`**Heat Index:** ${heat}`);
 
-    const chill = formatTemp(result.windChill);
+    const chill = formatTemp(result.windChillC);
     if (chill) lines.push(`**Wind Chill:** ${chill}`);
 
     if (result.cloudLayers.length > 0) {
       const clouds = result.cloudLayers
         .map((l) => {
-          const base = l.base != null ? ` at ${Math.round(l.base)}m (${mToFt(l.base)} ft)` : '';
+          const base = l.baseM != null ? ` at ${Math.round(l.baseM)}m (${mToFt(l.baseM)} ft)` : '';
           return `${l.amount}${base}`;
         })
         .join(', ');
@@ -244,12 +246,12 @@ export const getObservationsTool = tool('nws_get_observations', {
 
     // Flag when most measurements are missing
     const measurable = [
-      result.temperature,
-      result.dewpoint,
-      result.windSpeed,
-      result.barometricPressure,
-      result.visibility,
-      result.relativeHumidity,
+      result.temperatureC,
+      result.dewpointC,
+      result.windSpeedKmh,
+      result.barometricPressurePa,
+      result.visibilityM,
+      result.relativeHumidityPct,
     ];
     const nullCount = measurable.filter((v) => v == null).length;
     if (nullCount >= 4) {

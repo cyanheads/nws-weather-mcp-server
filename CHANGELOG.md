@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.9] - 2026-05-16
+
+### Changed
+
+- **Framework upgrade** — `@cyanheads/mcp-ts-core` `^0.8.19` → `^0.9.1`. Two minor bumps, one upstream `breaking: true`; no breaking adoption required in this server. Notable upstream changes: Cloudflare Workers boot under `nodejs_compat` ([cyanheads/mcp-ts-core#124](https://github.com/cyanheads/mcp-ts-core/issues/124)), new `CreateAppOptions.instructions` server-level orientation field ([cyanheads/mcp-ts-core#91](https://github.com/cyanheads/mcp-ts-core/issues/91)), cross-vendor JSON Schema portability lint family ([cyanheads/mcp-ts-core#132](https://github.com/cyanheads/mcp-ts-core/issues/132)), definition linting moves to build-time only (no longer gates `createApp()` startup), RFC 8414 §3 `/.well-known/oauth-protected-resource/{path}` mount, SSRF DNS validation enforced in Workers, IPv6 SSRF blocklist coverage, tenant-id boundary check in `FileSystemProvider`, rate-limit metric cardinality bound (0.9.0); experimental `tasks` capability advertisement gated on actual task-tool registration (fixes strict-parsing clients pinned to MCP spec `2025-06-18`), new `Context.notifyPromptListChanged` / `notifyToolListChanged` notifiers, OTel `deployment.environment.name` migrated to the stable typed constant (0.9.1).
+- **Adopted server-level `instructions`** — `createApp()` in `src/index.ts` now passes an `instructions` string covering tool catalog, NWS coverage scope (50 states, US territories, adjacent marine areas), and the no-geocoding constraint. Spec-compliant clients forward this to the model as session-level system context on every `initialize` response, replacing per-tool description repetition for deployment-level guidance.
+- **Adopted unit-bearing numeric field names** — Per the framework's `tool-defs-analysis` 1.2 audit category, terminal numeric fields in tool `output` schemas now carry their unit in the field name. Wire-shape change for clients reading `structuredContent`; the `format()` markdown surface is unchanged.
+  - `nws_get_observations`: `temperature` → `temperatureC`, `dewpoint` → `dewpointC`, `windSpeed` → `windSpeedKmh`, `windDirection` → `windDirectionDeg`, `windGust` → `windGustKmh`, `barometricPressure` → `barometricPressurePa`, `visibility` → `visibilityM`, `relativeHumidity` → `relativeHumidityPct`, `heatIndex` → `heatIndexC`, `windChill` → `windChillC`, `cloudLayers[].base` → `cloudLayers[].baseM`.
+  - `nws_get_forecast`: `periods[].precipChance` → `precipChancePct`, `periods[].dewpoint` → `dewpointC`, `periods[].relativeHumidity` → `relativeHumidityPct`.
+  - `nws_find_stations`: `stations[].distance` → `distanceKm`, `stations[].elevation` → `elevationM`.
+- **`CLAUDE.md` / `AGENTS.md`** — Added three NWS-API-wrap checklist items covering upstream sparsity/nullability review, uncertainty preservation in normalization and `format()` (a null temperature is not 0), and sparse-payload test coverage. Files kept byte-identical per the `Docs Sync` devcheck step.
+- **Synced project skills and scripts from framework 0.9.1** — Phase A updated 13 skills via the `maintenance` skill (`add-tool`, `api-auth`, `api-config`, `api-errors`, `api-linter`, `api-workers`, `design-mcp-server`, `field-test`, `polish-docs-meta` and its README/package-meta references, `security-pass`, `tool-defs-analysis`). Phase B mirrored everything into `.claude/skills/` and `.agents/skills/`. Phase C updated `scripts/build-changelog.ts` (raised `SUMMARY_MAX_LENGTH` 250 → 350 per [cyanheads/mcp-ts-core#129](https://github.com/cyanheads/mcp-ts-core/issues/129)) and `scripts/devcheck.ts` (fixed the `bun outdated` parser — `bun outdated` emits markdown-style rows with an empty leading cell, so the allowlist comparison must read index `[1]` and strip the trailing `(dev|peer|prod|optional)` workspace marker).
+- **Dev dependency refresh** — `@biomejs/biome` `^2.4.14 → ^2.4.15`, `@types/node` `^25.6.2 → ^25.8.0`, `@vitest/coverage-istanbul` `^4.1.5 → ^4.1.6`, `vitest` `^4.1.5 → ^4.1.6`.
+- **Release metadata** — Bumped package, server descriptor, README badge, and agent-protocol versions to `0.5.9`. README Prerequisites and Bun badge updated to `Node.js v24+` / `Bun v1.3+` (catching up the engines floor set in 0.5.8).
+
 ## [0.5.8] - 2026-05-09
 
 ### Changed

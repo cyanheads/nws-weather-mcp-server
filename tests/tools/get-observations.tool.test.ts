@@ -64,9 +64,9 @@ describe('nws_get_observations', () => {
 
     expect(result.stationId).toBe('KSEA');
     expect(result.timeZone).toBe('America/Los_Angeles');
-    expect(result.temperature).toBe(14.4);
+    expect(result.temperatureC).toBe(14.4);
     expect(result.textDescription).toBe('Mostly Cloudy');
-    expect(result.windGust).toBeNull();
+    expect(result.windGustKmh).toBeNull();
     expect(result.cloudLayers).toHaveLength(1);
     expect(result.cloudLayers[0].amount).toBe('BKN');
   });
@@ -169,17 +169,17 @@ describe('nws_get_observations', () => {
         timestamp: '2026-04-03T11:53:00+00:00',
         timeZone: 'America/Los_Angeles',
         textDescription: 'Mostly Cloudy',
-        temperature: 14.4,
-        dewpoint: 8.3,
-        windSpeed: 18.5,
-        windDirection: 200,
-        windGust: null,
-        barometricPressure: 101325,
-        visibility: 16093,
-        relativeHumidity: 65.2,
-        heatIndex: null,
-        windChill: null,
-        cloudLayers: [{ amount: 'BKN', base: 1524 }],
+        temperatureC: 14.4,
+        dewpointC: 8.3,
+        windSpeedKmh: 18.5,
+        windDirectionDeg: 200,
+        windGustKmh: null,
+        barometricPressurePa: 101325,
+        visibilityM: 16093,
+        relativeHumidityPct: 65.2,
+        heatIndexC: null,
+        windChillC: null,
+        cloudLayers: [{ amount: 'BKN', baseM: 1524 }],
       };
 
       const blocks = getObservationsTool.format!(output);
@@ -205,16 +205,16 @@ describe('nws_get_observations', () => {
         timestamp: '2026-04-03T06:00:00-10:00',
         timeZone: 'Pacific/Honolulu',
         textDescription: 'Clear',
-        temperature: null,
-        dewpoint: null,
-        windSpeed: null,
-        windDirection: null,
-        windGust: null,
-        barometricPressure: null,
-        visibility: null,
-        relativeHumidity: null,
-        heatIndex: null,
-        windChill: null,
+        temperatureC: null,
+        dewpointC: null,
+        windSpeedKmh: null,
+        windDirectionDeg: null,
+        windGustKmh: null,
+        barometricPressurePa: null,
+        visibilityM: null,
+        relativeHumidityPct: null,
+        heatIndexC: null,
+        windChillC: null,
         cloudLayers: [],
       };
 

@@ -75,8 +75,8 @@ describe('nws_get_forecast', () => {
     expect(result.generatedAt).toBe('2026-04-03T12:00:00Z');
     expect(result.periods).toHaveLength(1);
     expect(result.periods[0].name).toBe('Today');
-    expect(result.periods[0].precipChance).toBe(10);
-    expect(result.periods[0].dewpoint).toBe(8.5);
+    expect(result.periods[0].precipChancePct).toBe(10);
+    expect(result.periods[0].dewpointC).toBe(8.5);
   });
 
   it('passes hourly flag to service', async () => {
@@ -118,9 +118,9 @@ describe('nws_get_forecast', () => {
             windDirection: 'NW',
             shortForecast: 'Mostly Sunny',
             detailedForecast: 'Mostly sunny, high near 62.',
-            precipChance: 10,
-            dewpoint: 8.5,
-            relativeHumidity: 55,
+            precipChancePct: 10,
+            dewpointC: 8.5,
+            relativeHumidityPct: 55,
           },
         ],
       };
@@ -179,9 +179,9 @@ describe('nws_get_forecast', () => {
             windDirection: 'N',
             shortForecast: 'Cloudy',
             detailedForecast: '',
-            precipChance: 0,
-            dewpoint: 8.5,
-            relativeHumidity: 75,
+            precipChancePct: 0,
+            dewpointC: 8.5,
+            relativeHumidityPct: 75,
           },
         ],
       };
@@ -219,9 +219,9 @@ describe('nws_get_forecast', () => {
             windDirection: 'SW',
             shortForecast: 'Sunny',
             detailedForecast: '',
-            precipChance: null,
-            dewpoint: null,
-            relativeHumidity: null,
+            precipChancePct: null,
+            dewpointC: null,
+            relativeHumidityPct: null,
           },
         ],
       };
@@ -258,9 +258,9 @@ describe('nws_get_forecast', () => {
             windDirection: 'S',
             shortForecast: 'Mostly Clear',
             detailedForecast: 'Mostly clear with a low near 48.',
-            precipChance: null,
-            dewpoint: null,
-            relativeHumidity: null,
+            precipChancePct: null,
+            dewpointC: null,
+            relativeHumidityPct: null,
           },
         ],
       };
@@ -291,9 +291,9 @@ describe('nws_get_forecast', () => {
           windDirection: 'NW',
           shortForecast: `Short forecast ${index + 1}`,
           detailedForecast: index === 0 ? '' : `Detailed forecast ${index + 1}`,
-          precipChance: null,
-          dewpoint: null,
-          relativeHumidity: null,
+          precipChancePct: null,
+          dewpointC: null,
+          relativeHumidityPct: null,
         })),
       };
 

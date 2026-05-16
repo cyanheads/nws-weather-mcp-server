@@ -65,9 +65,9 @@ describe('nws_find_stations', () => {
 
     expect(result.stations).toHaveLength(2);
     expect(result.stations[0].stationId).toBe('KSEA');
-    expect(result.stations[0].distance).toBe(12.3);
+    expect(result.stations[0].distanceKm).toBe(12.3);
     expect(result.stations[0].bearing).toBe('S');
-    expect(result.stations[1].elevation).toBe(6);
+    expect(result.stations[1].elevationM).toBe(6);
   });
 
   it('passes limit to service', async () => {
@@ -87,9 +87,9 @@ describe('nws_find_stations', () => {
           {
             stationId: 'KSEA',
             name: 'Seattle-Tacoma Intl',
-            distance: 12.3,
+            distanceKm: 12.3,
             bearing: 'S',
-            elevation: 131,
+            elevationM: 131,
             timeZone: 'America/Los_Angeles',
             county: 'WAC033',
             forecastZone: 'WAZ558',

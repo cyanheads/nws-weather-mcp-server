@@ -82,9 +82,15 @@ export const getForecastTool = tool('nws_get_forecast', {
             windDirection: z.string().describe('Wind direction (e.g., "NW")'),
             shortForecast: z.string().describe('Brief forecast (e.g., "Mostly Sunny")'),
             detailedForecast: z.string().describe('Full narrative forecast'),
-            precipChance: z.number().nullable().describe('Probability of precipitation (%)'),
-            dewpoint: z.number().nullable().describe('Dewpoint in Celsius (hourly only)'),
-            relativeHumidity: z.number().nullable().describe('Relative humidity % (hourly only)'),
+            precipChancePct: z
+              .number()
+              .nullable()
+              .describe('Probability of precipitation in percent (0-100)'),
+            dewpointC: z.number().nullable().describe('Dewpoint in Celsius (hourly only)'),
+            relativeHumidityPct: z
+              .number()
+              .nullable()
+              .describe('Relative humidity in percent (0-100, hourly only)'),
           })
           .describe('Single forecast period with time range, conditions, and narrative'),
       )
@@ -112,9 +118,9 @@ export const getForecastTool = tool('nws_get_forecast', {
         windDirection: p.windDirection,
         shortForecast: p.shortForecast,
         detailedForecast: p.detailedForecast,
-        precipChance: p.probabilityOfPrecipitation.value,
-        dewpoint: p.dewpoint.value != null ? Math.round(p.dewpoint.value * 10) / 10 : null,
-        relativeHumidity:
+        precipChancePct: p.probabilityOfPrecipitation.value,
+        dewpointC: p.dewpoint.value != null ? Math.round(p.dewpoint.value * 10) / 10 : null,
+        relativeHumidityPct:
           p.relativeHumidity.value != null ? Math.round(p.relativeHumidity.value * 10) / 10 : null,
       })),
     };
@@ -137,11 +143,12 @@ export const getForecastTool = tool('nws_get_forecast', {
     const periods = result.periods.slice(0, 48);
 
     for (const p of periods) {
-      const precip = p.precipChance != null ? ` | **Precip:** ${p.precipChance}%` : '';
-      const humidity = p.relativeHumidity != null ? ` | **Humidity:** ${p.relativeHumidity}%` : '';
+      const precip = p.precipChancePct != null ? ` | **Precip:** ${p.precipChancePct}%` : '';
+      const humidity =
+        p.relativeHumidityPct != null ? ` | **Humidity:** ${p.relativeHumidityPct}%` : '';
       const dew =
-        p.dewpoint != null
-          ? ` | **Dewpoint:** ${cToF(p.dewpoint)}°F (${Math.round(p.dewpoint)}°C)`
+        p.dewpointC != null
+          ? ` | **Dewpoint:** ${cToF(p.dewpointC)}°F (${Math.round(p.dewpointC)}°C)`
           : '';
 
       const timeRange = `${formatTimestamp(p.startTime, loc.timeZone)} → ${formatTimestamp(p.endTime, loc.timeZone)}`;

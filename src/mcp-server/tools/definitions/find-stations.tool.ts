@@ -33,9 +33,9 @@ export const findStationsTool = tool('nws_find_stations', {
           .object({
             stationId: z.string().describe('Station identifier (e.g., "KSEA")'),
             name: z.string().describe('Station name'),
-            distance: z.number().describe('Distance from query point in km'),
+            distanceKm: z.number().describe('Distance from query point in kilometers'),
             bearing: z.string().describe('Compass bearing from query point (e.g., "NW")'),
-            elevation: z.number().nullable().describe('Elevation in meters'),
+            elevationM: z.number().nullable().describe('Elevation in meters'),
             timeZone: z.string().describe('IANA time zone'),
             county: z.string().describe('County zone code (e.g., "WAC033")'),
             forecastZone: z.string().describe('Forecast zone code (e.g., "WAZ315")'),
@@ -57,9 +57,9 @@ export const findStationsTool = tool('nws_find_stations', {
       stations: result.stations.map((s) => ({
         stationId: s.stationId,
         name: s.name,
-        distance: s.distance,
+        distanceKm: s.distance,
         bearing: s.bearing,
-        elevation: s.elevation.value != null ? Math.round(s.elevation.value) : null,
+        elevationM: s.elevation.value != null ? Math.round(s.elevation.value) : null,
         timeZone: s.timeZone,
         county: s.county,
         forecastZone: s.forecastZone,
@@ -80,9 +80,9 @@ export const findStationsTool = tool('nws_find_stations', {
     lines.push('|:--------|:-----|:---------|:--------|:----------|:----------|:-------|:-----|');
 
     for (const s of result.stations) {
-      const elev = s.elevation != null ? `${Math.round(s.elevation)}m` : '—';
+      const elev = s.elevationM != null ? `${Math.round(s.elevationM)}m` : '—';
       lines.push(
-        `| ${s.stationId} | ${s.name} | ${s.distance} km | ${s.bearing} | ${elev} | ${s.timeZone} | ${s.county} | ${s.forecastZone} |`,
+        `| ${s.stationId} | ${s.name} | ${s.distanceKm} km | ${s.bearing} | ${elev} | ${s.timeZone} | ${s.county} | ${s.forecastZone} |`,
       );
     }
 

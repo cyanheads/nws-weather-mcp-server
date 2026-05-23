@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/nws-weather-mcp-server",
-  "description": "Real-time US weather data via National Weather Service API. Forecasts, alerts, and observations.",
+  "description": "Get US weather forecasts, active alerts, and current observations.",
   "repository": {
     "url": "https://github.com/cyanheads/nws-weather-mcp-server",
     "source": "github"
   },
-  "version": "0.5.9",
+  "version": "0.5.10",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/nws-weather-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.5.9",
+      "version": "0.5.10",
       "packageArguments": [
         { "type": "positional", "value": "run" },
         { "type": "positional", "value": "start:stdio" }
@@ -49,7 +49,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/nws-weather-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.5.9",
+      "version": "0.5.10",
       "packageArguments": [
         { "type": "positional", "value": "run" },
         { "type": "positional", "value": "start:http" }

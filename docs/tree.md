@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-05-09 10:15:17
+Generated on: 2026-05-23 06:46:48
 
 ```text
 nws-weather-mcp-server/
@@ -14,6 +14,8 @@ nws-weather-mcp-server/
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
+├── changelog/
+│   └── 0.5.x/
 ├── claude-plans/
 ├── docs/
 │   └── design.md
@@ -26,6 +28,8 @@ nws-weather-mcp-server/
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
+│   ├── lint-packaging.ts
+│   ├── list-skills.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/

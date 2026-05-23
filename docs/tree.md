@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-05-23 06:46:48
+Generated on: 2026-05-23 12:22:53
 
 ```text
 nws-weather-mcp-server/
@@ -15,7 +15,8 @@ nws-weather-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
-│   └── 0.5.x/
+│   ├── 0.5.x/
+│   └── template.md
 ├── claude-plans/
 ├── docs/
 │   └── design.md
@@ -149,6 +150,7 @@ nws-weather-mcp-server/
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
+├── .mcpbignore
 ├── AGENTS.md
 ├── biome.json
 ├── bun.lock
@@ -158,6 +160,7 @@ nws-weather-mcp-server/
 ├── devcheck.config.json
 ├── Dockerfile
 ├── LICENSE
+├── manifest.json
 ├── package.json
 ├── README.md
 ├── server.json

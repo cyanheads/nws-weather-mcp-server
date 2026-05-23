@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/nws-weather-mcp-server",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "description": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.",
   "type": "module",
   "main": "dist/index.js",
@@ -18,6 +18,8 @@
     "format": "biome check --write --unsafe .",
     "lint:mcp": "bun scripts/lint-mcp.ts",
     "lint:packaging": "bun scripts/lint-packaging.ts",
+    "changelog:build": "bun scripts/build-changelog.ts",
+    "changelog:check": "bun scripts/build-changelog.ts --check",
     "audit:refresh": "rm -f bun.lock && bun install && bun audit",
     "test": "vitest run",
     "list-skills": "bun scripts/list-skills.ts",
@@ -69,7 +71,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.9.4",
+    "@cyanheads/mcp-ts-core": "^0.9.6",
     "@opentelemetry/api": "^1.9.1",
     "pino-pretty": "^13.1.3",
     "zod": "^4.4.3"

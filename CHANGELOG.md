@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.11](changelog/0.5.x/0.5.11.md) — 2026-05-23
+
+Framework `^0.9.4 → ^0.9.6`. Skills synced: `maintenance` 2.4, `polish-docs-meta` 2.2, `release-and-publish` 2.5. Manifest description aligned.
+
 ## [0.5.10](changelog/0.5.x/0.5.10.md) — 2026-05-22
 
 Framework `^0.9.1 → ^0.9.4`. `zod` added as explicit dep (peerDep change in 0.9.2). README badge layout, install buttons, Framework spotlight. New scripts: `audit:refresh`, `list-skills`, `lint:packaging`, `publish-mcp`. Skills synced. `qs` advisory cleared.

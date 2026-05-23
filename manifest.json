@@ -1,0 +1,41 @@
+{
+  "manifest_version": "0.3",
+  "name": "nws-weather-mcp-server",
+  "version": "0.5.10",
+  "description": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API.",
+  "author": { "name": "cyanheads" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cyanheads/nws-weather-mcp-server"
+  },
+  "homepage": "https://github.com/cyanheads/nws-weather-mcp-server#readme",
+  "license": "Apache-2.0",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_AUTH_MODE": "none",
+        "NODE_ENV": "production",
+        "NWS_USER_AGENT": "${user_config.nws_user_agent}"
+      }
+    }
+  },
+  "compatibility": {
+    "runtimes": { "node": ">=24.0.0" }
+  },
+  "tools_generated": true,
+  "prompts_generated": true,
+  "user_config": {
+    "nws_user_agent": {
+      "type": "string",
+      "title": "NWS User Agent",
+      "description": "User-Agent header for NWS API requests. The API requires this header but a default is provided.",
+      "required": false,
+      "default": "(nws-weather-mcp-server, github.com/cyanheads/nws-weather-mcp-server)"
+    }
+  }
+}

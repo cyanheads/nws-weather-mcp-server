@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/nws-weather-mcp-server",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.",
   "type": "module",
   "main": "dist/index.js",
@@ -40,7 +40,10 @@
     "forecast",
     "alerts",
     "observations",
-    "typescript"
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http"
   ],
   "repository": {
     "type": "git",
@@ -71,13 +74,13 @@
     "access": "public"
   },
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.9.6",
+    "@cyanheads/mcp-ts-core": "^0.9.13",
     "@opentelemetry/api": "^1.9.1",
     "pino-pretty": "^13.1.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.15",
+    "@biomejs/biome": "^2.4.16",
     "@types/node": "^25.9.1",
     "@vitest/coverage-istanbul": "^4.1.7",
     "depcheck": "^1.4.7",

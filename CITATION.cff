@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: nws-weather-mcp-server
+abstract: "Model Context Protocol (MCP) server for the National Weather Service API, providing forecasts, active alerts, current observations, and station discovery for US locations."
+type: software
+authors:
+  - family-names: Hand
+    given-names: Casey
+    orcid: "https://orcid.org/0009-0009-3726-568X"
+repository-code: "https://github.com/cyanheads/nws-weather-mcp-server"
+license: Apache-2.0
+keywords:
+  - mcp
+  - model-context-protocol
+  - nws
+  - weather
+  - forecasts
+  - meteorology

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.12](changelog/0.5.x/0.5.12.md) — 2026-05-28
+
+Framework `^0.9.6 → ^0.9.13`: HTTP 413 body cap, session-init gate, quieter 401/403/400/404 logging, GET /mcp surfaces keywords. Keywords expanded. `landing.requireAuth: false` set explicitly.
+
 ## [0.5.11](changelog/0.5.x/0.5.11.md) — 2026-05-23
 
 Framework `^0.9.4 → ^0.9.6`. Skills synced: `maintenance` 2.4, `polish-docs-meta` 2.2, `release-and-publish` 2.5. Manifest description aligned.

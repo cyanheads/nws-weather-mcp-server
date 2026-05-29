@@ -26,6 +26,8 @@ await createApp({
   resources: [alertTypesResource],
   instructions:
     'Use the nws_* tools for real-time US weather data from the National Weather Service: forecasts, active alerts, current observations, and station discovery. Coverage is the 50 states, US territories, and adjacent marine areas; the API does not geocode, so resolve place names to latitude/longitude before calling.',
+  // Public catalog — serve the full landing page inventory regardless of auth mode.
+  landing: { requireAuth: false },
   setup() {
     initNwsService();
   },

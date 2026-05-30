@@ -205,9 +205,6 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   input: searchAlertsInputSchema,
 
   output: z.object({
-    count: z.number().describe('Total number of matching alerts'),
-    shown: z.number().describe('Number of alerts included in this response'),
-    filters: z.string().describe('Summary of applied search filters'),
     alerts: z
       .array(
         z
@@ -238,6 +235,27 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       )
       .describe('Matching alerts (capped at 25)'),
   }),
+
+  // Result-set context the agent reasons with — counts, applied filters echo, and empty-result
+  // guidance. Populated via ctx.enrich(...) so it reaches structuredContent and content[] alike;
+  // kept out of the domain return.
+  enrichment: {
+    totalCount: z.number().describe('Total number of matching alerts before the 25-alert cap'),
+    shownCount: z.number().describe('Number of alerts included in this response'),
+    appliedFilters: z.string().describe('Summary of applied search filters'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when no alerts matched — echoes applied filters and suggests how to broaden the search.',
+      ),
+  },
+
+  enrichmentTrailer: {
+    totalCount: { label: 'Total Alerts' },
+    shownCount: { label: 'Shown' },
+    appliedFilters: { label: 'Filters' },
+  },
 
   async handler(input, ctx) {
     const normalizedInput = normalizeSearchAlertsInput(input);
@@ -285,35 +303,35 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     const result = await getNwsService().searchAlerts(normalizedInput, ctx);
     const total = result.alerts.length;
     const capped = result.alerts.slice(0, MAX_ALERTS);
-    const filters = describeFilters(normalizedInput);
+    const appliedFilters = describeFilters(normalizedInput);
 
-    ctx.log.info('Alerts search completed', { total, shown: capped.length, filters });
+    ctx.log.info('Alerts search completed', { total, shown: capped.length, appliedFilters });
+
+    ctx.enrich({ totalCount: total, shownCount: capped.length, appliedFilters });
+    if (total === 0) {
+      ctx.enrich.notice(
+        `No active alerts matched: ${appliedFilters}. Try a broader area, remove severity or event filters, or use nws_list_alert_types to verify event names.`,
+      );
+    }
 
     return {
-      count: total,
-      shown: capped.length,
-      filters,
       alerts: capped.map((a) => ({ ...a, affectedZones: [...a.affectedZones] })),
     };
   },
 
   format: (result) => {
-    if (result.count === 0) {
-      const lines = [
-        `No active alerts found for: ${result.filters}.`,
-        '',
-        'To broaden your search, try:',
-        '- Use **area** (e.g., "WA") for state-wide alerts',
-        '- Remove severity/event filters',
-        '- Use nws_list_alert_types to verify event names',
+    if (result.alerts.length === 0) {
+      return [
+        {
+          type: 'text',
+          text: 'No active alerts matched. See the enrichment block above for filters and recovery guidance.',
+        },
       ];
-      return [{ type: 'text', text: lines.join('\n') }];
     }
 
-    const truncated = result.shown < result.count;
-    const heading = `## ${result.count} Active Alert${result.count === 1 ? '' : 's'} — ${result.shown} shown`;
-
-    const lines = [`${heading}\n**Filters:** ${result.filters}\n`];
+    const lines = [
+      `## ${result.alerts.length} Active Alert${result.alerts.length === 1 ? '' : 's'}\n`,
+    ];
 
     for (const a of result.alerts) {
       // Derive a representative IANA zone from the first affected zone code so
@@ -345,12 +363,6 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       lines.push('');
       lines.push('---');
       lines.push('');
-    }
-
-    if (truncated) {
-      lines.push(
-        `_${result.count - result.shown} more alerts not shown. Narrow with area, severity, or event filters to see specific alerts._`,
-      );
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

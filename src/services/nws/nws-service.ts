@@ -505,6 +505,8 @@ export interface StationResult {
 
 export interface FindStationsResult {
   readonly stations: readonly StationResult[];
+  /** Total stations available near this location before the limit was applied. */
+  readonly totalFound: number;
 }
 
 export class NwsService {
@@ -709,7 +711,7 @@ export class NwsService {
 
     stations.sort((a, b) => a.distance - b.distance);
 
-    return { stations: stations.slice(0, limit) };
+    return { stations: stations.slice(0, limit), totalFound: stations.length };
   }
 
   /** List all valid alert event type names. */

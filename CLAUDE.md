@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.5.12
+**Version:** 0.5.13
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -177,6 +177,7 @@ Handlers receive a unified `ctx` object. Key properties:
 | `ctx.signal` | `AbortSignal` for cancellation. |
 | `ctx.requestId` | Unique request ID. |
 | `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
+| `ctx.enrich` | Success-path enrichment — accumulates notices, query echo, totals onto the request; reaches both `structuredContent` and `content[]`. Kind-tagged helpers: `.notice()`, `.total()`, `.echo()`, `.delta()`. |
 
 ---
 
@@ -272,7 +273,6 @@ Available skills:
 | `add-test` | Scaffold test file for a tool, resource, or service |
 | `field-test` | Exercise tools/resources/prompts with real inputs, verify behavior, report issues |
 | `security-pass` | Audit server for MCP-flavored security gaps: output injection, scope blast radius, input sinks, tenant isolation |
-| `devcheck` | Lint, format, typecheck, audit |
 | `polish-docs-meta` | Finalize docs, README, metadata, and agent protocol for shipping |
 | `maintenance` | Investigate changelogs, adopt upstream changes, sync skills to agent dirs |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
@@ -307,7 +307,8 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run devcheck` | Lint + format + typecheck + security |
 | `bun run audit:refresh` | Delete `bun.lock`, reinstall, re-audit. Use when `devcheck` flags a transitive advisory — Bun's `update` is sticky on transitive resolutions, so the advisory may be a stale-lockfile false positive. If it survives the refresh, it's real. |
 | `bun run tree` | Generate directory structure doc |
-| `bun run format` | Auto-fix formatting |
+| `bun run format` | Auto-fix formatting (safe autofixes only) |
+| `bun run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
 | `bun run lint:mcp` | Validate MCP tool/resource definitions |
 | `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` source files |
 | `bun run changelog:check` | Verify `CHANGELOG.md` is in sync with `changelog/*.md` (run by devcheck) |

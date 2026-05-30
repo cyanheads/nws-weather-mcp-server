@@ -404,9 +404,10 @@ describe('HTTP JSON-RPC error contracts', () => {
       expect(response.statusCode).toBe(200);
       expect(body.result).toMatchObject({
         structuredContent: {
-          count: 0,
-          shown: 0,
-          filters: 'national (no filters)',
+          alerts: [],
+          totalCount: 0,
+          shownCount: 0,
+          appliedFilters: 'national (no filters)',
         },
       });
       expect(mockFetch).toHaveBeenCalledOnce();

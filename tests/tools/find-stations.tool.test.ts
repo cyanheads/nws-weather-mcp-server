@@ -3,7 +3,7 @@
  * @module tests/tools/find-stations
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FindStationsResult } from '@/services/nws/nws-service.js';
 
@@ -38,6 +38,7 @@ const stationsResult: FindStationsResult = {
       forecastZone: 'https://api.weather.gov/zones/forecast/WAZ558',
     },
   ],
+  totalFound: 2,
 };
 
 describe('nws_find_stations', () => {
@@ -68,10 +69,30 @@ describe('nws_find_stations', () => {
     expect(result.stations[0].distanceKm).toBe(12.3);
     expect(result.stations[0].bearing).toBe('S');
     expect(result.stations[1].elevationM).toBe(6);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalFound).toBe(2);
+    expect(enrichment.totalCount).toBe(2);
+    expect(enrichment.notice).toBeUndefined();
+  });
+
+  it('sets enrichment notice when no stations found', async () => {
+    mockFindStations.mockResolvedValueOnce({ stations: [], totalFound: 0 });
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3 });
+    const result = await findStationsTool.handler(input, ctx);
+
+    expect(result.stations).toHaveLength(0);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalFound).toBe(0);
+    expect(enrichment.totalCount).toBe(0);
+    expect(enrichment.notice).toContain('No observation stations found');
   });
 
   it('passes limit to service', async () => {
-    mockFindStations.mockResolvedValueOnce({ stations: [] });
+    mockFindStations.mockResolvedValueOnce({ stations: [], totalFound: 0 });
 
     const ctx = createMockContext({ tenantId: 'test' });
     const input = findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 5 });
@@ -107,7 +128,7 @@ describe('nws_find_stations', () => {
       expect(text).toContain('Distance');
     });
 
-    it('renders message for empty results', () => {
+    it('renders fallback message for empty results', () => {
       const blocks = findStationsTool.format!({ stations: [] });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('No stations found');

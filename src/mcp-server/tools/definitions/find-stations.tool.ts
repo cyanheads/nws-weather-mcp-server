@@ -45,6 +45,26 @@ export const findStationsTool = tool('nws_find_stations', {
       .describe('Nearby stations sorted by distance'),
   }),
 
+  // Result-set context for the agent — total available stations (pre-limit), returned count,
+  // and empty-result guidance.
+  enrichment: {
+    totalFound: z
+      .number()
+      .describe(
+        'Total observation stations available near this location before the limit was applied',
+      ),
+    totalCount: z.number().describe('Number of stations returned (respects the limit parameter)'),
+    notice: z
+      .string()
+      .optional()
+      .describe('Guidance when no stations were found near the requested coordinates.'),
+  },
+
+  enrichmentTrailer: {
+    totalFound: { label: 'Total Nearby' },
+    totalCount: { label: 'Returned' },
+  },
+
   async handler(input, ctx) {
     const result = await getNwsService().findStations(
       input.latitude,
@@ -53,23 +73,35 @@ export const findStationsTool = tool('nws_find_stations', {
       ctx,
     );
 
-    return {
-      stations: result.stations.map((s) => ({
-        stationId: s.stationId,
-        name: s.name,
-        distanceKm: s.distance,
-        bearing: s.bearing,
-        elevationM: s.elevation.value != null ? Math.round(s.elevation.value) : null,
-        timeZone: s.timeZone,
-        county: s.county,
-        forecastZone: s.forecastZone,
-      })),
-    };
+    const stations = result.stations.map((s) => ({
+      stationId: s.stationId,
+      name: s.name,
+      distanceKm: s.distance,
+      bearing: s.bearing,
+      elevationM: s.elevation.value != null ? Math.round(s.elevation.value) : null,
+      timeZone: s.timeZone,
+      county: s.county,
+      forecastZone: s.forecastZone,
+    }));
+
+    ctx.enrich({ totalFound: result.totalFound, totalCount: stations.length });
+    if (stations.length === 0) {
+      ctx.enrich.notice(
+        `No observation stations found near (${input.latitude}, ${input.longitude}). Try coordinates closer to the US mainland, territories, or adjacent marine areas.`,
+      );
+    }
+
+    return { stations };
   },
 
   format: (result) => {
     if (result.stations.length === 0) {
-      return [{ type: 'text', text: 'No stations found near this location.' }];
+      return [
+        {
+          type: 'text',
+          text: 'No stations found near this location. See the enrichment block above for details.',
+        },
+      ];
     }
 
     const lines = [

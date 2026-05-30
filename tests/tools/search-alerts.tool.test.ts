@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AlertSearchResult } from '@/services/nws/nws-service.js';
 
@@ -47,31 +47,37 @@ describe('nws_search_alerts', () => {
     expect(input.status).toBe('Actual');
   });
 
-  it('returns alerts with count and filters', async () => {
+  it('returns alerts with enrichment counts and filters', async () => {
     mockSearchAlerts.mockResolvedValueOnce(alertResult);
 
     const ctx = createMockContext({ tenantId: 'test' });
     const input = searchAlertsTool.input.parse({ area: 'WA' });
     const result = await searchAlertsTool.handler(input, ctx);
 
-    expect(result.count).toBe(1);
-    expect(result.shown).toBe(1);
-    expect(result.filters).toContain('area=WA');
     expect(result.alerts[0].event).toBe('Wind Advisory');
     expect(result.alerts[0].instruction).toBe('Secure outdoor objects.');
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(1);
+    expect(enrichment.shownCount).toBe(1);
+    expect(enrichment.appliedFilters).toContain('area=WA');
+    expect(enrichment.notice).toBeUndefined();
   });
 
-  it('returns zero count for no alerts', async () => {
+  it('populates enrichment notice and zero counts for no alerts', async () => {
     mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
     const ctx = createMockContext({ tenantId: 'test' });
     const input = searchAlertsTool.input.parse({});
     const result = await searchAlertsTool.handler(input, ctx);
 
-    expect(result.count).toBe(0);
-    expect(result.shown).toBe(0);
-    expect(result.filters).toBe('national (no filters)');
     expect(result.alerts).toHaveLength(0);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(0);
+    expect(enrichment.shownCount).toBe(0);
+    expect(enrichment.appliedFilters).toBe('national (no filters)');
+    expect(enrichment.notice).toContain('No active alerts matched');
   });
 
   it('validates point format', async () => {
@@ -103,9 +109,10 @@ describe('nws_search_alerts', () => {
 
     const ctx = createMockContext({ tenantId: 'test' });
     const input = searchAlertsTool.input.parse({ area: '', point: '', zone: '' });
-    const result = await searchAlertsTool.handler(input, ctx);
+    await searchAlertsTool.handler(input, ctx);
 
-    expect(result.filters).toBe('national (no filters)');
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.appliedFilters).toBe('national (no filters)');
     expect(mockSearchAlerts).toHaveBeenCalledWith(
       expect.objectContaining({
         area: undefined,
@@ -184,7 +191,7 @@ describe('nws_search_alerts', () => {
     );
   });
 
-  it('includes certainty and non-default status in the filter summary', async () => {
+  it('includes certainty and non-default status in the enrichment filter summary', async () => {
     mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
     const ctx = createMockContext({ tenantId: 'test' });
@@ -192,31 +199,22 @@ describe('nws_search_alerts', () => {
       certainty: ['Observed'],
       status: 'Test',
     });
-    const result = await searchAlertsTool.handler(input, ctx);
+    await searchAlertsTool.handler(input, ctx);
 
-    expect(result.filters).toContain('certainty=Observed');
-    expect(result.filters).toContain('status=Test');
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.appliedFilters).toContain('certainty=Observed');
+    expect(enrichment.appliedFilters).toContain('status=Test');
   });
 
   describe('format', () => {
-    it('renders helpful guidance for empty results', () => {
-      const blocks = searchAlertsTool.format!({
-        count: 0,
-        shown: 0,
-        filters: 'area=WA',
-        alerts: [],
-      });
+    it('renders fallback message for empty results', () => {
+      const blocks = searchAlertsTool.format!({ alerts: [] });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('No active alerts found');
-      expect(text).toContain('area=WA');
-      expect(text).toContain('broaden');
+      expect(text).toContain('No active alerts matched');
     });
 
     it('renders alert details', () => {
       const blocks = searchAlertsTool.format!({
-        count: 1,
-        shown: 1,
-        filters: 'area=WA',
         alerts: [
           {
             id: 'test',
@@ -244,9 +242,6 @@ describe('nws_search_alerts', () => {
 
     it('renders affected zones when present', () => {
       const blocks = searchAlertsTool.format!({
-        count: 1,
-        shown: 1,
-        filters: 'area=WA',
         alerts: [
           {
             ...alertResult.alerts[0],
@@ -263,9 +258,6 @@ describe('nws_search_alerts', () => {
       // it with a label that reflects that — flat "Expires" misleads readers
       // when the message refreshes before the hazard begins.
       const blocks = searchAlertsTool.format!({
-        count: 1,
-        shown: 1,
-        filters: 'event=Flood Watch',
         alerts: [
           {
             id: 'urn:test:1',
@@ -295,9 +287,6 @@ describe('nws_search_alerts', () => {
 
     it('renders alert times with a named US zone when affectedZones are present (regression: issue #8)', () => {
       const blocks = searchAlertsTool.format!({
-        count: 1,
-        shown: 1,
-        filters: 'area=WA',
         alerts: [
           {
             id: 'urn:test:2',
@@ -326,9 +315,6 @@ describe('nws_search_alerts', () => {
 
     it('falls back to numeric offset when affectedZones cannot be resolved to a TZ', () => {
       const blocks = searchAlertsTool.format!({
-        count: 1,
-        shown: 1,
-        filters: 'event=Marine Warning',
         alerts: [
           {
             id: 'urn:test:3',
@@ -355,9 +341,6 @@ describe('nws_search_alerts', () => {
 
     it('uses CDT for central-zone state codes', () => {
       const blocks = searchAlertsTool.format!({
-        count: 1,
-        shown: 1,
-        filters: 'area=OK',
         alerts: [
           {
             id: 'urn:test:4',
@@ -379,17 +362,6 @@ describe('nws_search_alerts', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('CDT');
       expect(text).not.toContain('UTC-');
-    });
-
-    it('shows truncation notice when capped', () => {
-      const blocks = searchAlertsTool.format!({
-        count: 50,
-        shown: 25,
-        filters: 'national (no filters)',
-        alerts: [],
-      });
-      const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('25 more alerts not shown');
     });
   });
 });

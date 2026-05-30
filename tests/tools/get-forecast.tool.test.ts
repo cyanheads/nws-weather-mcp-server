@@ -3,7 +3,7 @@
  * @module tests/tools/get-forecast
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ForecastResult } from '@/services/nws/nws-service.js';
 
@@ -91,6 +91,34 @@ describe('nws_get_forecast', () => {
 
   it('rejects latitude out of range', () => {
     expect(() => getForecastTool.input.parse({ latitude: 100, longitude: 0 })).toThrow();
+  });
+
+  describe('enrichment', () => {
+    it('populates periodCount and mode on success (7-day)', async () => {
+      mockGetForecast.mockResolvedValueOnce(forecastResult);
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
+      const input = getForecastTool.input.parse({ latitude: 47.6, longitude: -122.3 });
+      await getForecastTool.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment).toMatchObject({ periodCount: 1, mode: '7-day' });
+    });
+
+    it('populates mode as "hourly" when hourly=true', async () => {
+      mockGetForecast.mockResolvedValueOnce(forecastResult);
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
+      const input = getForecastTool.input.parse({
+        latitude: 47.6,
+        longitude: -122.3,
+        hourly: true,
+      });
+      await getForecastTool.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment).toMatchObject({ mode: 'hourly' });
+    });
   });
 
   describe('format', () => {

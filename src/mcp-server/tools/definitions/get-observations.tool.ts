@@ -151,6 +151,24 @@ export const getObservationsTool = tool('nws_get_observations', {
       .describe('Cloud layer information'),
   }),
 
+  // Result-set context for the agent — station echo (disjoint from output fields)
+  // and a staleness notice when the latest observation is more than 2 hours old.
+  enrichment: {
+    station: z.string().describe('Station ID that served the observation (e.g., "KSEA")'),
+    observedAt: z.string().describe('Observation timestamp (ISO 8601)'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when the latest observation is more than 2 hours old — data may not reflect current conditions.',
+      ),
+  },
+
+  enrichmentTrailer: {
+    station: { label: 'Station' },
+    observedAt: { label: 'Observed' },
+  },
+
   async handler(input, ctx) {
     const normalizedStationId = normalizeStationId(input.station_id);
 
@@ -170,6 +188,23 @@ export const getObservationsTool = tool('nws_get_observations', {
     );
 
     const obs = result.observation;
+
+    ctx.enrich({
+      station: obs.stationId,
+      observedAt: obs.timestamp,
+    });
+
+    // Flag stale observations — NWS stations report roughly every hour.
+    // Anything older than 2 hours warrants a notice.
+    const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
+    const observedMs = new Date(obs.timestamp).getTime();
+    if (!Number.isNaN(observedMs) && Date.now() - observedMs > STALE_THRESHOLD_MS) {
+      const ageHours = Math.round(((Date.now() - observedMs) / 3_600_000) * 10) / 10;
+      ctx.enrich.notice(
+        `Observation is ${ageHours}h old — data may not reflect current conditions. Try a different station using nws_find_stations.`,
+      );
+    }
+
     return {
       stationId: obs.stationId,
       stationName: obs.stationName,

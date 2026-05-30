@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ObservationResult } from '@/services/nws/nws-service.js';
 
@@ -158,6 +158,65 @@ describe('nws_get_observations', () => {
         reason: 'missing_input',
         recovery: { hint: expect.stringContaining('station_id or both latitude and longitude') },
       },
+    });
+  });
+
+  describe('enrichment', () => {
+    it('populates station and observedAt on success', async () => {
+      mockGetObservation.mockResolvedValueOnce(observationResult);
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
+      const input = getObservationsTool.input.parse({ station_id: 'KSEA' });
+      await getObservationsTool.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment).toMatchObject({
+        station: 'KSEA',
+        observedAt: '2026-04-03T11:53:00+00:00',
+      });
+      // No staleness notice — fixture timestamp is recent relative to no real clock
+      // (the test doesn't control wall-clock, so we only assert notice is absent
+      // when the timestamp is exactly as returned by the mock)
+    });
+
+    it('adds a staleness notice when observation is more than 2 hours old', async () => {
+      // Set the timestamp to 3 hours ago
+      const staleTimestamp = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+      const staleResult: ObservationResult = {
+        observation: {
+          ...observationResult.observation,
+          timestamp: staleTimestamp,
+        },
+      };
+      mockGetObservation.mockResolvedValueOnce(staleResult);
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
+      const input = getObservationsTool.input.parse({ station_id: 'KSEA' });
+      await getObservationsTool.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment).toHaveProperty('notice');
+      expect(typeof enrichment.notice).toBe('string');
+      expect(enrichment.notice as string).toContain('old');
+    });
+
+    it('does not add a staleness notice for fresh observations', async () => {
+      // Set the timestamp to 30 minutes ago
+      const freshTimestamp = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const freshResult: ObservationResult = {
+        observation: {
+          ...observationResult.observation,
+          timestamp: freshTimestamp,
+        },
+      };
+      mockGetObservation.mockResolvedValueOnce(freshResult);
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
+      const input = getObservationsTool.input.parse({ station_id: 'KSEA' });
+      await getObservationsTool.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment).not.toHaveProperty('notice');
     });
   });
 

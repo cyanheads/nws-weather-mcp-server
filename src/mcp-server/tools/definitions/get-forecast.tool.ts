@@ -97,6 +97,19 @@ export const getForecastTool = tool('nws_get_forecast', {
       .describe('Forecast periods'),
   }),
 
+  // Result-set context for the agent — period count and mode echo so agents
+  // know forecast granularity without re-deriving from the array. generatedAt
+  // already lives in output; not duplicated here.
+  enrichment: {
+    periodCount: z.number().describe('Number of forecast periods returned'),
+    mode: z.string().describe('Forecast mode: "hourly" or "7-day"'),
+  },
+
+  enrichmentTrailer: {
+    periodCount: { label: 'Periods' },
+    mode: { label: 'Mode' },
+  },
+
   async handler(input, ctx) {
     const result = await getNwsService().getForecast(
       input.latitude,
@@ -104,6 +117,11 @@ export const getForecastTool = tool('nws_get_forecast', {
       input.hourly,
       ctx,
     );
+
+    ctx.enrich({
+      periodCount: result.forecast.periods.length,
+      mode: input.hourly ? 'hourly' : '7-day',
+    });
 
     return {
       location: result.location,

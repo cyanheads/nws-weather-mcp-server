@@ -299,6 +299,26 @@ describe('NwsService', () => {
       await expect(result).rejects.toThrow('has no recent observations');
     });
 
+    it('throws no_observations (not station_not_found) when observations/latest returns 404 for a known station', async () => {
+      // Station metadata succeeds; observations/latest 404 must surface reason: 'no_observations',
+      // not reason: 'station_not_found'. Before the fix both legs shared stationNotFoundFactory.
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(stationInfoResponse))
+        .mockResolvedValueOnce(jsonResponse({}, 404));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().getObservation({ stationId: 'KSEA' }, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason: 'no_observations' },
+      });
+      // Crucially — must NOT be station_not_found
+      await expect(result).rejects.not.toMatchObject({
+        data: { reason: 'station_not_found' },
+      });
+    });
+
     it('throws notFound when the nearest station has no recent observations', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse(pointsResponse))
@@ -320,6 +340,23 @@ describe('NwsService', () => {
 
       await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
       await expect(result).rejects.toThrow('has no recent observations');
+    });
+
+    it('retries observationStationsUrl fetch on transient 500 before succeeding (coord path)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(pointsResponse))
+        .mockResolvedValueOnce(jsonResponse({}, 500)) // transient failure on stations fetch
+        .mockResolvedValueOnce(jsonResponse(stationsResponse)) // retry succeeds
+        .mockResolvedValueOnce(jsonResponse(observationResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service
+        .getNwsService()
+        .getObservation({ latitude: 47.6062, longitude: -122.3321 }, ctx);
+
+      expect(result.observation.stationId).toBe('KBFI');
+      // 4 fetch calls: points, stations (fail), stations (retry), observation
+      expect(mockFetch).toHaveBeenCalledTimes(4);
     });
 
     it('throws when no stations found', async () => {

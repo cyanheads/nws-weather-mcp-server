@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.5.13
+**Version:** 0.6.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -21,7 +21,7 @@ Full design in `docs/design.md`. Key constraints:
 - **Transient 500s:** Grid forecast endpoints occasionally fail. Retry with backoff.
 - **Hourly = 156 periods:** Truncate in `format()` to avoid flooding context (next 24-48h, note remainder).
 
-### Tools (5)
+### Tools (7)
 
 | Tool | Purpose |
 |:-----|:--------|
@@ -30,6 +30,8 @@ Full design in `docs/design.md`. Key constraints:
 | `nws_get_observations` | Current conditions from nearest station (by coordinates or station ID) |
 | `nws_find_stations` | Discover nearby observation stations sorted by proximity |
 | `nws_list_alert_types` | List all valid alert event type names (for `event` filter discovery) |
+| `nws_get_office_discussion` | Latest narrative product (AFD/HWO/ZFP/SPS) from a Weather Forecast Office |
+| `nws_get_zone_forecast` | Text forecast periods for a public NWS forecast zone |
 
 ### Resources (1)
 

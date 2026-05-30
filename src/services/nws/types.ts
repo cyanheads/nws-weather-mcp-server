@@ -102,3 +102,31 @@ export interface Station {
   readonly stationId: string;
   readonly timeZone: string;
 }
+
+/** Product list entry from /products/types/{type}/locations/{office} — no productText. */
+export interface ProductListEntry {
+  readonly id: string;
+  readonly issuanceTime: string;
+  readonly issuingOffice: string;
+  readonly productCode: string;
+  readonly productName: string;
+  readonly wmoCollectiveId: string;
+}
+
+/** Full product from /products/{id} — includes productText. */
+export interface ProductDetail extends ProductListEntry {
+  readonly productText: string;
+}
+
+/** Zone forecast response from /zones/forecast/{zone_id}/forecast. */
+export interface ZoneForecastResponse {
+  readonly periods: readonly ZoneForecastPeriod[];
+  readonly updated: string;
+}
+
+/** Single period from a zone forecast. */
+export interface ZoneForecastPeriod {
+  readonly detailedForecast: string;
+  readonly name: string;
+  readonly number: number;
+}

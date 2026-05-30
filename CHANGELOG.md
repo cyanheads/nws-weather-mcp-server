@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-05-30
+
+WFO office discussions, zone forecasts, enrichment on forecast/observations, and observations/latest 404 fix
+
 ## [0.5.13](changelog/0.5.x/0.5.13.md) — 2026-05-30
 
 Enrichment adoption: `nws_search_alerts` and `nws_find_stations` surface result totals, applied filters, and empty-result guidance in a typed `enrichment` block reaching both channels. `nws_find_stations` reports true pre-limit total via new `totalFound`.

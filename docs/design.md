@@ -122,6 +122,46 @@ Lists all valid NWS alert event type names (111 types as of 2026). Use to discov
 
 ---
 
+### `nws_get_office_discussion`
+
+Fetches the latest narrative product from a Weather Forecast Office (WFO). Primarily used for Area Forecast Discussions (AFD) that explain the meteorological reasoning behind forecasts — synoptic setup, model guidance, forecaster confidence.
+
+**Input:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `office` | string | Yes | 3-letter WFO code (e.g., "SEW"). Returned as the `office` field by `nws_get_forecast`. |
+| `product_type` | string | No | `AFD` (default), `HWO`, `ZFP`, or `SPS`. |
+
+**API endpoints (two-hop):**
+
+1. `GET /products/types/{product_type}/locations/{office}` — lists products, newest first; `@graph[0]` is the latest
+2. `GET /products/{id}` — retrieves full product text
+
+**DX trap:** An unknown office returns HTTP 200 with an empty `@graph`, not a 404. Detect the empty list and throw a `no_products` error with recovery instructions.
+
+**Returns:** `productText` (full narrative), `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`.
+
+---
+
+### `nws_get_zone_forecast`
+
+Fetches the text-based forecast for a public NWS forecast zone. Returns named periods (e.g., "Today", "Tonight") with narrative text from local forecasters. Completes the alert-to-forecast chain — `nws_search_alerts` returns zone codes in `affectedZones`, and `nws_find_stations` returns `forecastZone`.
+
+**Input:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `zone_id` | string | Yes | Public forecast zone code (e.g., "WAZ315"). Returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone`), and `nws_search_alerts` (`affectedZones`). |
+
+**API endpoint:** `GET /zones/forecast/{zone_id}/forecast`
+
+A 404 means an invalid or unsupported zone (county codes `XXC###` are not supported — use the forecast zone code `XXZ###`).
+
+**Returns:** `zoneId`, `updated`, `periods` (number, name, detailedForecast).
+
+---
+
 ## Resources
 
 ### `nws://alert-types`

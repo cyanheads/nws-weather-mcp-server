@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-05-29 05:24:03
+Generated on: 2026-05-30 13:05:09
 
 ```text
 nws-weather-mcp-server/
@@ -21,6 +21,7 @@ nws-weather-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.5.x/
+│   ├── 0.6.x/
 │   └── template.md
 ├── claude-plans/
 ├── docs/
@@ -85,8 +86,6 @@ nws-weather-mcp-server/
 │   │   └── SKILL.md
 │   ├── design-mcp-server/
 │   │   └── SKILL.md
-│   ├── devcheck/
-│   │   └── SKILL.md
 │   ├── field-test/
 │   │   └── SKILL.md
 │   ├── git-wrapup/
@@ -125,6 +124,8 @@ nws-weather-mcp-server/
 │   │       │   ├── find-stations.tool.ts
 │   │       │   ├── get-forecast.tool.ts
 │   │       │   ├── get-observations.tool.ts
+│   │       │   ├── get-office-discussion.tool.ts
+│   │       │   ├── get-zone-forecast.tool.ts
 │   │       │   ├── index.ts
 │   │       │   ├── list-alert-types.tool.ts
 │   │       │   └── search-alerts.tool.ts
@@ -152,6 +153,8 @@ nws-weather-mcp-server/
 │       ├── format-utils.test.ts
 │       ├── get-forecast.tool.test.ts
 │       ├── get-observations.tool.test.ts
+│       ├── get-office-discussion.tool.test.ts
+│       ├── get-zone-forecast.tool.test.ts
 │       ├── list-alert-types.tool.test.ts
 │       └── search-alerts.tool.test.ts
 ├── .dockerignore

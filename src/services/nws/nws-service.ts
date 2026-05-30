@@ -27,7 +27,9 @@ import type {
   NwsValue,
   Observation,
   PointsMetadata,
+  ProductListEntry,
   Station,
+  ZoneForecastPeriod,
 } from './types.js';
 
 const BASE_URL = 'https://api.weather.gov';
@@ -509,6 +511,21 @@ export interface FindStationsResult {
   readonly totalFound: number;
 }
 
+export interface OfficeDiscussionResult {
+  readonly issuanceTime: string;
+  readonly issuingOffice: string;
+  readonly productCode: string;
+  readonly productName: string;
+  readonly productText: string;
+  readonly wmoCollectiveId: string;
+}
+
+export interface ZoneForecastResult {
+  readonly periods: readonly ZoneForecastPeriod[];
+  readonly updated: string;
+  readonly zoneId: string;
+}
+
 export class NwsService {
   /** Get forecast (standard or hourly) for coordinates. */
   async getForecast(
@@ -596,6 +613,15 @@ export class NwsService {
           ...ctx.recoveryFor('station_not_found'),
         });
 
+      // Separate factory for the observations/latest leg: a 404 there means the
+      // station exists but has no current data — not a missing station ID.
+      const noObservationsFactory: NotFoundFactory = (message) =>
+        notFound(message, {
+          stationId,
+          reason: 'no_observations',
+          ...ctx.recoveryFor('no_observations'),
+        });
+
       ctx.log.info('Fetching station metadata and latest observation', { stationId });
       const [stationData, obsData] = await Promise.all([
         nwsFetch<Record<string, unknown>>(
@@ -609,8 +635,8 @@ export class NwsService {
           `${BASE_URL}/stations/${stationId}/observations/latest`,
           ctx,
           MAX_RETRIES,
-          notFoundMsg,
-          stationNotFoundFactory,
+          `Station '${stationId}' has no recent observations.`,
+          noObservationsFactory,
         ),
       ]);
 
@@ -637,7 +663,7 @@ export class NwsService {
     const stationsData = await nwsFetch<Record<string, unknown>>(
       points.observationStationsUrl,
       ctx,
-      0,
+      MAX_RETRIES,
     );
     const nearestStation = parseStations(stationsData)
       .map((station) => ({
@@ -692,7 +718,11 @@ export class NwsService {
     const points = await resolvePoints(lat, lon, ctx);
 
     ctx.log.info('Fetching stations', { url: points.observationStationsUrl });
-    const data = await nwsFetch<Record<string, unknown>>(points.observationStationsUrl, ctx, 0);
+    const data = await nwsFetch<Record<string, unknown>>(
+      points.observationStationsUrl,
+      ctx,
+      MAX_RETRIES,
+    );
 
     const stations = parseStations(data).map((s) => {
       const dist = haversine(lat, lon, s.coordinates[1], s.coordinates[0]);
@@ -717,8 +747,94 @@ export class NwsService {
   /** List all valid alert event type names. */
   async listAlertTypes(ctx: Context): Promise<readonly string[]> {
     ctx.log.info('Fetching alert types');
-    const data = await nwsFetch<Record<string, unknown>>(`${BASE_URL}/alerts/types`, ctx, 0);
+    const data = await nwsFetch<Record<string, unknown>>(
+      `${BASE_URL}/alerts/types`,
+      ctx,
+      MAX_RETRIES,
+    );
     return (data.eventTypes as string[]) ?? [];
+  }
+
+  /**
+   * Get the latest narrative product (e.g., AFD, HWO) from a Weather Forecast Office.
+   * Two-hop: (1) list products for office/type — newest first; (2) fetch full product by ID.
+   * An unknown office returns HTTP 200 with an empty @graph — detected and thrown as no_products.
+   */
+  async getOfficeDiscussion(
+    office: string,
+    productType: string,
+    ctx: Context,
+  ): Promise<OfficeDiscussionResult> {
+    const listUrl = `${BASE_URL}/products/types/${productType}/locations/${office}`;
+    ctx.log.info('Fetching product list', { office, productType });
+
+    const listData = await nwsFetch<Record<string, unknown>>(listUrl, ctx, MAX_RETRIES);
+    const graph = (listData['@graph'] as ProductListEntry[] | undefined) ?? [];
+
+    if (graph.length === 0) {
+      throw notFound(
+        `No ${productType} products found for office "${office}". Verify the 3-letter WFO code (e.g., "SEW" for Seattle). The office code is the "office" or "cwa" field returned by nws_get_forecast.`,
+        {
+          office,
+          productType,
+          reason: 'no_products',
+          recovery: {
+            hint: `Use nws_get_forecast with coordinates to find the office code (the "office" field in the location object), then retry with that value.`,
+          },
+        },
+      );
+    }
+
+    // graph.length > 0 is checked above; the first item is always present here.
+    const latest = graph[0] as ProductListEntry;
+    const productUrl = `${BASE_URL}/products/${latest.id}`;
+    ctx.log.info('Fetching product detail', { id: latest.id });
+
+    const detail = await nwsFetch<Record<string, unknown>>(productUrl, ctx, MAX_RETRIES);
+
+    return {
+      issuanceTime: detail.issuanceTime as string,
+      issuingOffice: detail.issuingOffice as string,
+      productCode: detail.productCode as string,
+      productName: detail.productName as string,
+      productText: detail.productText as string,
+      wmoCollectiveId: detail.wmoCollectiveId as string,
+    };
+  }
+
+  /** Get the text forecast for a public forecast zone. */
+  async getZoneForecast(zoneId: string, ctx: Context): Promise<ZoneForecastResult> {
+    const url = `${BASE_URL}/zones/forecast/${zoneId}/forecast`;
+    ctx.log.info('Fetching zone forecast', { zoneId });
+
+    const data = await nwsFetch<Record<string, unknown>>(
+      url,
+      ctx,
+      MAX_RETRIES,
+      `Zone "${zoneId}" not found or has no forecast. Provide a public forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts (the "affectedZones" list).`,
+      (message) =>
+        notFound(message, {
+          zoneId,
+          reason: 'zone_not_found',
+          recovery: {
+            hint: `Obtain a valid forecast zone code from: the "forecastZone" field in nws_get_forecast output, the "forecastZone" column in nws_find_stations, or "affectedZones" in nws_search_alerts. Zone codes follow the pattern XXZ### (e.g., "WAZ315").`,
+          },
+        }),
+    );
+
+    const props = data.properties as Record<string, unknown>;
+    const rawPeriods = (props.periods as Record<string, unknown>[]) ?? [];
+    const periods: ZoneForecastPeriod[] = rawPeriods.map((p) => ({
+      number: p.number as number,
+      name: p.name as string,
+      detailedForecast: p.detailedForecast as string,
+    }));
+
+    return {
+      zoneId,
+      updated: props.updated as string,
+      periods,
+    };
   }
 }
 

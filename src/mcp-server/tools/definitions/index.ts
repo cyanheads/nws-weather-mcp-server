@@ -6,5 +6,7 @@
 export { findStationsTool } from './find-stations.tool.js';
 export { getForecastTool } from './get-forecast.tool.js';
 export { getObservationsTool } from './get-observations.tool.js';
+export { getOfficeDiscussionTool } from './get-office-discussion.tool.js';
+export { getZoneForecastTool } from './get-zone-forecast.tool.js';
 export { listAlertTypesTool } from './list-alert-types.tool.js';
 export { searchAlertsTool } from './search-alerts.tool.js';

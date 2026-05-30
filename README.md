@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/nws-weather-mcp-server</h1>
   <p><b>Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.</b>
-  <div>5 Tools • 1 Resource</div>
+  <div>7 Tools • 1 Resource</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.13-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3+-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.6.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3+-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Tools
 
-Five tools for real-time US weather data:
+Seven tools for real-time US weather data:
 
 | Tool | Description |
 |:----------|:------------|
@@ -38,6 +38,8 @@ Five tools for real-time US weather data:
 | `nws_get_observations` | Current conditions by coordinates (nearest station) or station ID. |
 | `nws_find_stations` | Nearby observation stations sorted by distance with bearing. |
 | `nws_list_alert_types` | All valid alert event type names for filter discovery. |
+| `nws_get_office_discussion` | Latest narrative product (AFD, HWO, ZFP, SPS) from a Weather Forecast Office. |
+| `nws_get_zone_forecast` | Text forecast periods for a public NWS forecast zone. |
 
 ### `nws_get_forecast`
 
@@ -96,6 +98,29 @@ List all valid NWS alert event type names.
 
 - Returns the full set of event types the NWS API recognizes (e.g., "Tornado Warning", "Heat Advisory")
 - Use to discover valid values for the `event` filter in `nws_search_alerts`
+
+---
+
+### `nws_get_office_discussion`
+
+Get the latest narrative product from a Weather Forecast Office (WFO).
+
+- `office`: 3-letter WFO code (e.g., `SEW` for Seattle) — returned as the `office` field by `nws_get_forecast`
+- `product_type`: `AFD` (Area Forecast Discussion, default), `HWO` (Hazardous Weather Outlook), `ZFP` (Zone Forecast Product), `SPS` (Special Weather Statement)
+- Two-hop fetch: lists products by office/type (newest first), then retrieves full product text
+- Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`
+- Unknown office returns a clear error with recovery instructions (the NWS API returns HTTP 200 with an empty list, not a 404)
+
+---
+
+### `nws_get_zone_forecast`
+
+Get the text forecast for a public NWS forecast zone.
+
+- `zone_id`: forecast zone code (e.g., `WAZ315`) — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (`affectedZones`)
+- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters
+- Completes the alert-to-forecast chain: look up alert zones, then retrieve zone forecasts
+- County zone codes (`XXC###`) are not supported — use the forecast zone code
 
 ## Resources
 

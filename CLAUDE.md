@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.6.0
+**Version:** 0.6.1
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -277,6 +277,7 @@ Available skills:
 | `security-pass` | Audit server for MCP-flavored security gaps: output injection, scope blast radius, input sinks, tenant isolation |
 | `polish-docs-meta` | Finalize docs, README, metadata, and agent protocol for shipping |
 | `maintenance` | Investigate changelogs, adopt upstream changes, sync skills to agent dirs |
+| `orchestrations` | Chain task skills into a gated multi-phase pipeline — build-out, QA-fix, update-ship — when you can spawn sub-agents |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
 | `report-issue-local` | File a bug or feature request against this server's own repo via `gh` CLI |
 | `tool-defs-analysis` | Read-only audit of tool/resource/prompt language: voice, leaks, defaults, recovery hints, sparsity |
@@ -289,11 +290,14 @@ Available skills:
 | `api-context` | Context interface, logger, state, progress |
 | `api-errors` | McpError, JsonRpcErrorCode, error patterns |
 | `api-linter` | Definition linter rule catalog — invoked by `bun run lint:mcp` and `devcheck` |
+| `api-mirror` | MirrorService: persistent SQLite-backed local mirror of a bulk upstream dataset — FTS5, incremental sync, pluggable store |
 | `api-services` | LLM, Speech, Graph services |
 | `api-telemetry` | OTel catalog: spans, metrics, completion logs, env config, cardinality rules |
 | `api-testing` | createMockContext, test patterns |
 | `api-utils` | Formatting, parsing, security, pagination, scheduling, telemetry helpers |
 | `api-workers` | Cloudflare Workers runtime |
+
+**Chaining skills into pipelines.** When the user wants a multi-phase effort — build this server out, QA-and-fix the surface, update-and-ship — *and you can spawn sub-agents*, `skills/orchestrations/SKILL.md` sequences the task skills above into a gated pipeline with verification at each step. Read it to drive the run. Optional: skip it if you can't orchestrate sub-agents, and ignore it entirely if you were *spawned* as one — you've already been scoped to a single phase.
 
 When you complete a skill's checklist, check the boxes and add a completion timestamp at the end (e.g., `Completed: 2026-03-11`).
 

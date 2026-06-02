@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-05-30 13:05:09
+Generated on: 2026-06-02 14:30:13
 
 ```text
 nws-weather-mcp-server/
@@ -31,12 +31,14 @@ nws-weather-mcp-server/
 │   ├── build.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
+│   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/
@@ -63,6 +65,8 @@ nws-weather-mcp-server/
 │   ├── api-errors/
 │   │   └── SKILL.md
 │   ├── api-linter/
+│   │   └── SKILL.md
+│   ├── api-mirror/
 │   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
@@ -91,6 +95,13 @@ nws-weather-mcp-server/
 │   ├── git-wrapup/
 │   │   └── SKILL.md
 │   ├── maintenance/
+│   │   └── SKILL.md
+│   ├── orchestrations/
+│   │   ├── workflows/
+│   │   │   ├── field-test-fix.md
+│   │   │   ├── fix-wrapup-release.md
+│   │   │   ├── greenfield-build.md
+│   │   │   └── maintenance-release.md
 │   │   └── SKILL.md
 │   ├── polish-docs-meta/
 │   │   ├── references/
@@ -147,6 +158,7 @@ nws-weather-mcp-server/
 │   │   └── alert-types.resource.test.ts
 │   ├── services/
 │   │   └── nws/
+│   │       ├── nws-service-extended.test.ts
 │   │       └── nws-service.test.ts
 │   └── tools/
 │       ├── find-stations.tool.test.ts
@@ -156,7 +168,12 @@ nws-weather-mcp-server/
 │       ├── get-office-discussion.tool.test.ts
 │       ├── get-zone-forecast.tool.test.ts
 │       ├── list-alert-types.tool.test.ts
-│       └── search-alerts.tool.test.ts
+│       ├── observation-format.test.ts
+│       ├── office-discussion-extended.test.ts
+│       ├── search-alerts-extended.test.ts
+│       ├── search-alerts.tool.test.ts
+│       ├── security.test.ts
+│       └── zone-forecast-extended.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore

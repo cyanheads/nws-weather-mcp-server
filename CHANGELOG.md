@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.1](changelog/0.6.x/0.6.1.md) — 2026-06-02
+
+mcp-ts-core 0.9.21: per-request log context fix, secret-stripped error URLs, fail-fast retries; skill sync + README key rename
+
 ## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-05-30
 
 WFO office discussions, zone forecasts, enrichment on forecast/observations, and observations/latest 404 fix

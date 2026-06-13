@@ -18,6 +18,8 @@ import {
 import { initNwsService } from '@/services/nws/nws-service.js';
 
 await createApp({
+  name: 'nws-weather-mcp-server',
+  title: 'nws-weather-mcp-server',
   tools: [
     getForecastTool,
     searchAlertsTool,

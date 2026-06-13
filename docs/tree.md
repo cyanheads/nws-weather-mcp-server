@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-06-02 14:30:13
+Generated on: 2026-06-13 04:44:47
 
 ```text
 nws-weather-mcp-server/
@@ -33,6 +33,7 @@ nws-weather-mcp-server/
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
+│   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
@@ -119,6 +120,10 @@ nws-weather-mcp-server/
 │   ├── security-pass/
 │   │   └── SKILL.md
 │   ├── setup/
+│   │   └── SKILL.md
+│   ├── techniques/
+│   │   ├── references/
+│   │   │   └── outline-on-overflow.md
 │   │   └── SKILL.md
 │   └── tool-defs-analysis/
 │       └── SKILL.md

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.2](changelog/0.6.x/0.6.2.md) — 2026-06-12
+
+mcp-ts-core ^0.10.6 adoption: explicit server identity, MCPB bundle-content cleaner, packaging + antipattern lint guards, Docker healthcheck; skills synced
+
 ## [0.6.1](changelog/0.6.x/0.6.1.md) — 2026-06-02
 
 mcp-ts-core 0.9.21: per-request log context fix, secret-stripped error URLs, fail-fast retries; skill sync + README key rename

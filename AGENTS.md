@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.6.1
+**Version:** 0.6.2
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -65,7 +65,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 - **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. Plain `Error` is fine; the framework catches, classifies, and formats. Use error factories (`notFound()`, `validationError()`, etc.) when the error code matters.
 - **Use `ctx.log`** for request-scoped logging. No `console` calls.
 - **Use `ctx.state`** for tenant-scoped storage. Never access persistence directly.
-- **Check `ctx.elicit` / `ctx.sample`** for presence before calling.
+- **Check `ctx.elicit`** for presence before calling.
 - **Secrets in env vars only** — never hardcoded.
 - **Close the loop on issues.** When implementing work tracked by a GitHub issue, comment on the issue with what landed and close it. Do both — a comment without a close leaves stale issues open; a close without a comment leaves no record of what shipped. The comment is for future readers — state the concrete changes, not the conversation that produced them.
 
@@ -326,7 +326,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 ## Bundling
 
-`bun run bundle` produces a `.mcpb` extension bundle for one-click install in Claude Desktop. MCPB is stdio-only — HTTP deployments are unaffected.
+`bun run bundle` builds, packs to `.mcpb`, then runs `scripts/clean-mcpb.ts` to strip dev-dir agent files from the bundle. MCPB is stdio-only — HTTP deployments are unaffected.
 
 **Adding an env var requires both files:** `server.json` (registry discovery, `environmentVariables[]`) and `manifest.json` (bundle install UX, `mcp_config.env` + `user_config`). `lint:packaging` (run by `devcheck`) verifies the env var names match.
 

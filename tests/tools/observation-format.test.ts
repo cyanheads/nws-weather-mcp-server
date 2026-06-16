@@ -98,6 +98,20 @@ describe('nws_get_observations format() — unit conversions', () => {
   });
 });
 
+describe('nws_get_observations format() — textDescription', () => {
+  it('renders the bold conditions summary when present', () => {
+    const t = text({ textDescription: 'Mostly Cloudy' });
+    expect(t).toContain('**Mostly Cloudy**');
+  });
+
+  it('omits the bold segment and renders no **** when textDescription is empty', () => {
+    const t = text({ textDescription: '' });
+    expect(t).not.toContain('****');
+    expect(t).not.toMatch(/\*\*\s*\*\*/);
+    expect(t).toContain('Observed:');
+  });
+});
+
 describe('nws_get_observations format() — heat index and wind chill', () => {
   it('renders heat index when present', () => {
     // 35°C = 95°F

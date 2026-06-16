@@ -8,6 +8,16 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp } from '../format-utils.js';
 
+/**
+ * Round a nullable measurement to the integer precision format() renders, so
+ * structuredContent and content[] agree. Upstream ships long floats (e.g.
+ * relativeHumidity 23.358035108353); format() shows every metric value via
+ * Math.round, so the structured channel matches by rounding here too.
+ */
+function roundValue(value: number | null): number | null {
+  return value != null ? Math.round(value) : null;
+}
+
 /** Convert km/h to mph. */
 function kmhToMph(kmh: number): number {
   return Math.round(kmh * 0.621371);
@@ -211,28 +221,34 @@ export const getObservationsTool = tool('nws_get_observations', {
       timestamp: obs.timestamp,
       timeZone: obs.timeZone,
       textDescription: obs.textDescription,
-      temperatureC: obs.temperature.value,
-      dewpointC: obs.dewpoint.value,
-      windSpeedKmh: obs.windSpeed.value,
-      windDirectionDeg: obs.windDirection.value,
-      windGustKmh: obs.windGust.value,
-      barometricPressurePa: obs.barometricPressure.value,
-      visibilityM: obs.visibility.value,
-      relativeHumidityPct: obs.relativeHumidity.value,
-      heatIndexC: obs.heatIndex.value,
-      windChillC: obs.windChill.value,
+      temperatureC: roundValue(obs.temperature.value),
+      dewpointC: roundValue(obs.dewpoint.value),
+      windSpeedKmh: roundValue(obs.windSpeed.value),
+      windDirectionDeg: roundValue(obs.windDirection.value),
+      windGustKmh: roundValue(obs.windGust.value),
+      barometricPressurePa: roundValue(obs.barometricPressure.value),
+      visibilityM: roundValue(obs.visibility.value),
+      relativeHumidityPct: roundValue(obs.relativeHumidity.value),
+      heatIndexC: roundValue(obs.heatIndex.value),
+      windChillC: roundValue(obs.windChill.value),
       cloudLayers: obs.cloudLayers.map((l) => ({
         amount: l.amount,
-        baseM: l.base.value,
+        baseM: roundValue(l.base.value),
       })),
     };
   },
 
   format: (result) => {
     const zoneSuffix = result.timeZone ? ` (${result.timeZone})` : '';
+    const observed = `Observed: ${formatTimestamp(result.timestamp, result.timeZone)}${zoneSuffix}`;
+    // textDescription is empty during METAR gaps — omit the bold segment so the
+    // header doesn't render a bare `****`.
+    const conditions = result.textDescription
+      ? `**${result.textDescription}** | ${observed}`
+      : observed;
     const lines = [
       `## Current Conditions — ${result.stationName} (${result.stationId})`,
-      `**${result.textDescription}** | Observed: ${formatTimestamp(result.timestamp, result.timeZone)}${zoneSuffix}`,
+      conditions,
       '',
     ];
 

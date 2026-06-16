@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.3](changelog/0.6.x/0.6.3.md) — 2026-06-15
+
+Bug fixes: get_observations rounds structuredContent to match format() and drops blank textDescription; get_office_discussion distinguishes unknown office from valid-but-empty product list
+
 ## [0.6.2](changelog/0.6.x/0.6.2.md) — 2026-06-12
 
 mcp-ts-core ^0.10.6 adoption: explicit server identity, MCPB bundle-content cleaner, packaging + antipattern lint guards, Docker healthcheck; skills synced

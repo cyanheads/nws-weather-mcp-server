@@ -15,9 +15,9 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
     {
       reason: 'no_products',
       code: JsonRpcErrorCode.NotFound,
-      when: 'Office code is unknown or has no products of the requested type',
+      when: 'Office code is unknown, or a valid office has no current product of the requested type (episodic types like SPS and HWO are commonly empty)',
       recovery:
-        'Use nws_get_forecast with coordinates to find the WFO code in the "office" field of the location object, then retry.',
+        'If the office code is valid, retry with product_type "AFD" (near-always available); episodic types are issued only when conditions warrant. If the code may be wrong, find the WFO code in the "office" field of nws_get_forecast output.',
     },
   ],
 

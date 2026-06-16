@@ -101,23 +101,46 @@ describe('NwsService extended', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
-    it('throws notFound when office has empty product list', async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse({ '@graph': [] }));
+    it('throws office-not-found when an empty @graph follows a 404 office probe', async () => {
+      // Unknown office: list endpoint returns empty @graph, /offices/{id} → 404.
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ '@graph': [] }))
+        .mockResolvedValueOnce(jsonResponse({}, 404));
 
       const ctx = createMockContext({ tenantId: 'test' });
       const result = service.getNwsService().getOfficeDiscussion('BOGUS', 'AFD', ctx);
 
       await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
       await expect(result).rejects.toThrow('No AFD products found for office "BOGUS"');
+      await expect(result).rejects.toThrow('Verify the 3-letter WFO code');
     });
 
-    it('throws notFound when @graph key is missing', async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    it('throws no-current-product when an empty @graph follows a 200 office probe', async () => {
+      // Valid office, episodic type with nothing active: empty @graph, /offices/{id} → 200.
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ '@graph': [] }))
+        .mockResolvedValueOnce(jsonResponse({ id: 'SEW', name: 'Seattle' }));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().getOfficeDiscussion('SEW', 'SPS', ctx);
+
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
+      await expect(result).rejects.toThrow(
+        'No SPS products are currently available for office "SEW"',
+      );
+      await expect(result).rejects.toThrow('episodic');
+    });
+
+    it('treats a missing @graph key the same as an empty one (probes the office)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({}))
+        .mockResolvedValueOnce(jsonResponse({}, 404));
 
       const ctx = createMockContext({ tenantId: 'test' });
       const result = service.getNwsService().getOfficeDiscussion('ZZZZ', 'AFD', ctx);
 
       await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
+      await expect(result).rejects.toThrow('Verify the 3-letter WFO code');
     });
 
     it('surfaces serviceUnavailable on 500 from product list endpoint', async () => {

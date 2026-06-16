@@ -76,15 +76,29 @@ describe('nws_get_office_discussion', () => {
     expect(mockGetOfficeDiscussion).toHaveBeenCalledWith('SEW', 'AFD', ctx);
   });
 
-  it('propagates no_products error for unknown office', async () => {
+  it('propagates the unknown-office no_products error', async () => {
     mockGetOfficeDiscussion.mockRejectedValueOnce(
-      new Error('No AFD products found for office "BOGUS"'),
+      new Error('No AFD products found for office "BOGUS". Verify the 3-letter WFO code'),
     );
 
     const ctx = createMockContext({ tenantId: 'test' });
     const input = getOfficeDiscussionTool.input.parse({ office: 'BOGUS' });
     await expect(getOfficeDiscussionTool.handler(input, ctx)).rejects.toThrow(
-      'No AFD products found',
+      'Verify the 3-letter WFO code',
+    );
+  });
+
+  it('propagates the valid-office no-current-product error for episodic types', async () => {
+    mockGetOfficeDiscussion.mockRejectedValueOnce(
+      new Error(
+        'No SPS products are currently available for office "SEW". SPS products are episodic',
+      ),
+    );
+
+    const ctx = createMockContext({ tenantId: 'test' });
+    const input = getOfficeDiscussionTool.input.parse({ office: 'SEW', product_type: 'SPS' });
+    await expect(getOfficeDiscussionTool.handler(input, ctx)).rejects.toThrow(
+      'currently available',
     );
   });
 

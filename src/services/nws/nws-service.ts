@@ -758,7 +758,10 @@ export class NwsService {
   /**
    * Get the latest narrative product (e.g., AFD, HWO) from a Weather Forecast Office.
    * Two-hop: (1) list products for office/type — newest first; (2) fetch full product by ID.
-   * An unknown office returns HTTP 200 with an empty @graph — detected and thrown as no_products.
+   * An empty @graph is ambiguous — both an unknown office and a valid office with no
+   * current product of that type return HTTP 200 with `{"@graph":[]}`. When it's empty,
+   * probe /offices/{officeId} (200 = valid, no product; 404 = unknown office) to branch
+   * the error message; episodic types (SPS, HWO) are commonly empty for valid offices.
    */
   async getOfficeDiscussion(
     office: string,
@@ -772,17 +775,30 @@ export class NwsService {
     const graph = (listData['@graph'] as ProductListEntry[] | undefined) ?? [];
 
     if (graph.length === 0) {
-      throw notFound(
-        `No ${productType} products found for office "${office}". Verify the 3-letter WFO code (e.g., "SEW" for Seattle). The office code is the "office" or "cwa" field returned by nws_get_forecast.`,
-        {
-          office,
-          productType,
-          reason: 'no_products',
-          recovery: {
-            hint: `Use nws_get_forecast with coordinates to find the office code (the "office" field in the location object), then retry with that value.`,
-          },
-        },
-      );
+      const officeExists = await this.officeExists(office, ctx);
+      throw officeExists
+        ? notFound(
+            `No ${productType} products are currently available for office "${office}". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
+            {
+              office,
+              productType,
+              reason: 'no_products',
+              recovery: {
+                hint: `${productType} products are issued only when conditions warrant. Retry with product_type "AFD" for the always-available forecast discussion.`,
+              },
+            },
+          )
+        : notFound(
+            `No ${productType} products found for office "${office}". Verify the 3-letter WFO code (e.g., "SEW" for Seattle). The office code is the "office" or "cwa" field returned by nws_get_forecast.`,
+            {
+              office,
+              productType,
+              reason: 'no_products',
+              recovery: {
+                hint: `Use nws_get_forecast with coordinates to find the office code (the "office" field in the location object), then retry with that value.`,
+              },
+            },
+          );
     }
 
     // graph.length > 0 is checked above; the first item is always present here.
@@ -800,6 +816,31 @@ export class NwsService {
       productText: detail.productText as string,
       wmoCollectiveId: detail.wmoCollectiveId as string,
     };
+  }
+
+  /**
+   * Probe /offices/{officeId} to disambiguate an empty product list: HTTP 200
+   * means the office is valid (just has no current product), 404 means the code
+   * is unknown. Fires only on the empty-@graph error path, so no caching needed.
+   * A non-404 failure (transient outage) re-throws — it must not be misread as
+   * an unknown office.
+   */
+  private async officeExists(office: string, ctx: Context): Promise<boolean> {
+    try {
+      await nwsFetch<Record<string, unknown>>(
+        `${BASE_URL}/offices/${office}`,
+        ctx,
+        0,
+        DEFAULT_NOT_FOUND,
+        (message) => notFound(message, { probe: 'office-not-found' }),
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof McpError && error.data?.probe === 'office-not-found') {
+        return false;
+      }
+      throw error;
+    }
   }
 
   /** Get the text forecast for a public forecast zone. */

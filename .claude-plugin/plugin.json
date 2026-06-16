@@ -1,5 +1,5 @@
 {
-  "name": "@cyanheads/nws-weather-mcp-server",
+  "name": "nws-weather-mcp-server",
   "version": "0.6.2",
   "description": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.",
   "author": {
@@ -9,7 +9,7 @@
   "repository": "https://github.com/cyanheads/nws-weather-mcp-server",
   "license": "Apache-2.0",
   "mcpServers": {
-    "@cyanheads/nws-weather-mcp-server": {
+    "nws-weather-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/nws-weather-mcp-server"],
       "env": {

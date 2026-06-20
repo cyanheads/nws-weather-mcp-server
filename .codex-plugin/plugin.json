@@ -1,6 +1,6 @@
 {
   "name": "nws-weather-mcp-server",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "nws-weather-mcp-server",
     "shortDescription": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API.",
-    "longDescription": "",
+    "longDescription": "Real-time US weather from the National Weather Service API (api.weather.gov), covering the 50 states, US territories, and adjacent marine areas. Seven coordinate-driven tools: 7-day and hourly forecasts, active alerts filtered by area/zone/event/severity, current observations from the nearest station, nearby station discovery, alert event-type listing, forecast-office narrative discussions (AFD/HWO/ZFP/SPS), and zone-level text forecasts. The API does not geocode — resolve place names to latitude/longitude before calling. No API key required. Runs over STDIO or Streamable HTTP.",
     "developerName": "cyanheads",
     "category": "",
     "capabilities": ["Read"],

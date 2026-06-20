@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-06-13 04:44:47
+Generated on: 2026-06-20 12:18:09
 
 ```text
 nws-weather-mcp-server/
@@ -29,6 +29,7 @@ nws-weather-mcp-server/
 ├── scripts/
 │   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts

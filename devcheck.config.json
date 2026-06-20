@@ -14,6 +14,9 @@
   "outdated": {
     "allowlist": []
   },
+  "packaging": {
+    "pluginManifests": true
+  },
   "skillVersions": {
     "ignore": [
       "api-auth",

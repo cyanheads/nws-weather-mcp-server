@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.5](changelog/0.6.x/0.6.5.md) — 2026-06-21
+
+nws_search_alerts gains a structured ends (hazard-end) field — the ISO-8601 end of the hazard window, nullable for open-ended alerts, distinct from the expires message-refresh time
+
 ## [0.6.4](changelog/0.6.x/0.6.4.md) — 2026-06-20
 
 mcp-ts-core ^0.10.9 maintenance: devcheck gains a Dependency Specifiers step and plugin-manifest packaging checks, fresh-scaffold git guards, synced framework scripts + skills; no server behavior change

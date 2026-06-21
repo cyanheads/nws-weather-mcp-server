@@ -71,7 +71,7 @@ Searches active weather alerts (watches, warnings, advisories) across the US. Us
 
 **API endpoint:** `GET /alerts/active` with query params.
 
-**Returns:** Array of alerts: `id`, `event`, `headline`, `description`, `instruction` (recommended actions), `severity`, `urgency`, `certainty`, `areaDesc`, `onset`, `expires`, `senderName`. Also includes `affectedZones` (zone IDs for chaining). Empty array when no alerts match -- this is good news, not an error.
+**Returns:** Array of alerts: `id`, `event`, `headline`, `description`, `instruction` (recommended actions), `severity`, `urgency`, `certainty`, `areaDesc`, `onset`, `ends` (hazard end; `null` when open-ended), `expires`, `senderName`. Also includes `affectedZones` (zone IDs for chaining). Empty array when no alerts match -- this is good news, not an error.
 
 ---
 

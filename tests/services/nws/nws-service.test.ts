@@ -103,6 +103,40 @@ describe('NwsService', () => {
       expect(result.alerts).toHaveLength(1);
       expect(result.alerts[0].event).toBe('Wind Advisory');
       expect(result.alerts[0].severity).toBe('Moderate');
+      expect(result.alerts[0].ends).toBe('2026-04-03T18:00:00-07:00');
+    });
+
+    it('maps a null ends to null for open-ended hazards (regression: issue #18)', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          features: [
+            {
+              properties: {
+                id: 'urn:oid:open-ended',
+                event: 'Flood Warning',
+                headline: 'Flood Warning until further notice',
+                description: 'Open-ended flooding.',
+                instruction: null,
+                severity: 'Severe',
+                urgency: 'Expected',
+                certainty: 'Likely',
+                areaDesc: 'Chelan County',
+                onset: '2026-06-21T11:00:00-07:00',
+                ends: null,
+                expires: '2026-06-27T12:00:00-07:00',
+                senderName: 'NWS Pendleton OR',
+                affectedZones: ['https://api.weather.gov/zones/forecast/WAZ027'],
+              },
+            },
+          ],
+        }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().searchAlerts({}, ctx);
+
+      expect(result.alerts[0].ends).toBeNull();
+      expect(result.alerts[0].onset).toBe('2026-06-21T11:00:00-07:00');
     });
 
     it('normalizes each supported status value to lowercase for the upstream API', async () => {

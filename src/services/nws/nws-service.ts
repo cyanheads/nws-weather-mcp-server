@@ -361,6 +361,7 @@ function parseAlert(feature: Record<string, unknown>): Alert {
     certainty: p.certainty as string,
     areaDesc: p.areaDesc as string,
     onset: (p.onset as string) ?? null,
+    ends: (p.ends as string) ?? null,
     expires: (p.expires as string) ?? null,
     senderName: p.senderName as string,
     affectedZones: ((p.affectedZones as string[]) ?? []).map(extractZoneCode),

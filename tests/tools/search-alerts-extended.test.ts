@@ -29,6 +29,7 @@ function makeAlert(overrides: Partial<AlertSearchResult['alerts'][0]> = {}) {
     certainty: 'Observed',
     areaDesc: 'Cleveland County',
     onset: '2026-04-03T20:00:00Z',
+    ends: '2026-04-03T21:00:00Z',
     expires: '2026-04-03T22:00:00Z',
     senderName: 'NWS Norman OK',
     affectedZones: ['OKZ027'],
@@ -248,11 +249,12 @@ describe('nws_search_alerts extended', () => {
   });
 
   describe('null/optional alert fields', () => {
-    it('handles null headline, instruction, onset, expires', async () => {
+    it('handles null headline, instruction, onset, ends, expires', async () => {
       const alert = makeAlert({
         headline: null,
         instruction: null,
         onset: null,
+        ends: null,
         expires: null,
       });
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [alert] });
@@ -264,19 +266,21 @@ describe('nws_search_alerts extended', () => {
       expect(result.alerts[0].headline).toBeNull();
       expect(result.alerts[0].instruction).toBeNull();
       expect(result.alerts[0].onset).toBeNull();
+      expect(result.alerts[0].ends).toBeNull();
       expect(result.alerts[0].expires).toBeNull();
     });
 
-    it('format() omits onset/expires lines when null', () => {
+    it('format() omits onset/ends/expires lines when null', () => {
       const blocks = searchAlertsTool.format!({
         alerts: [
           {
-            ...makeAlert({ onset: null, expires: null }),
+            ...makeAlert({ onset: null, ends: null, expires: null }),
           },
         ],
       });
       const t = (blocks[0] as { type: 'text'; text: string }).text;
       expect(t).not.toContain('Hazard onset');
+      expect(t).not.toContain('Hazard ends');
       expect(t).not.toContain('Message valid until');
     });
   });

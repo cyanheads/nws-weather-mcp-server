@@ -55,6 +55,7 @@ export interface Alert {
   readonly areaDesc: string;
   readonly certainty: string;
   readonly description: string;
+  readonly ends: string | null;
   readonly event: string;
   readonly expires: string | null;
   readonly headline: string | null;

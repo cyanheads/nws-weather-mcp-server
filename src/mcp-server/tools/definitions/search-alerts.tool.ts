@@ -222,6 +222,12 @@ export const searchAlertsTool = tool('nws_search_alerts', {
               .string()
               .nullable()
               .describe('Expected hazard onset (ISO 8601). When the hazard is expected to begin.'),
+            ends: z
+              .string()
+              .nullable()
+              .describe(
+                'Hazard end (ISO 8601) — when the hazard is expected to end; null when open-ended ("until further notice"). Distinct from expires, which is the message-refresh time.',
+              ),
             expires: z
               .string()
               .nullable()
@@ -347,6 +353,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       );
       lines.push(`**Area:** ${a.areaDesc}`);
       if (a.onset) lines.push(`**Hazard onset:** ${formatTimestamp(a.onset, alertTimeZone)}`);
+      if (a.ends) lines.push(`**Hazard ends:** ${formatTimestamp(a.ends, alertTimeZone)}`);
       if (a.expires) {
         lines.push(`**Message valid until:** ${formatTimestamp(a.expires, alertTimeZone)}`);
       }

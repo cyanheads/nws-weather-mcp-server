@@ -81,6 +81,7 @@ export const alertsResponse = {
         certainty: 'Likely',
         areaDesc: 'King County; Snohomish County',
         onset: '2026-04-03T12:00:00-07:00',
+        ends: '2026-04-03T18:00:00-07:00',
         expires: '2026-04-04T00:00:00-07:00',
         senderName: 'NWS Seattle WA',
         affectedZones: ['https://api.weather.gov/zones/forecast/WAZ558'],

@@ -29,6 +29,7 @@ const alertResult: AlertSearchResult = {
       certainty: 'Likely',
       areaDesc: 'King County',
       onset: '2026-04-03T12:00:00-07:00',
+      ends: '2026-04-03T18:00:00-07:00',
       expires: '2026-04-04T00:00:00-07:00',
       senderName: 'NWS Seattle WA',
       affectedZones: ['WAZ558'],
@@ -227,6 +228,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Observed',
             areaDesc: 'King County',
             onset: '2026-04-03T12:00:00Z',
+            ends: '2026-04-03T13:00:00Z',
             expires: '2026-04-03T14:00:00Z',
             senderName: 'NWS Seattle',
             affectedZones: [],
@@ -270,6 +272,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Possible',
             areaDesc: 'Green Lake WI',
             onset: '2026-04-20T07:00:00-05:00', // Mon 7 AM CDT — hazard begins later
+            ends: '2026-04-21T15:00:00-05:00', // Tue 3 PM CDT — hazard ends
             expires: '2026-04-19T18:45:00-05:00', // Sun 6:45 PM CDT — message refreshes earlier
             senderName: 'NWS Milwaukee/Sullivan WI',
             affectedZones: ['WIZ046'],
@@ -283,6 +286,41 @@ describe('nws_search_alerts', () => {
       // Old, misleading labels should be gone
       expect(text).not.toMatch(/^\*\*Expires:\*\*/m);
       expect(text).not.toMatch(/^\*\*Onset:\*\*/m);
+    });
+
+    it('renders the hazard end from the structured ends field, distinct from expires (regression: issue #18)', () => {
+      // ends (hazard end) and expires (message TTL) are separate fields with
+      // separate labels. A pre-issued alert can have expires fall before onset,
+      // so ends is the only structured end-of-hazard signal.
+      const blocks = searchAlertsTool.format!({
+        alerts: [
+          {
+            id: 'urn:test:ends',
+            event: 'Heat Advisory',
+            headline: 'Heat Advisory until Wednesday evening',
+            description: 'Dangerous heat.',
+            instruction: null,
+            severity: 'Moderate',
+            urgency: 'Expected',
+            certainty: 'Likely',
+            areaDesc: 'King County',
+            onset: '2026-06-22T11:00:00-07:00', // hazard begins Mon
+            ends: '2026-06-24T23:00:00-07:00', // hazard ends Wed — after the message refresh
+            expires: '2026-06-22T03:00:00-07:00', // message refresh, before onset
+            senderName: 'NWS Seattle WA',
+            affectedZones: ['WAZ558'],
+          },
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      expect(text).toContain('**Hazard ends:**');
+      expect(text).toContain('**Message valid until:**');
+      // Ordering: onset → ends → message TTL
+      expect(text.indexOf('**Hazard onset:**')).toBeLessThan(text.indexOf('**Hazard ends:**'));
+      expect(text.indexOf('**Hazard ends:**')).toBeLessThan(
+        text.indexOf('**Message valid until:**'),
+      );
     });
 
     it('renders alert times with a named US zone when affectedZones are present (regression: issue #8)', () => {
@@ -299,6 +337,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Likely',
             areaDesc: 'King County',
             onset: '2026-07-04T15:00:00Z', // 8:00 AM PDT
+            ends: '2026-07-04T18:00:00Z', // 11:00 AM PDT
             expires: '2026-07-04T20:00:00Z', // 1:00 PM PDT
             senderName: 'NWS Seattle WA',
             affectedZones: ['WAZ558'],
@@ -327,6 +366,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Likely',
             areaDesc: 'Open ocean',
             onset: '2026-04-19T15:00:00-04:00',
+            ends: '2026-04-19T21:00:00-04:00',
             expires: '2026-04-19T21:00:00-04:00',
             senderName: 'NWS Marine',
             affectedZones: [], // no zones → no derivable TZ
@@ -353,6 +393,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Observed',
             areaDesc: 'Cleveland County',
             onset: '2026-07-04T19:00:00Z', // 2:00 PM CDT
+            ends: '2026-07-04T19:30:00Z', // 2:30 PM CDT
             expires: '2026-07-04T20:00:00Z',
             senderName: 'NWS Norman OK',
             affectedZones: ['OKC027'],

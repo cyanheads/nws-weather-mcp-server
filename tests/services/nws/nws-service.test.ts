@@ -303,7 +303,7 @@ describe('NwsService', () => {
       expect(result.observation.stationId).toBe('KBFI');
     });
 
-    it('throws notFound when a station ID does not exist', async () => {
+    it('throws station_not_found (not no_observations) when a station ID does not exist', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse({}, 404))
         .mockResolvedValueOnce(jsonResponse({}, 404));
@@ -311,8 +311,36 @@ describe('NwsService', () => {
       const ctx = createMockContext({ tenantId: 'test' });
       const result = service.getNwsService().getObservation({ stationId: 'ZZZZ' }, ctx);
 
-      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason: 'station_not_found' },
+      });
       await expect(result).rejects.toThrow("Station 'ZZZZ' not found");
+      await expect(result).rejects.not.toMatchObject({ data: { reason: 'no_observations' } });
+    });
+
+    it('prefers station_not_found even when the observations 404 lands first (regression: issue #19)', async () => {
+      // Reproduce the production race: the observations/latest 404 resolves before
+      // the station-metadata 404. Promise.all let the observations leg win and
+      // mask the missing station; Promise.allSettled + station-first priority must
+      // still classify a nonexistent station as station_not_found.
+      mockFetch.mockImplementation(async (url) => {
+        if (String(url).endsWith('/observations/latest')) {
+          return jsonResponse({}, 404); // settles immediately — would win a race
+        }
+        // Station-metadata leg settles later, so the observations 404 lands first.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return jsonResponse({}, 404);
+      });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().getObservation({ stationId: 'ZZZZ' }, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason: 'station_not_found' },
+      });
+      await expect(result).rejects.not.toMatchObject({ data: { reason: 'no_observations' } });
     });
 
     it('throws notFound when the station has no recent observations', async () => {

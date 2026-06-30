@@ -624,7 +624,7 @@ export class NwsService {
         });
 
       ctx.log.info('Fetching station metadata and latest observation', { stationId });
-      const [stationData, obsData] = await Promise.all([
+      const [stationResult, obsResult] = await Promise.allSettled([
         nwsFetch<Record<string, unknown>>(
           `${BASE_URL}/stations/${stationId}`,
           ctx,
@@ -640,6 +640,17 @@ export class NwsService {
           noObservationsFactory,
         ),
       ]);
+
+      // Station existence is the precondition: when the metadata leg fails,
+      // surface that (station_not_found) even when the observations leg also
+      // 404'd. Promise.all rejected with whichever 404 landed first, so the
+      // observations leg's no_observations could mask a nonexistent station
+      // (issue #19). allSettled lets us classify deterministically, station-first.
+      if (stationResult.status === 'rejected') throw stationResult.reason;
+      if (obsResult.status === 'rejected') throw obsResult.reason;
+
+      const stationData = stationResult.value;
+      const obsData = obsResult.value;
 
       const stationProps = stationData.properties as Record<string, unknown>;
       const stationName = (stationProps?.name as string) ?? stationId;

@@ -113,6 +113,32 @@ describe('nws_search_alerts extended', () => {
         data: { reason: 'invalid_point' },
       });
     });
+
+    it('rejects a trailing-comma point with an empty segment before upstream (regression: issue #20)', async () => {
+      // "47.6," used to coerce to [47.6, 0] via .split(',').map(Number) and pass,
+      // then trip the upstream regex 400. It must now fail locally as invalid_point.
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ point: '47.6,' });
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: { reason: 'invalid_point' },
+      });
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('salvages a point with whitespace after the comma (regression: issue #20)', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const input = searchAlertsTool.input.parse({ point: '47.6, -122.3' });
+      await searchAlertsTool.handler(input, ctx);
+
+      // Internal whitespace collapses to the NWS-accepted form before the call.
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ point: '47.6,-122.3' }),
+        ctx,
+      );
+    });
   });
 
   describe('zone filter', () => {
@@ -156,6 +182,22 @@ describe('nws_search_alerts extended', () => {
 
       const enrichment = getEnrichment(ctx);
       expect(enrichment.appliedFilters).toContain('zone=WAZ558');
+    });
+
+    it('uppercases a lowercase zone before passing it to the service (regression: issue #20)', async () => {
+      // "waz315" used to reach NWS verbatim and trip the upstream zone-code regex;
+      // it must be upper-cased like the sibling zone tools.
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const input = searchAlertsTool.input.parse({ zone: 'waz315' });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ zone: 'WAZ315' }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toContain('zone=WAZ315');
     });
   });
 
@@ -245,6 +287,56 @@ describe('nws_search_alerts extended', () => {
       const enrichment = getEnrichment(ctx);
       expect(enrichment.totalCount).toBe(2);
       expect(enrichment.shownCount).toBe(2);
+    });
+  });
+
+  describe('caller-controlled limit (issue #21)', () => {
+    it('slices to the requested limit while reporting the full match count', async () => {
+      const manyAlerts = Array.from({ length: 30 }, (_, i) =>
+        makeAlert({ id: `urn:test:${i}`, event: 'Wind Advisory' }),
+      );
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: manyAlerts });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const input = searchAlertsTool.input.parse({ limit: 3 });
+      const result = await searchAlertsTool.handler(input, ctx);
+
+      expect(result.alerts).toHaveLength(3);
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(30); // full matched count, before the limit
+      expect(enrichment.shownCount).toBe(3); // the slice
+    });
+
+    it('returns all matches when the limit exceeds the match count', async () => {
+      const alerts = [makeAlert(), makeAlert({ id: 'urn:test:2', event: 'Flood Watch' })];
+      mockSearchAlerts.mockResolvedValueOnce({ alerts });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const input = searchAlertsTool.input.parse({ limit: 10 });
+      const result = await searchAlertsTool.handler(input, ctx);
+
+      expect(result.alerts).toHaveLength(2);
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(2);
+      expect(enrichment.shownCount).toBe(2);
+    });
+
+    it('keeps limit out of the applied-filters echo (it shapes the response, not the query)', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const input = searchAlertsTool.input.parse({ limit: 5 });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(getEnrichment(ctx).appliedFilters).toBe('national (no filters)');
+    });
+
+    it('rejects limit below 1', () => {
+      expect(() => searchAlertsTool.input.parse({ limit: 0 })).toThrow();
+    });
+
+    it('rejects limit above the 25-alert cap', () => {
+      expect(() => searchAlertsTool.input.parse({ limit: 26 })).toThrow();
     });
   });
 

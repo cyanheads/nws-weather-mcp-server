@@ -11,6 +11,15 @@ import { formatTimestamp, zoneCodeToTimeZone } from '../format-utils.js';
 const MAX_ALERTS = 25;
 const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
 
+/**
+ * Strict coordinate pattern NWS enforces on the /alerts/active `point` filter.
+ * Validating against it locally rejects malformed points ("47.6,", a lone value,
+ * whitespace-split segments) with the declared invalid_point recovery instead of
+ * leaking a raw upstream regex 400 (issue #20). A plain `.split(',').map(Number)`
+ * let blank/padded segments coerce to 0 and slip through.
+ */
+const NWS_POINT_PATTERN = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/;
+
 /** Valid area codes: US states, DC, territories, and marine areas. */
 const VALID_AREA_CODES = new Set([
   // States + DC
@@ -117,13 +126,18 @@ function normalizeOptionalFilter(value: string | undefined): string | undefined 
   return normalized.length > 0 ? normalized : undefined;
 }
 
-/** Trim and case-fold optional location filters; mutex enforcement happens in the handler. */
+/**
+ * Trim and normalize optional location filters; mutex enforcement happens in the
+ * handler. `point` also drops internal whitespace so "47.6, -122.3" salvages to
+ * the NWS-accepted "47.6,-122.3"; `zone` is upper-cased like `area` and the
+ * sibling zone tools so "waz315" doesn't trip the upstream zone-code regex (issue #20).
+ */
 function normalizeSearchAlertsInput(input: SearchAlertsInput): SearchAlertsInput {
   return {
     ...input,
     area: normalizeOptionalFilter(input.area)?.toUpperCase(),
-    point: normalizeOptionalFilter(input.point),
-    zone: normalizeOptionalFilter(input.zone),
+    point: normalizeOptionalFilter(input.point)?.replace(/\s+/g, ''),
+    zone: normalizeOptionalFilter(input.zone)?.toUpperCase(),
   };
 }
 
@@ -169,6 +183,15 @@ const searchAlertsInputSchema = z.object({
     .default('Actual')
     .describe(
       'Alert status filter. Default "Actual". Use a different value only when you specifically need non-live alerts.',
+    ),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_ALERTS)
+    .default(MAX_ALERTS)
+    .describe(
+      'Maximum number of alerts to include in the response (1-25, default 25). totalCount still reports the full number of matches, so a small limit returns a digest of broad or national searches without dropping the total.',
     ),
 });
 
@@ -239,14 +262,16 @@ export const searchAlertsTool = tool('nws_search_alerts', {
           })
           .describe('Single active alert with event, severity, area, and timing'),
       )
-      .describe('Matching alerts (capped at 25)'),
+      .describe('Matching alerts (capped at the requested limit, max 25)'),
   }),
 
   // Result-set context the agent reasons with — counts, applied filters echo, and empty-result
   // guidance. Populated via ctx.enrich(...) so it reaches structuredContent and content[] alike;
   // kept out of the domain return.
   enrichment: {
-    totalCount: z.number().describe('Total number of matching alerts before the 25-alert cap'),
+    totalCount: z
+      .number()
+      .describe('Total number of matching alerts before the limit/cap is applied'),
     shownCount: z.number().describe('Number of alerts included in this response'),
     appliedFilters: z.string().describe('Summary of applied search filters'),
     notice: z
@@ -286,18 +311,10 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     }
 
     if (normalizedInput.point) {
-      const [lat, lon, ...rest] = normalizedInput.point.split(',').map(Number);
-      if (
-        rest.length > 0 ||
-        lat == null ||
-        lon == null ||
-        Number.isNaN(lat) ||
-        Number.isNaN(lon) ||
-        lat < -90 ||
-        lat > 90 ||
-        lon < -180 ||
-        lon > 180
-      ) {
+      const match = NWS_POINT_PATTERN.exec(normalizedInput.point);
+      const lat = match ? Number(match[1]) : Number.NaN;
+      const lon = match ? Number(match[2]) : Number.NaN;
+      if (!match || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
         throw ctx.fail(
           'invalid_point',
           `Invalid point "${normalizedInput.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
@@ -308,7 +325,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
 
     const result = await getNwsService().searchAlerts(normalizedInput, ctx);
     const total = result.alerts.length;
-    const capped = result.alerts.slice(0, MAX_ALERTS);
+    const capped = result.alerts.slice(0, normalizedInput.limit);
     const appliedFilters = describeFilters(normalizedInput);
 
     ctx.log.info('Alerts search completed', { total, shown: capped.length, appliedFilters });

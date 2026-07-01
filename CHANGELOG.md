@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-06-30 · 🛡️ Security
+
+Framework maintenance — mcp-ts-core ^0.10.10 clears 8 transitive advisories (2 high, 6 moderate) across hono, vite, and js-yaml; nws_get_forecast and nws_get_office_discussion drop internal API-routing detail from their descriptions
+
 ## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-06-30
 
 nws_search_alerts gains an optional limit input and validates point/zone locally before the upstream call; nws_get_observations classifies a nonexistent station as station_not_found instead of a raced no_observations

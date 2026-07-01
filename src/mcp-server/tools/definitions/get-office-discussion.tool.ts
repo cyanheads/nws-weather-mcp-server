@@ -9,7 +9,7 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 
 export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
   description:
-    'Get the latest narrative forecast product from a Weather Forecast Office (WFO). The default product is AFD (Area Forecast Discussion), which explains the meteorological reasoning behind the forecast — synoptic setup, model guidance, and forecaster confidence. Other types: HWO (Hazardous Weather Outlook, 1-7 day severe/flood/winter outlook), ZFP (Zone Forecast Product, zone-by-zone text), SPS (Special Weather Statement, short-fuse advisory). The office code is the 3-letter WFO identifier returned as the "office" field by nws_get_forecast. Fetches the two-hop products API: list endpoint first (newest product), then the full product detail.',
+    'Get the latest narrative forecast product from a Weather Forecast Office (WFO). The default product is AFD (Area Forecast Discussion), which explains the meteorological reasoning behind the forecast — synoptic setup, model guidance, and forecaster confidence. Other types: HWO (Hazardous Weather Outlook, 1-7 day severe/flood/winter outlook), ZFP (Zone Forecast Product, zone-by-zone text), SPS (Special Weather Statement, short-fuse advisory). The office code is the 3-letter WFO identifier returned as the "office" field by nws_get_forecast.',
   annotations: { readOnlyHint: true },
   errors: [
     {

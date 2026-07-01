@@ -27,7 +27,7 @@ function periodLabel(name: string, startTime: string, timeZone: string): string 
 
 export const getForecastTool = tool('nws_get_forecast', {
   description:
-    'Get the weather forecast for a US location. Returns either named 12-hour periods (default) or hourly breakdowns. Internally resolves coordinates to the NWS grid.',
+    'Get the weather forecast for a US location. Returns either named 12-hour periods (default) or hourly breakdowns.',
   annotations: { readOnlyHint: true },
   errors: [
     {
@@ -39,16 +39,12 @@ export const getForecastTool = tool('nws_get_forecast', {
   ],
 
   input: z.object({
-    latitude: z
-      .number()
-      .min(-90)
-      .max(90)
-      .describe('Latitude in decimal degrees (e.g., 47.6062). Truncated to 4 decimal places.'),
+    latitude: z.number().min(-90).max(90).describe('Latitude in decimal degrees (e.g., 47.6062).'),
     longitude: z
       .number()
       .min(-180)
       .max(180)
-      .describe('Longitude in decimal degrees (e.g., -122.3321). Truncated to 4 decimal places.'),
+      .describe('Longitude in decimal degrees (e.g., -122.3321).'),
     hourly: z
       .boolean()
       .default(false)

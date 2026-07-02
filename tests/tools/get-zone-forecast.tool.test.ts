@@ -49,6 +49,10 @@ describe('nws_get_zone_forecast', () => {
     expect(() => getZoneForecastTool.input.parse({ zone_id: '' })).toThrow();
   });
 
+  it('rejects whitespace-only zone_id', () => {
+    expect(() => getZoneForecastTool.input.parse({ zone_id: '   ' })).toThrow();
+  });
+
   it('returns zone forecast with periods', async () => {
     mockGetZoneForecast.mockResolvedValueOnce(zoneForecastResult);
 

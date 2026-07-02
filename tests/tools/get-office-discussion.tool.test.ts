@@ -45,6 +45,14 @@ describe('nws_get_office_discussion', () => {
     }
   });
 
+  it('rejects empty office', () => {
+    expect(() => getOfficeDiscussionTool.input.parse({ office: '' })).toThrow();
+  });
+
+  it('rejects whitespace-only office', () => {
+    expect(() => getOfficeDiscussionTool.input.parse({ office: '   ' })).toThrow();
+  });
+
   it('rejects invalid product_type', () => {
     expect(() =>
       getOfficeDiscussionTool.input.parse({ office: 'SEW', product_type: 'FOO' }),

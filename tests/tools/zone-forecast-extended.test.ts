@@ -41,13 +41,9 @@ describe('nws_get_zone_forecast extended', () => {
 
   describe('input validation', () => {
     it('rejects whitespace-only zone_id', () => {
-      // min(1) should also reject "   " since it has length > 0; however the schema
-      // uses min(1) on the raw string — verify the schema accepts it and the handler
-      // uppercases it. Service will reject via notFound in real life.
-      const input = getZoneForecastTool.input.parse({ zone_id: '   ' });
-      // The parsed value preserves whitespace — schema passes (min(1) = 3 chars)
-      // but after trim+toUpperCase the service receives a trimmed string
-      expect(input.zone_id).toBe('   ');
+      // .trim() runs before .min(1), so "   " trims to "" and fails the length
+      // check at parse time — blank input never reaches the upstream lookup.
+      expect(() => getZoneForecastTool.input.parse({ zone_id: '   ' })).toThrow();
     });
 
     it('accepts lower-case zone_id input without schema error', () => {

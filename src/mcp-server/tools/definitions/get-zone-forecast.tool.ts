@@ -24,6 +24,7 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
   input: z.object({
     zone_id: z
       .string()
+      .trim()
       .min(1)
       .describe(
         'NWS public forecast zone code (e.g., "WAZ315" for the Western Washington lowlands including Seattle). Returned as "forecastZone" by nws_get_forecast and nws_find_stations, or in "affectedZones" by nws_search_alerts. Format: two-letter state + "Z" + three-digit number.',
@@ -62,7 +63,7 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
   },
 
   async handler(input, ctx) {
-    const zoneId = input.zone_id.trim().toUpperCase();
+    const zoneId = input.zone_id.toUpperCase();
     const result = await getNwsService().getZoneForecast(zoneId, ctx);
 
     ctx.enrich({ periodCount: result.periods.length });

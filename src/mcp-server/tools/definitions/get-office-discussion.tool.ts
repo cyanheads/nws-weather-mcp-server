@@ -24,6 +24,7 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
   input: z.object({
     office: z
       .string()
+      .trim()
       .min(1)
       .describe(
         'Three-letter Weather Forecast Office (WFO) code (e.g., "SEW" for Seattle, "LOX" for Los Angeles). Returned as the "office" field in nws_get_forecast output.',
@@ -60,7 +61,7 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
   }),
 
   async handler(input, ctx) {
-    const office = input.office.trim().toUpperCase();
+    const office = input.office.toUpperCase();
     const result = await getNwsService().getOfficeDiscussion(office, input.product_type, ctx);
 
     ctx.log.info('Office discussion fetched', {

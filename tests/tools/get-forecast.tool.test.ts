@@ -102,7 +102,8 @@ describe('nws_get_forecast', () => {
       await getForecastTool.handler(input, ctx);
 
       const enrichment = getEnrichment(ctx);
-      expect(enrichment).toMatchObject({ periodCount: 1, mode: '7-day' });
+      expect(enrichment).toMatchObject({ periodCount: 1, totalPeriodCount: 1, mode: '7-day' });
+      expect(enrichment.notice).toBeUndefined();
     });
 
     it('populates mode as "hourly" when hourly=true', async () => {
@@ -118,6 +119,76 @@ describe('nws_get_forecast', () => {
 
       const enrichment = getEnrichment(ctx);
       expect(enrichment).toMatchObject({ mode: 'hourly' });
+    });
+  });
+
+  describe('period cap (regression: issue #23)', () => {
+    it('caps hourly periods at 48 in the handler so structuredContent matches format()', async () => {
+      const hourlyResult: ForecastResult = {
+        ...forecastResult,
+        forecast: {
+          ...forecastResult.forecast,
+          periods: Array.from({ length: 156 }, (_, index) => ({
+            ...forecastResult.forecast.periods[0],
+            number: index + 1,
+            name: '',
+            shortForecast: `Hour ${index + 1} conditions`,
+            detailedForecast: '',
+          })),
+        },
+      };
+      mockGetForecast.mockResolvedValueOnce(hourlyResult);
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
+      const input = getForecastTool.input.parse({
+        latitude: 47.6,
+        longitude: -122.3,
+        hourly: true,
+      });
+      const result = await getForecastTool.handler(input, ctx);
+
+      // The handler's returned periods populate structuredContent — capped at 48.
+      expect(result.periods).toHaveLength(48);
+      expect(result.periods[47].shortForecast).toBe('Hour 48 conditions');
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment).toMatchObject({
+        periodCount: 48,
+        totalPeriodCount: 156,
+        mode: 'hourly',
+      });
+      expect(enrichment.notice).toContain('first 48 of 156');
+
+      // format() consumes the same capped result — both surfaces share one projection.
+      const blocks = getForecastTool.format!(result);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('Hour 48 conditions');
+      expect(text).not.toContain('Hour 49 conditions');
+    });
+
+    it('does not cap or notice when upstream returns 48 or fewer periods', async () => {
+      const smallResult: ForecastResult = {
+        ...forecastResult,
+        forecast: {
+          ...forecastResult.forecast,
+          periods: Array.from({ length: 14 }, (_, index) => ({
+            ...forecastResult.forecast.periods[0],
+            number: index + 1,
+            name: `Period ${index + 1}`,
+          })),
+        },
+      };
+      mockGetForecast.mockResolvedValueOnce(smallResult);
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
+      const input = getForecastTool.input.parse({ latitude: 47.6, longitude: -122.3 });
+      const result = await getForecastTool.handler(input, ctx);
+
+      expect(result.periods).toHaveLength(14);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment).toMatchObject({ periodCount: 14, totalPeriodCount: 14 });
+      expect(enrichment.notice).toBeUndefined();
     });
   });
 
@@ -298,7 +369,7 @@ describe('nws_get_forecast', () => {
       expect(text).toContain('### Tonight');
     });
 
-    it('falls back to the short forecast and notes omitted periods', () => {
+    it('renders every period it receives — truncation happens in the handler', () => {
       const output = {
         location: {
           city: 'Seattle',
@@ -328,7 +399,8 @@ describe('nws_get_forecast', () => {
       const blocks = getForecastTool.format!(output);
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('Short forecast 1');
-      expect(text).toContain('...and 1 more periods (49 total).');
+      expect(text).toContain('Short forecast 49');
+      expect(text).not.toContain('more periods');
     });
   });
 });

@@ -9,6 +9,15 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp, fToC } from '../format-utils.js';
 
 /**
+ * Maximum forecast periods returned per call. Applied in the handler so
+ * `structuredContent` and `content[]` share the same bounded projection —
+ * the upstream hourly feed carries ~156 periods (7 days), which floods
+ * context unbounded. The pre-cap total is surfaced via the
+ * `totalPeriodCount` enrichment field, with a notice when truncation occurs.
+ */
+const MAX_PERIODS = 48;
+
+/**
  * Derive a period label from startTime when name is empty (hourly periods).
  * Renders in the forecast location's IANA zone so headers agree with the time
  * range rendered immediately below them.
@@ -49,7 +58,7 @@ export const getForecastTool = tool('nws_get_forecast', {
       .boolean()
       .default(false)
       .describe(
-        'If true, returns hourly forecast (~156 periods) instead of 12-hour named periods (14 periods). Hourly includes dewpoint and relative humidity.',
+        'If true, returns hourly forecast (next 48 one-hour periods) instead of 12-hour named periods (14 periods). Hourly includes dewpoint and relative humidity.',
       ),
   }),
 
@@ -93,16 +102,29 @@ export const getForecastTool = tool('nws_get_forecast', {
       .describe('Forecast periods'),
   }),
 
-  // Result-set context for the agent — period count and mode echo so agents
-  // know forecast granularity without re-deriving from the array. generatedAt
-  // already lives in output; not duplicated here.
+  // Result-set context for the agent — shown/total period counts and mode echo
+  // so agents know forecast granularity and whether the period set was capped,
+  // without re-deriving from the array. generatedAt already lives in output;
+  // not duplicated here.
   enrichment: {
-    periodCount: z.number().describe('Number of forecast periods returned'),
+    periodCount: z
+      .number()
+      .describe(`Number of forecast periods returned (capped at ${MAX_PERIODS}).`),
+    totalPeriodCount: z
+      .number()
+      .describe('Total forecast periods available upstream before the cap was applied.'),
     mode: z.string().describe('Forecast mode: "hourly" or "7-day"'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Set when upstream returned more periods than the cap — states how many periods were omitted.',
+      ),
   },
 
   enrichmentTrailer: {
     periodCount: { label: 'Periods' },
+    totalPeriodCount: { label: 'Total Periods' },
     mode: { label: 'Mode' },
   },
 
@@ -114,15 +136,24 @@ export const getForecastTool = tool('nws_get_forecast', {
       ctx,
     );
 
+    const totalPeriodCount = result.forecast.periods.length;
+    const periods = result.forecast.periods.slice(0, MAX_PERIODS);
+
     ctx.enrich({
-      periodCount: result.forecast.periods.length,
+      periodCount: periods.length,
+      totalPeriodCount,
       mode: input.hourly ? 'hourly' : '7-day',
     });
+    if (totalPeriodCount > MAX_PERIODS) {
+      ctx.enrich.notice(
+        `Returning the first ${MAX_PERIODS} of ${totalPeriodCount} forecast periods; the remaining ${totalPeriodCount - MAX_PERIODS} were omitted to bound response size.`,
+      );
+    }
 
     return {
       location: result.location,
       generatedAt: result.forecast.generatedAt,
-      periods: result.forecast.periods.map((p) => ({
+      periods: periods.map((p) => ({
         name: p.name,
         startTime: p.startTime,
         endTime: p.endTime,
@@ -154,9 +185,7 @@ export const getForecastTool = tool('nws_get_forecast', {
       return [{ type: 'text', text: lines.join('\n') }];
     }
 
-    const periods = result.periods.slice(0, 48);
-
-    for (const p of periods) {
+    for (const p of result.periods) {
       const precip = p.precipChancePct != null ? ` | **Precip:** ${p.precipChancePct}%` : '';
       const humidity =
         p.relativeHumidityPct != null ? ` | **Humidity:** ${p.relativeHumidityPct}%` : '';
@@ -179,12 +208,6 @@ export const getForecastTool = tool('nws_get_forecast', {
         lines.push(p.detailedForecast);
       }
       lines.push('');
-    }
-
-    if (result.periods.length > 48) {
-      lines.push(
-        `_...and ${result.periods.length - 48} more periods (${result.periods.length} total)._`,
-      );
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.2](changelog/0.7.x/0.7.2.md) — 2026-07-02
+
+nws_get_forecast hourly mode caps structuredContent at 48 periods (matching content[]), with the pre-cap total and a truncation notice surfaced via enrichment; whitespace-only office and zone_id inputs now fail schema validation instead of reaching the upstream lookup
+
 ## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-06-30 · 🛡️ Security
 
 Framework maintenance — mcp-ts-core ^0.10.10 clears 8 transitive advisories (2 high, 6 moderate) across hono, vite, and js-yaml; nws_get_forecast and nws_get_office_discussion drop internal API-routing detail from their descriptions

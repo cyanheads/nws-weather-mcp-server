@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** nws-weather-mcp-server
-**Version:** 0.7.1
+**Version:** 0.7.2
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -19,7 +19,7 @@ Full design in `docs/design.md`. Key constraints:
 - **No geocoding:** API is coordinates-only. Tools accept lat/lon directly.
 - **Alert quirks:** `/alerts/active` has no `limit` param (returns 400). Filter by area/severity instead.
 - **Transient 500s:** Grid forecast endpoints occasionally fail. Retry with backoff.
-- **Hourly = 156 periods:** Truncate in `format()` to avoid flooding context (next 24-48h, note remainder).
+- **Hourly = 156 periods:** Handler caps returned periods at 48 so `structuredContent` and `content[]` share the same bounded set; pre-cap total + truncation notice surfaced via enrichment.
 
 ### Tools (7)
 

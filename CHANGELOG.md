@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.4](changelog/0.7.x/0.7.4.md) — 2026-08-12
+
+nws_get_forecast, nws_find_stations, and nws_search_alerts take a cursor input and return nextCursor, reaching results past each tool's page cap instead of dropping them
+
 ## [0.7.3](changelog/0.7.x/0.7.3.md) — 2026-08-12
 
 nws_search_alerts checks a zone's area prefix and rejects blank/empty filters instead of widening to a national search; nws_get_observations rejects a blank station_id instead of silently answering from coordinates

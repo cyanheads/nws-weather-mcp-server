@@ -72,8 +72,8 @@ describe('nws_find_stations', () => {
     expect(result.stations[1]!.elevationM).toBe(6);
 
     const enrichment = getEnrichment(ctx);
-    expect(enrichment.totalFound).toBe(2);
     expect(enrichment.totalCount).toBe(2);
+    expect(enrichment.shown).toBe(2);
     expect(enrichment.notice).toBeUndefined();
   });
 
@@ -87,8 +87,8 @@ describe('nws_find_stations', () => {
     expect(result.stations).toHaveLength(0);
 
     const enrichment = getEnrichment(ctx);
-    expect(enrichment.totalFound).toBe(0);
     expect(enrichment.totalCount).toBe(0);
+    expect(enrichment.shown).toBe(0);
     expect(enrichment.notice).toContain('No observation stations found');
   });
 
@@ -114,7 +114,7 @@ describe('nws_find_stations', () => {
 
     expect(mockFindStations).toHaveBeenCalledWith(47.6, -122.3, ctx);
     expect(result.stations).toHaveLength(5);
-    expect(getEnrichment(ctx).totalFound).toBe(12);
+    expect(getEnrichment(ctx).totalCount).toBe(12);
   });
 
   describe('cursor pagination (issue #28)', () => {
@@ -177,24 +177,29 @@ describe('nws_find_stations', () => {
       expect(new Set(seen).size).toBe(73);
     });
 
-    it('keeps totalFound at the full pre-limit count on every page (contract: issue #14)', async () => {
+    it('keeps totalCount at the full pre-limit count on every page (contract: issue #14)', async () => {
       mockFindStations.mockResolvedValue(stationList(73));
 
       const first = await page(30);
       const second = await page(30, first.enrichment.nextCursor as string);
 
-      expect(first.enrichment.totalFound).toBe(73);
-      expect(second.enrichment.totalFound).toBe(73);
+      expect(first.enrichment.totalCount).toBe(73);
+      expect(second.enrichment.totalCount).toBe(73);
+      // The disclosure #14 protects is the gap between the two counts: a caller
+      // comparing them learns stations were withheld. `totalCount` tracking the
+      // page size would collapse that gap and report a truncated list as whole.
+      expect(first.enrichment.totalCount).not.toBe(first.result.stations.length);
+      expect(second.enrichment.totalCount).not.toBe(second.result.stations.length);
     });
 
-    it('keeps totalCount the per-page returned count, not the pre-limit total', async () => {
+    it('keeps shown the per-page returned count, not the pre-limit total', async () => {
       mockFindStations.mockResolvedValue(stationList(73));
 
       const first = await page(30);
       const last = await page(30, encodeCursor({ offset: 60, limit: 30 }));
 
-      expect(first.enrichment.totalCount).toBe(30);
-      expect(last.enrichment.totalCount).toBe(13);
+      expect(first.enrichment.shown).toBe(30);
+      expect(last.enrichment.shown).toBe(13);
     });
 
     it('omits nextCursor entirely when every station fits one page', async () => {
@@ -225,8 +230,8 @@ describe('nws_find_stations', () => {
       const { result, enrichment } = await page(10, encodeCursor({ offset: 20, limit: 10 }));
 
       expect(result.stations).toHaveLength(0);
-      expect(enrichment.totalFound).toBe(20);
-      expect(enrichment.totalCount).toBe(0);
+      expect(enrichment.totalCount).toBe(20);
+      expect(enrichment.shown).toBe(0);
       expect(enrichment).not.toHaveProperty('nextCursor');
       expect(enrichment.notice).toContain('past the end');
     });
@@ -247,8 +252,8 @@ describe('nws_find_stations', () => {
       const { result, enrichment } = await page(10, encodeCursor({ offset: 0, limit: 1000 }));
 
       expect(result.stations).toHaveLength(50);
-      expect(enrichment.totalCount).toBe(50);
-      expect(enrichment.totalFound).toBe(73);
+      expect(enrichment.shown).toBe(50);
+      expect(enrichment.totalCount).toBe(73);
     });
 
     it('rejects a malformed cursor with InvalidParams (-32602), per the MCP pagination spec', async () => {
@@ -272,7 +277,7 @@ describe('nws_find_stations', () => {
       const { result, enrichment } = await page(10, '');
 
       expect(result.stations[0]!.stationId).toBe('K000');
-      expect(enrichment.totalCount).toBe(10);
+      expect(enrichment.shown).toBe(10);
     });
 
     it('renders the cursor-selected window in format(), not the first window', async () => {

@@ -345,7 +345,7 @@ describe('NwsService extended', () => {
       const ctx = createMockContext({ tenantId: 'test' });
       const result = await service.getNwsService().findStations(47.6062, -122.3321, ctx);
 
-      // The pre-page total nws_find_stations reports as `totalFound` is this
+      // The pre-page total nws_find_stations reports as `totalCount` is this
       // array's length, so a short array here would understate it on every page.
       expect(result.stations).toHaveLength(stationsResponse.features.length);
     });

@@ -255,7 +255,7 @@ const searchAlertsInputSchema = z.object({
     .max(MAX_ALERTS)
     .default(MAX_ALERTS)
     .describe(
-      'Maximum number of alerts to include in this page (1-25, default 25). totalCount still reports the full number of matches, so a small limit returns a digest of broad or national searches without dropping the total; pass the returned nextCursor as cursor to reach the rest.',
+      'Maximum number of alerts to include in this page (1-25, default 25). totalCount still reports the full number of distinct matches, so a small limit returns a digest of broad or national searches without dropping the total; pass the returned nextCursor as cursor to reach the rest.',
     ),
   cursor: z
     .string()
@@ -412,8 +412,10 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   enrichment: {
     totalCount: z
       .number()
-      .describe('Total number of matching alerts in this fetch, before the page window is applied'),
-    shownCount: z.number().describe('Number of alerts included in this response'),
+      .describe(
+        'Total distinct alerts matching the filters in this fetch, before the page window is applied. NWS repeats some alerts verbatim within one response; the copies are collapsed on id, so this counts each alert once. Compare against shown to tell whether matches were withheld from this page.',
+      ),
+    shown: z.number().describe('Number of alerts included in this response'),
     appliedFilters: z.string().describe('Summary of applied search filters'),
     nextCursor: z
       .string()
@@ -431,7 +433,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
 
   enrichmentTrailer: {
     totalCount: { label: 'Total Alerts' },
-    shownCount: { label: 'Shown' },
+    shown: { label: 'Shown' },
     appliedFilters: { label: 'Filters' },
     nextCursor: { label: 'Next Cursor' },
   },
@@ -514,6 +516,8 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       }
     }
 
+    // The service collapses upstream duplicates on id (issue #36), so this is a
+    // distinct-alert count, which is what `totalCount` reports.
     const result = await getNwsService().searchAlerts(normalizedInput, ctx);
     const allAlerts = [...result.alerts];
     const total = allAlerts.length;
@@ -534,7 +538,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
 
     ctx.enrich({
       totalCount: total,
-      shownCount: page.items.length,
+      shown: page.items.length,
       appliedFilters,
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     });
@@ -544,7 +548,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       );
     } else if (page.nextCursor) {
       ctx.enrich.notice(
-        `Returning ${page.items.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift or repeat entries.`,
+        `Returning ${page.items.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift entries across the page boundary. Duplicate alerts are collapsed on id within each fetch, so the same id arriving on two pages means the active set moved between calls, not that one alert was returned twice.`,
       );
     } else if (normalizedInput.cursor && page.items.length === 0) {
       ctx.enrich.notice(

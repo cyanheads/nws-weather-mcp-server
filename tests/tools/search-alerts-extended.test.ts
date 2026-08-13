@@ -637,10 +637,16 @@ describe('nws_search_alerts extended', () => {
       expect(result.alerts).toHaveLength(25);
       const enrichment = getEnrichment(ctx);
       expect(enrichment.totalCount).toBe(30);
-      expect(enrichment.shownCount).toBe(25);
+      expect(enrichment.shown).toBe(25);
       // The 5 matches past the cap are reachable, not merely disclosed.
       expect(enrichment.nextCursor).toEqual(expect.any(String));
       expect(enrichment.notice).toContain('25 of 30');
+    });
+
+    it('declares totalCount as a count of distinct alerts (issue #36)', () => {
+      // Deduplication changes what "matches" means. The field a caller reads to
+      // detect truncation has to say which quantity it now reports.
+      expect(searchAlertsTool.enrichment?.totalCount.description).toMatch(/distinct/i);
     });
 
     it('returns all alerts when count is under the cap', async () => {
@@ -654,7 +660,7 @@ describe('nws_search_alerts extended', () => {
       expect(result.alerts).toHaveLength(2);
       const enrichment = getEnrichment(ctx);
       expect(enrichment.totalCount).toBe(2);
-      expect(enrichment.shownCount).toBe(2);
+      expect(enrichment.shown).toBe(2);
     });
   });
 
@@ -672,7 +678,7 @@ describe('nws_search_alerts extended', () => {
       expect(result.alerts).toHaveLength(3);
       const enrichment = getEnrichment(ctx);
       expect(enrichment.totalCount).toBe(30); // full matched count, before the limit
-      expect(enrichment.shownCount).toBe(3); // the slice
+      expect(enrichment.shown).toBe(3); // the slice
     });
 
     it('returns all matches when the limit exceeds the match count', async () => {
@@ -686,7 +692,7 @@ describe('nws_search_alerts extended', () => {
       expect(result.alerts).toHaveLength(2);
       const enrichment = getEnrichment(ctx);
       expect(enrichment.totalCount).toBe(2);
-      expect(enrichment.shownCount).toBe(2);
+      expect(enrichment.shown).toBe(2);
     });
 
     it('keeps limit out of the applied-filters echo (it shapes the response, not the query)', async () => {
@@ -762,14 +768,18 @@ describe('nws_search_alerts extended', () => {
       expect(new Set(seen).size).toBe(73);
     });
 
-    it('keeps shownCount the size of this page, smaller than limit on a final partial page (contract: issue #21)', async () => {
+    it('keeps shown the size of this page, smaller than limit on a final partial page (contract: issue #21)', async () => {
       mockSearchAlerts.mockResolvedValue(alertList(73));
 
       const { result, enrichment } = await page(25, encodeCursor({ offset: 50, limit: 25 }));
 
       expect(result.alerts).toHaveLength(23);
-      expect(enrichment.shownCount).toBe(23);
-      expect(enrichment.shownCount).not.toBe(25);
+      // The honesty #21 protects: this count tracks what came back, never the
+      // requested limit and never the full match count.
+      expect(enrichment.shown).toBe(result.alerts.length);
+      expect(enrichment.shown).not.toBe(25);
+      expect(enrichment.shown).not.toBe(enrichment.totalCount);
+      expect(enrichment.totalCount).toBe(73);
     });
 
     it('keeps totalCount the full match count on every page', async () => {
@@ -811,7 +821,7 @@ describe('nws_search_alerts extended', () => {
 
       expect(result.alerts).toHaveLength(0);
       expect(enrichment.totalCount).toBe(50);
-      expect(enrichment.shownCount).toBe(0);
+      expect(enrichment.shown).toBe(0);
       expect(enrichment).not.toHaveProperty('nextCursor');
       expect(enrichment.notice).toContain('past the end');
     });
@@ -832,7 +842,7 @@ describe('nws_search_alerts extended', () => {
       const { result, enrichment } = await page(25, encodeCursor({ offset: 0, limit: 1000 }));
 
       expect(result.alerts).toHaveLength(25);
-      expect(enrichment.shownCount).toBe(25);
+      expect(enrichment.shown).toBe(25);
       expect(enrichment.totalCount).toBe(73);
     });
 
@@ -853,7 +863,7 @@ describe('nws_search_alerts extended', () => {
       const { result, enrichment } = await page(25, '');
 
       expect(result.alerts[0]!.id).toBe('urn:test:000');
-      expect(enrichment.shownCount).toBe(25);
+      expect(enrichment.shown).toBe(25);
     });
 
     it('keeps cursor out of the applied-filters echo (it shapes the response, not the query)', async () => {
@@ -875,6 +885,20 @@ describe('nws_search_alerts extended', () => {
       // gap-free/overlap-free walk across separate calls.
       expect(notice).toMatch(/re-?fetch|changes between calls|as it stands/i);
       expect(notice).not.toMatch(/guarantee[sd]? (?:no|gap-free)/i);
+    });
+
+    it('separates cross-call drift from in-fetch duplication in the paging notice (issue #36)', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const { enrichment } = await page(25);
+      const notice = enrichment.notice as string;
+
+      // The drift language alone reads as though it covers repeated entries. A
+      // caller walking pages has to be able to tell "the page boundary moved"
+      // from "the same alert came back twice" — the latter is collapsed now, and
+      // the notice is where that distinction reaches the caller.
+      expect(notice).toMatch(/duplicate/i);
+      expect(notice).toMatch(/\bid\b/);
     });
 
     it('renders the cursor-selected window in format(), not the first window', async () => {

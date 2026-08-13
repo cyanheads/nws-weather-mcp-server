@@ -96,6 +96,86 @@ export const alertsResponse = {
 };
 
 /**
+ * Mock /alerts/active response carrying the upstream duplication NWS emits: the
+ * same alert repeated byte-for-byte within one fetch (identical `id`, `sent`,
+ * `event`, and `areaDesc`), interleaved with a distinct alert so tests can also
+ * pin that collapsing the copies preserves first-occurrence order.
+ */
+export const duplicateAlertsResponse = {
+  features: [
+    {
+      properties: {
+        id: 'urn:oid:duplicated-air-quality',
+        event: 'Air Quality Alert',
+        headline: 'Air Quality Alert in effect',
+        description: 'Smoke has degraded air quality.',
+        instruction: 'Limit outdoor exertion.',
+        severity: 'Moderate',
+        urgency: 'Expected',
+        certainty: 'Likely',
+        areaDesc: 'Central Washington',
+        sent: '2026-04-03T08:00:00-07:00',
+        effective: '2026-04-03T08:00:00-07:00',
+        onset: '2026-04-03T08:00:00-07:00',
+        ends: '2026-04-04T08:00:00-07:00',
+        expires: '2026-04-03T20:00:00-07:00',
+        status: 'Actual',
+        messageType: 'Alert',
+        references: [],
+        senderName: 'NWS Pendleton OR',
+        affectedZones: ['https://api.weather.gov/zones/forecast/WAZ027'],
+      },
+    },
+    {
+      properties: {
+        id: 'urn:oid:distinct-wind-advisory',
+        event: 'Wind Advisory',
+        headline: 'Wind Advisory in effect',
+        description: 'Strong winds expected.',
+        instruction: 'Secure outdoor objects.',
+        severity: 'Moderate',
+        urgency: 'Expected',
+        certainty: 'Likely',
+        areaDesc: 'King County',
+        sent: '2026-04-03T06:00:00-07:00',
+        effective: '2026-04-03T06:00:00-07:00',
+        onset: '2026-04-03T12:00:00-07:00',
+        ends: '2026-04-03T18:00:00-07:00',
+        expires: '2026-04-04T00:00:00-07:00',
+        status: 'Actual',
+        messageType: 'Alert',
+        references: [],
+        senderName: 'NWS Seattle WA',
+        affectedZones: ['https://api.weather.gov/zones/forecast/WAZ558'],
+      },
+    },
+    {
+      properties: {
+        id: 'urn:oid:duplicated-air-quality',
+        event: 'Air Quality Alert',
+        headline: 'Air Quality Alert in effect',
+        description: 'Smoke has degraded air quality.',
+        instruction: 'Limit outdoor exertion.',
+        severity: 'Moderate',
+        urgency: 'Expected',
+        certainty: 'Likely',
+        areaDesc: 'Central Washington',
+        sent: '2026-04-03T08:00:00-07:00',
+        effective: '2026-04-03T08:00:00-07:00',
+        onset: '2026-04-03T08:00:00-07:00',
+        ends: '2026-04-04T08:00:00-07:00',
+        expires: '2026-04-03T20:00:00-07:00',
+        status: 'Actual',
+        messageType: 'Alert',
+        references: [],
+        senderName: 'NWS Pendleton OR',
+        affectedZones: ['https://api.weather.gov/zones/forecast/WAZ027'],
+      },
+    },
+  ],
+};
+
+/**
  * Mock /alerts/active response covering every affectedZones typing NWS emits:
  * a forecast-only alert, a county-only alert, and one mixing forecast, county,
  * and fire zones in a single array.

@@ -624,7 +624,21 @@ export class NwsService {
     const eventFilters = params.event
       ?.map((event) => event.trim().toLowerCase())
       .filter((event) => event.length > 0);
-    const alerts = features.map(parseAlert).filter((alert) => {
+
+    // `/alerts/active` repeats some alerts verbatim within a single response —
+    // byte-identical id, sent, event, and areaDesc — so the second copy carries
+    // nothing the first did not. Collapse on id here, at the raw feature array,
+    // rather than in the tool: this is ahead of both the event filter below and
+    // the tool's page window, so no count is inflated and no duplicate can
+    // straddle a page boundary (issue #36). Map insertion order keeps the first
+    // occurrence in its upstream position.
+    const byId = new Map<string, Alert>();
+    for (const feature of features) {
+      const alert = parseAlert(feature);
+      if (!byId.has(alert.id)) byId.set(alert.id, alert);
+    }
+
+    const alerts = [...byId.values()].filter((alert) => {
       if (!eventFilters?.length) return true;
       const normalizedEvent = alert.event.toLowerCase();
       return eventFilters.some((event) => normalizedEvent.includes(event));

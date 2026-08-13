@@ -39,7 +39,7 @@ export const findStationsTool = tool('nws_find_stations', {
       .max(MAX_STATIONS)
       .default(10)
       .describe(
-        `Max stations per page (1-${MAX_STATIONS}). totalFound still reports every station near the point, so pass the returned nextCursor as cursor to reach the rest.`,
+        `Max stations per page (1-${MAX_STATIONS}). totalCount still reports every station near the point, so pass the returned nextCursor as cursor to reach the rest.`,
       ),
     cursor: z
       .string()
@@ -71,12 +71,12 @@ export const findStationsTool = tool('nws_find_stations', {
   // Result-set context for the agent — total available stations (pre-limit), returned count,
   // continuation token, and empty-result guidance.
   enrichment: {
-    totalFound: z
+    totalCount: z
       .number()
       .describe(
-        'Total observation stations available near this location before the page limit was applied. Same value on every page of one query.',
+        'Total observation stations available near this location before the page limit was applied — NOT the number returned in this page, which is shown. Same value on every page of one query; compare it against shown to tell whether stations were withheld.',
       ),
-    totalCount: z.number().describe('Number of stations returned in this page'),
+    shown: z.number().describe('Number of stations returned in this page'),
     nextCursor: z
       .string()
       .optional()
@@ -92,8 +92,8 @@ export const findStationsTool = tool('nws_find_stations', {
   },
 
   enrichmentTrailer: {
-    totalFound: { label: 'Total Nearby' },
-    totalCount: { label: 'Returned' },
+    totalCount: { label: 'Total Nearby' },
+    shown: { label: 'Returned' },
     nextCursor: { label: 'Next Cursor' },
   },
 
@@ -103,8 +103,8 @@ export const findStationsTool = tool('nws_find_stations', {
     const allStations = [...result.stations];
     // Every station near the point, before the page window (issue #14). Stays
     // constant across the pages of one query, and is deliberately a different
-    // quantity from `totalCount`, which counts what this page returned.
-    const totalFound = allStations.length;
+    // quantity from `shown`, which counts what this page returned.
+    const totalCount = allStations.length;
 
     const page = paginateArray(allStations, input.cursor, input.limit, MAX_STATIONS, ctx);
 
@@ -120,21 +120,21 @@ export const findStationsTool = tool('nws_find_stations', {
     }));
 
     ctx.enrich({
-      totalFound,
-      totalCount: stations.length,
+      totalCount,
+      shown: stations.length,
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     });
-    if (totalFound === 0) {
+    if (totalCount === 0) {
       ctx.enrich.notice(
         `No observation stations found near (${input.latitude}, ${input.longitude}). Try coordinates closer to the US mainland, territories, or adjacent marine areas.`,
       );
     } else if (page.nextCursor) {
       ctx.enrich.notice(
-        `Returning ${stations.length} of ${totalFound} nearby stations. Pass nextCursor back as cursor for the next page. Stations are contiguous within one response; the list is re-fetched on every call, so a later call can window an updated registry.`,
+        `Returning ${stations.length} of ${totalCount} nearby stations. Pass nextCursor back as cursor for the next page. Stations are contiguous within one response; the list is re-fetched on every call, so a later call can window an updated registry.`,
       );
     } else if (input.cursor && stations.length === 0) {
       ctx.enrich.notice(
-        `The cursor points past the end of the ${totalFound} stations near (${input.latitude}, ${input.longitude}). Call again without a cursor to restart from the nearest station.`,
+        `The cursor points past the end of the ${totalCount} stations near (${input.latitude}, ${input.longitude}). Call again without a cursor to restart from the nearest station.`,
       );
     }
 

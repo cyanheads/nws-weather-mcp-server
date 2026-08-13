@@ -113,7 +113,7 @@ describe('nws_get_forecast', () => {
   });
 
   describe('enrichment', () => {
-    it('populates periodCount and mode on success (7-day)', async () => {
+    it('populates the period counts and mode on success (7-day)', async () => {
       mockGetForecast.mockResolvedValueOnce(forecastResult);
 
       const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
@@ -121,7 +121,7 @@ describe('nws_get_forecast', () => {
       await getForecastTool.handler(input, ctx);
 
       const enrichment = getEnrichment(ctx);
-      expect(enrichment).toMatchObject({ periodCount: 1, totalPeriodCount: 1, mode: '7-day' });
+      expect(enrichment).toMatchObject({ shown: 1, totalCount: 1, mode: '7-day' });
       expect(enrichment.notice).toBeUndefined();
     });
 
@@ -172,8 +172,8 @@ describe('nws_get_forecast', () => {
 
       const enrichment = getEnrichment(ctx);
       expect(enrichment).toMatchObject({
-        periodCount: 48,
-        totalPeriodCount: 156,
+        shown: 48,
+        totalCount: 156,
         mode: 'hourly',
       });
       expect(enrichment.notice).toContain('first 48 of 156');
@@ -208,7 +208,7 @@ describe('nws_get_forecast', () => {
       expect(result.periods).toHaveLength(14);
 
       const enrichment = getEnrichment(ctx);
-      expect(enrichment).toMatchObject({ periodCount: 14, totalPeriodCount: 14 });
+      expect(enrichment).toMatchObject({ shown: 14, totalCount: 14 });
       expect(enrichment.notice).toBeUndefined();
     });
   });
@@ -287,8 +287,8 @@ describe('nws_get_forecast', () => {
       const { result, enrichment } = await page(encodeCursor({ offset: 96, limit: 48 }));
 
       expect(result.periods).toHaveLength(0);
-      expect(enrichment.periodCount).toBe(0);
-      expect(enrichment.totalPeriodCount).toBe(96);
+      expect(enrichment.shown).toBe(0);
+      expect(enrichment.totalCount).toBe(96);
       expect(enrichment).not.toHaveProperty('nextCursor');
       expect(enrichment.notice).toContain('past the end');
     });
@@ -311,7 +311,7 @@ describe('nws_get_forecast', () => {
       const { result, enrichment } = await page(encodeCursor({ offset: 0, limit: 1000 }));
 
       expect(result.periods).toHaveLength(48);
-      expect(enrichment.periodCount).toBe(48);
+      expect(enrichment.shown).toBe(48);
       expect(getForecastTool.format!(result)[0]).toMatchObject({
         text: expect.not.stringContaining('Hour 49 conditions'),
       });
@@ -339,7 +339,7 @@ describe('nws_get_forecast', () => {
       const { result, enrichment } = await page('');
 
       expect(result.periods[0]!.shortForecast).toBe('Hour 1 conditions');
-      expect(enrichment.periodCount).toBe(48);
+      expect(enrichment.shown).toBe(48);
     });
 
     it('renders the cursor-selected window in format(), not the first window', async () => {

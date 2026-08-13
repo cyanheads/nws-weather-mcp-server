@@ -7,6 +7,7 @@ import http from 'node:http';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  duplicateAlertsResponse,
   emptyAlertsResponse,
   pointsResponse,
   stationInfoResponse,
@@ -406,11 +407,66 @@ describe('HTTP JSON-RPC error contracts', () => {
         structuredContent: {
           alerts: [],
           totalCount: 0,
-          shownCount: 0,
+          shown: 0,
           appliedFilters: 'national (no filters)',
         },
       });
       expect(mockFetch).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('collapses duplicate upstream alerts on both response surfaces over HTTP (issue #36)', async () => {
+    // Clients read different surfaces — structuredContent or content[] — so the
+    // collapsed set and the distinct-alert counts have to hold on both.
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://api.weather.gov/alerts/active')) {
+        return jsonResponse(duplicateAlertsResponse);
+      }
+      throw new Error(`Unexpected upstream URL: ${url}`);
+    });
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        {
+          jsonrpc: '2.0',
+          id: 'alerts-duplicate-collapse',
+          method: 'tools/call',
+          params: {
+            name: 'nws_search_alerts',
+            arguments: { area: 'WA' },
+          },
+        },
+        sessionId,
+      );
+
+      const result = (response.body as { result: unknown }).result as {
+        content: { type: string; text: string }[];
+        structuredContent: { alerts: { id: string }[]; shown: number; totalCount: number };
+      };
+      expect(response.statusCode).toBe(200);
+
+      // Upstream sent three features; two of them are the same alert.
+      expect(result.structuredContent.alerts.map((alert) => alert.id)).toEqual([
+        'urn:oid:duplicated-air-quality',
+        'urn:oid:distinct-wind-advisory',
+      ]);
+      expect(result.structuredContent.totalCount).toBe(2);
+      expect(result.structuredContent.shown).toBe(2);
+
+      const text = result.content.map((block) => block.text).join('\n');
+      expect(text.match(/urn:oid:duplicated-air-quality/g)).toHaveLength(1);
+      expect(text).toContain('urn:oid:distinct-wind-advisory');
+      expect(text).toContain('2 Active Alerts');
+      // Both counts ride the content[] trailer under their labels, so a client
+      // that only reads text sees the same pair of numbers.
+      expect(text).toContain('**Total Alerts:** 2');
+      expect(text).toContain('**Shown:** 2');
     } finally {
       await server.close();
     }

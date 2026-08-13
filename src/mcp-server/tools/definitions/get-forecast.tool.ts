@@ -13,9 +13,9 @@ import { cToF, formatTimestamp, fToC } from '../format-utils.js';
  * Forecast periods per page. Applied in the handler so `structuredContent` and
  * `content[]` share the same bounded projection — the upstream hourly feed
  * carries ~156 periods (7 days), which floods context unbounded. The pre-page
- * total is surfaced via the `totalPeriodCount` enrichment field, and the periods
- * past this window are reachable through the `nextCursor` continuation token
- * rather than dropped.
+ * total is surfaced via the `totalCount` enrichment field, and the periods past
+ * this window are reachable through the `nextCursor` continuation token rather
+ * than dropped.
  */
 const MAX_PERIODS = 48;
 
@@ -115,12 +115,12 @@ export const getForecastTool = tool('nws_get_forecast', {
   // without re-deriving from the array. generatedAt already lives in output;
   // not duplicated here.
   enrichment: {
-    periodCount: z
+    totalCount: z
       .number()
-      .describe(`Number of forecast periods in this page (at most ${MAX_PERIODS}).`),
-    totalPeriodCount: z
-      .number()
-      .describe('Total forecast periods available upstream before the page window was applied.'),
+      .describe(
+        'Total forecast periods available upstream before the page window was applied — NOT the number in this page, which is shown. Compare it against shown to tell whether periods were withheld.',
+      ),
+    shown: z.number().describe(`Number of forecast periods in this page (at most ${MAX_PERIODS}).`),
     mode: z.string().describe('Forecast mode: "hourly" or "7-day"'),
     nextCursor: z
       .string()
@@ -137,8 +137,8 @@ export const getForecastTool = tool('nws_get_forecast', {
   },
 
   enrichmentTrailer: {
-    periodCount: { label: 'Periods' },
-    totalPeriodCount: { label: 'Total Periods' },
+    totalCount: { label: 'Total Periods' },
+    shown: { label: 'Periods' },
     mode: { label: 'Mode' },
     nextCursor: { label: 'Next Cursor' },
   },
@@ -152,7 +152,7 @@ export const getForecastTool = tool('nws_get_forecast', {
     );
 
     const allPeriods = [...result.forecast.periods];
-    const totalPeriodCount = allPeriods.length;
+    const totalCount = allPeriods.length;
 
     // One window over the fetched array feeds both the returned `periods`
     // (structuredContent) and format() — a single slice through the single
@@ -162,21 +162,21 @@ export const getForecastTool = tool('nws_get_forecast', {
     const page = paginateArray(allPeriods, input.cursor, MAX_PERIODS, MAX_PERIODS, ctx);
 
     ctx.enrich({
-      periodCount: page.items.length,
-      totalPeriodCount,
+      totalCount,
+      shown: page.items.length,
       mode: input.hourly ? 'hourly' : '7-day',
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     });
     if (page.nextCursor) {
       const lead = input.cursor
-        ? `Returning ${page.items.length} more of ${totalPeriodCount} forecast periods.`
-        : `Returning the first ${page.items.length} of ${totalPeriodCount} forecast periods to bound response size.`;
+        ? `Returning ${page.items.length} more of ${totalCount} forecast periods.`
+        : `Returning the first ${page.items.length} of ${totalCount} forecast periods to bound response size.`;
       ctx.enrich.notice(
         `${lead} Pass nextCursor back as cursor for the next window. Periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated array.`,
       );
     } else if (input.cursor && page.items.length === 0) {
       ctx.enrich.notice(
-        `The cursor points past the end of this forecast's ${totalPeriodCount} periods. Call again without a cursor to restart from the first period.`,
+        `The cursor points past the end of this forecast's ${totalCount} periods. Call again without a cursor to restart from the first period.`,
       );
     }
 

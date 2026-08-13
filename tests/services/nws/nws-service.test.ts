@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   alertsResponse,
   alertTypesResponse,
+  duplicateAlertsResponse,
   emptyAlertsResponse,
   forecastResponse,
   observationResponse,
@@ -234,6 +235,40 @@ describe('NwsService', () => {
       const result = await service.getNwsService().searchAlerts({}, ctx);
 
       expect(result.alerts[0]!.references).toEqual([]);
+    });
+
+    it('collapses byte-identical duplicate features on id, keeping the first occurrence (issue #36)', async () => {
+      // `/alerts/active` repeats some alerts verbatim within one response. The
+      // second copy carries no information, so passing it through inflates every
+      // downstream count and makes a caller's own dedupe look like truncation.
+      mockFetch.mockResolvedValueOnce(jsonResponse(duplicateAlertsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().searchAlerts({}, ctx);
+
+      expect(result.alerts.map((alert) => alert.id)).toEqual([
+        'urn:oid:duplicated-air-quality',
+        'urn:oid:distinct-wind-advisory',
+      ]);
+      // The surviving copy is the first occurrence, unmodified.
+      expect(result.alerts[0]).toMatchObject({
+        event: 'Air Quality Alert',
+        areaDesc: 'Central Washington',
+        sent: '2026-04-03T08:00:00-07:00',
+      });
+    });
+
+    it('collapses duplicates before the event filter, so a matching alert is counted once (issue #36)', async () => {
+      // Dedupe has to run on the raw feature array. Filtering first and dedupeing
+      // after would leave the duplicate in play for any caller reading the count
+      // off the filtered set.
+      mockFetch.mockResolvedValueOnce(jsonResponse(duplicateAlertsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().searchAlerts({ event: ['air quality'] }, ctx);
+
+      expect(result.alerts).toHaveLength(1);
+      expect(result.alerts[0]!.id).toBe('urn:oid:duplicated-air-quality');
     });
 
     it('sends region_type lowercased and region comma-joined upstream (issue #32)', async () => {

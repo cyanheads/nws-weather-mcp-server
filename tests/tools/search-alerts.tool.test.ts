@@ -91,7 +91,7 @@ describe('nws_search_alerts', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalCount).toBe(1);
-    expect(enrichment.shownCount).toBe(1);
+    expect(enrichment.shown).toBe(1);
     expect(enrichment.appliedFilters).toContain('area=WA');
     expect(enrichment.notice).toBeUndefined();
   });
@@ -107,7 +107,7 @@ describe('nws_search_alerts', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalCount).toBe(0);
-    expect(enrichment.shownCount).toBe(0);
+    expect(enrichment.shown).toBe(0);
     expect(enrichment.appliedFilters).toBe('national (no filters)');
     expect(enrichment.notice).toContain('No active alerts matched');
   });

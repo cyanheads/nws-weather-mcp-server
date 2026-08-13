@@ -443,7 +443,7 @@ describe('NwsService', () => {
         .mockResolvedValueOnce(jsonResponse(stationsResponse));
 
       const ctx = createMockContext({ tenantId: 'test' });
-      const result = await service.getNwsService().findStations(47.6062, -122.3321, 10, ctx);
+      const result = await service.getNwsService().findStations(47.6062, -122.3321, ctx);
 
       expect(result.stations.length).toBeGreaterThan(0);
       expect(result.stations[0]!.stationId).toBeDefined();
@@ -454,15 +454,19 @@ describe('NwsService', () => {
       }
     });
 
-    it('respects the limit parameter', async () => {
+    it('returns every station upstream reported, un-truncated, so the tool can page it', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse(pointsResponse))
         .mockResolvedValueOnce(jsonResponse(stationsResponse));
 
       const ctx = createMockContext({ tenantId: 'test' });
-      const result = await service.getNwsService().findStations(47.6062, -122.3321, 1, ctx);
+      const result = await service.getNwsService().findStations(47.6062, -122.3321, ctx);
 
-      expect(result.stations).toHaveLength(1);
+      // The service applies no limit — nws_find_stations windows this array with
+      // paginateArray, which needs the complete set to offer a next page.
+      expect(result.stations).toHaveLength(stationsResponse.features.length);
+      const distances = result.stations.map((s) => s.distance);
+      expect(distances).toEqual([...distances].sort((a, b) => a - b));
     });
   });
 

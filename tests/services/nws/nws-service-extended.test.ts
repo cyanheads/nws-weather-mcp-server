@@ -300,23 +300,22 @@ describe('NwsService extended', () => {
       );
 
       const ctx = createMockContext({ tenantId: 'test' });
-      const result = await service.getNwsService().findStations(47.6062, -122.3321, 10, ctx);
+      const result = await service.getNwsService().findStations(47.6062, -122.3321, ctx);
 
       expect(result.stations).toHaveLength(0);
-      expect(result.totalFound).toBe(0);
     });
 
-    it('respects limit when more stations are returned than requested', async () => {
+    it('hands back the full station set rather than truncating it', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse(pointsResponse))
         .mockResolvedValueOnce(jsonResponse(stationsResponse));
 
       const ctx = createMockContext({ tenantId: 'test' });
-      const result = await service.getNwsService().findStations(47.6062, -122.3321, 2, ctx);
+      const result = await service.getNwsService().findStations(47.6062, -122.3321, ctx);
 
-      expect(result.stations.length).toBeLessThanOrEqual(2);
-      // Total found is all available, not limited
-      expect(result.totalFound).toBeGreaterThanOrEqual(result.stations.length);
+      // The pre-page total nws_find_stations reports as `totalFound` is this
+      // array's length, so a short array here would understate it on every page.
+      expect(result.stations).toHaveLength(stationsResponse.features.length);
     });
 
     it('retries on transient 500 on observation stations fetch', async () => {
@@ -326,7 +325,7 @@ describe('NwsService extended', () => {
         .mockResolvedValueOnce(jsonResponse(stationsResponse));
 
       const ctx = createMockContext({ tenantId: 'test' });
-      const result = await service.getNwsService().findStations(47.6062, -122.3321, 10, ctx);
+      const result = await service.getNwsService().findStations(47.6062, -122.3321, ctx);
 
       expect(result.stations.length).toBeGreaterThan(0);
       expect(mockFetch).toHaveBeenCalledTimes(3);

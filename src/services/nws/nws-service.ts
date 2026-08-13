@@ -507,9 +507,13 @@ export interface StationResult {
 }
 
 export interface FindStationsResult {
+  /**
+   * Every observation station the NWS grid cell reports, sorted nearest-first.
+   * The upstream endpoint returns the collection in one response, so windowing
+   * is a presentation concern the tool applies over this array — the service
+   * hands back the complete set and never truncates it.
+   */
   readonly stations: readonly StationResult[];
-  /** Total stations available near this location before the limit was applied. */
-  readonly totalFound: number;
 }
 
 export interface OfficeDiscussionResult {
@@ -720,13 +724,8 @@ export class NwsService {
     return { observation };
   }
 
-  /** Find observation stations near coordinates, sorted by proximity. */
-  async findStations(
-    lat: number,
-    lon: number,
-    limit: number,
-    ctx: Context,
-  ): Promise<FindStationsResult> {
+  /** Find every observation station near coordinates, sorted by proximity. */
+  async findStations(lat: number, lon: number, ctx: Context): Promise<FindStationsResult> {
     const points = await resolvePoints(lat, lon, ctx);
 
     ctx.log.info('Fetching stations', { url: points.observationStationsUrl });
@@ -753,7 +752,7 @@ export class NwsService {
 
     stations.sort((a, b) => a.distance - b.distance);
 
-    return { stations: stations.slice(0, limit), totalFound: stations.length };
+    return { stations };
   }
 
   /** List all valid alert event type names. */

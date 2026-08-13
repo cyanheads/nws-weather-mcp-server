@@ -5,7 +5,16 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
+
+/**
+ * Upper bound on stations per page. The NWS grid-stations endpoint returns the
+ * whole collection in one response (~70 near a metro grid cell), so the service
+ * hands back the complete distance-sorted set and this tool windows it. Stations
+ * past the window are reachable through the `nextCursor` continuation token.
+ */
+const MAX_STATIONS = 50;
 
 export const findStationsTool = tool('nws_find_stations', {
   description:
@@ -23,7 +32,21 @@ export const findStationsTool = tool('nws_find_stations', {
   input: z.object({
     latitude: z.number().min(-90).max(90).describe('Center latitude for proximity search.'),
     longitude: z.number().min(-180).max(180).describe('Center longitude for proximity search.'),
-    limit: z.number().int().min(1).max(50).default(10).describe('Max stations to return (1-50).'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_STATIONS)
+      .default(10)
+      .describe(
+        `Max stations per page (1-${MAX_STATIONS}). totalFound still reports every station near the point, so pass the returned nextCursor as cursor to reach the rest.`,
+      ),
+    cursor: z
+      .string()
+      .optional()
+      .describe(
+        "Opaque continuation token from a previous response's nextCursor. Omit for the first page. The token carries its own page size, so limit applies to the first page only. Every call re-fetches the station list, so pages are contiguous within one response; the registry changes rarely, but a later call can window an updated list.",
+      ),
   }),
 
   output: z.object({
@@ -46,34 +69,46 @@ export const findStationsTool = tool('nws_find_stations', {
   }),
 
   // Result-set context for the agent — total available stations (pre-limit), returned count,
-  // and empty-result guidance.
+  // continuation token, and empty-result guidance.
   enrichment: {
     totalFound: z
       .number()
       .describe(
-        'Total observation stations available near this location before the limit was applied',
+        'Total observation stations available near this location before the page limit was applied. Same value on every page of one query.',
       ),
-    totalCount: z.number().describe('Number of stations returned (respects the limit parameter)'),
+    totalCount: z.number().describe('Number of stations returned in this page'),
+    nextCursor: z
+      .string()
+      .optional()
+      .describe(
+        'Opaque token for the next page of stations — pass it back as `cursor`. Omitted when this is the last page.',
+      ),
     notice: z
       .string()
       .optional()
-      .describe('Guidance when no stations were found near the requested coordinates.'),
+      .describe(
+        'Guidance when no stations were found near the requested coordinates, when stations remain beyond this page, or when the supplied cursor points past the end of the list.',
+      ),
   },
 
   enrichmentTrailer: {
     totalFound: { label: 'Total Nearby' },
     totalCount: { label: 'Returned' },
+    nextCursor: { label: 'Next Cursor' },
   },
 
   async handler(input, ctx) {
-    const result = await getNwsService().findStations(
-      input.latitude,
-      input.longitude,
-      input.limit,
-      ctx,
-    );
+    const result = await getNwsService().findStations(input.latitude, input.longitude, ctx);
 
-    const stations = result.stations.map((s) => ({
+    const allStations = [...result.stations];
+    // Every station near the point, before the page window (issue #14). Stays
+    // constant across the pages of one query, and is deliberately a different
+    // quantity from `totalCount`, which counts what this page returned.
+    const totalFound = allStations.length;
+
+    const page = paginateArray(allStations, input.cursor, input.limit, MAX_STATIONS, ctx);
+
+    const stations = page.items.map((s) => ({
       stationId: s.stationId,
       name: s.name,
       distanceKm: s.distance,
@@ -84,10 +119,22 @@ export const findStationsTool = tool('nws_find_stations', {
       forecastZone: s.forecastZone,
     }));
 
-    ctx.enrich({ totalFound: result.totalFound, totalCount: stations.length });
-    if (stations.length === 0) {
+    ctx.enrich({
+      totalFound,
+      totalCount: stations.length,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    });
+    if (totalFound === 0) {
       ctx.enrich.notice(
         `No observation stations found near (${input.latitude}, ${input.longitude}). Try coordinates closer to the US mainland, territories, or adjacent marine areas.`,
+      );
+    } else if (page.nextCursor) {
+      ctx.enrich.notice(
+        `Returning ${stations.length} of ${totalFound} nearby stations. Pass nextCursor back as cursor for the next page. Stations are contiguous within one response; the list is re-fetched on every call, so a later call can window an updated registry.`,
+      );
+    } else if (input.cursor && stations.length === 0) {
+      ctx.enrich.notice(
+        `The cursor points past the end of the ${totalFound} stations near (${input.latitude}, ${input.longitude}). Call again without a cursor to restart from the nearest station.`,
       );
     }
 

@@ -1,21 +1,23 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-06-30 23:48:06
+Generated on: 2026-08-13 02:36:44
 
 ```text
 nws-weather-mcp-server/
-├── .agents/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
 │   ├── mcp.json
 │   └── plugin.json
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       ├── bug_report.yml
-│       ├── config.yml
-│       └── feature_request.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
+│   ├── FUNDING.yml
+│   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -24,7 +26,6 @@ nws-weather-mcp-server/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
 │   └── template.md
-├── claude-plans/
 ├── docs/
 │   └── design.md
 ├── scripts/
@@ -183,6 +184,7 @@ nws-weather-mcp-server/
 │       └── zone-forecast-extended.test.ts
 ├── .dockerignore
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
 ├── AGENTS.md

@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/nws-weather-mcp-server",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.",
   "type": "module",
   "main": "dist/index.js",
@@ -55,7 +55,7 @@
   "bugs": {
     "url": "https://github.com/cyanheads/nws-weather-mcp-server/issues"
   },
-  "author": "cyanheads <casey@caseyjhand.com> (https://github.com/cyanheads/nws-weather-mcp-server#readme)",
+  "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
   "funding": [
     {
       "type": "github",
@@ -71,24 +71,25 @@
     "node": ">=24.0.0",
     "bun": ">=1.3.0"
   },
-  "packageManager": "bun@1.3.11",
+  "packageManager": "bun@1.3.14",
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.10.10",
+    "@cyanheads/mcp-ts-core": "^0.11.5",
     "@opentelemetry/api": "^1.9.1",
     "pino-pretty": "^13.1.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.2",
-    "@types/node": "^26.1.0",
-    "@vitest/coverage-istanbul": "^4.1.9",
+    "@biomejs/biome": "^2.5.7",
+    "@socketsecurity/bun-security-scanner": "^1.1.2",
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-istanbul": "^4.1.10",
     "depcheck": "^1.4.7",
-    "ignore": "^7.0.5",
-    "tsc-alias": "^1.8.17",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "ignore": "^7.0.6",
+    "tsc-alias": "^1.9.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.3](changelog/0.7.x/0.7.3.md) — 2026-08-12
+
+nws_search_alerts checks a zone's area prefix and rejects blank/empty filters instead of widening to a national search; nws_get_observations rejects a blank station_id instead of silently answering from coordinates
+
 ## [0.7.2](changelog/0.7.x/0.7.2.md) — 2026-07-02
 
 nws_get_forecast hourly mode caps structuredContent at 48 periods (matching content[]), with the pre-cap total and a truncation notice surfaced via enrichment; whitespace-only office and zone_id inputs now fail schema validation instead of reaching the upstream lookup

@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.7.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3+-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.7.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3+-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -60,11 +60,11 @@ Search active weather alerts with flexible filtering.
 - Filter by area (state/territory/marine codes), point (lat,lon), zone, event type, severity, urgency, certainty, or status
 - `area`, `point`, and `zone` are mutually exclusive; specify at most one location filter
 - National search when no filters provided
-- Blank optional location filters are ignored so form-based clients can submit empty fields safely
+- A filter provided with no usable value — a blank `area`/`point`/`zone`, or an empty `event`/`severity`/`urgency`/`certainty` array — is rejected rather than dropped, so a search never silently widens to national results
 - Event matching is case-insensitive and partial, so `"tornado"` matches both watches and warnings
 - `status` defaults to live `Actual` alerts, but can be set to `Exercise`, `System`, `Test`, or `Draft`
 - Optional `limit` (1–25, default 25) caps the returned alerts; `totalCount` reports the full match count, with a truncation notice and guidance to narrow filters
-- Validates area, point, and zone locally before the API call — malformed points fail fast as `invalid_point` instead of leaking a raw upstream 400
+- Validates area, point, and zone locally before the API call — malformed values fail fast as `invalid_area_code`, `invalid_point`, or `invalid_zone` instead of leaking a raw upstream 400
 
 ---
 
@@ -73,7 +73,7 @@ Search active weather alerts with flexible filtering.
 Current measured conditions from a weather station.
 
 - Look up by coordinates (finds nearest station) or station ID directly
-- Blank or whitespace-only `station_id` values are ignored so clients can fall back to coordinates cleanly
+- A blank or whitespace-only `station_id` is rejected rather than dropped, so coordinates never silently answer for a station that was asked for by name
 - Coordinate lookups choose the nearest station from the candidates returned by NWS
 - Dual-unit display: F/C, mph/km/h, inHg/hPa, mi/km
 - Observation timestamps use the station's local time zone when available

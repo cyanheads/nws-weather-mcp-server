@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-08-12 · ⚠️ Breaking
+
+affectedZones entries are now code+type objects (breaking); nws_search_alerts adds region/region_type filters and CAP message-lifecycle fields; a null alert description no longer fails the whole response
+
 ## [0.7.4](changelog/0.7.x/0.7.4.md) — 2026-08-12
 
 nws_get_forecast, nws_find_stations, and nws_search_alerts take a cursor input and return nextCursor, reaching results past each tool's page cap instead of dropping them

@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-08-13 02:36:44
+Generated on: 2026-08-13 05:08:30
 
 ```text
 nws-weather-mcp-server/
@@ -25,6 +25,7 @@ nws-weather-mcp-server/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
+│   ├── 0.8.x/
 │   └── template.md
 ├── docs/
 │   └── design.md

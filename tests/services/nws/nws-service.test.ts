@@ -60,7 +60,7 @@ describe('NwsService', () => {
       expect(result.location.forecastZone).toBe('WAZ558');
       expect(result.location.county).toBe('WAC033');
       expect(result.forecast.periods).toHaveLength(2);
-      expect(result.forecast.periods[0].name).toBe('Today');
+      expect(result.forecast.periods[0]!.name).toBe('Today');
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
@@ -86,7 +86,7 @@ describe('NwsService', () => {
       const ctx = createMockContext({ tenantId: 'test' });
       await service.getNwsService().getForecast(47.6062, -122.3321, true, ctx);
 
-      const secondCall = mockFetch.mock.calls[1];
+      const secondCall = mockFetch.mock.calls[1]!;
       expect(secondCall[0]).toContain('forecast/hourly');
     });
   });
@@ -101,9 +101,9 @@ describe('NwsService', () => {
         .searchAlerts({ area: 'WA', event: ['wind'], status: 'Actual' }, ctx);
 
       expect(result.alerts).toHaveLength(1);
-      expect(result.alerts[0].event).toBe('Wind Advisory');
-      expect(result.alerts[0].severity).toBe('Moderate');
-      expect(result.alerts[0].ends).toBe('2026-04-03T18:00:00-07:00');
+      expect(result.alerts[0]!.event).toBe('Wind Advisory');
+      expect(result.alerts[0]!.severity).toBe('Moderate');
+      expect(result.alerts[0]!.ends).toBe('2026-04-03T18:00:00-07:00');
     });
 
     it('maps a null ends to null for open-ended hazards (regression: issue #18)', async () => {
@@ -135,8 +135,8 @@ describe('NwsService', () => {
       const ctx = createMockContext({ tenantId: 'test' });
       const result = await service.getNwsService().searchAlerts({}, ctx);
 
-      expect(result.alerts[0].ends).toBeNull();
-      expect(result.alerts[0].onset).toBe('2026-06-21T11:00:00-07:00');
+      expect(result.alerts[0]!.ends).toBeNull();
+      expect(result.alerts[0]!.onset).toBe('2026-06-21T11:00:00-07:00');
     });
 
     it('normalizes each supported status value to lowercase for the upstream API', async () => {
@@ -177,7 +177,7 @@ describe('NwsService', () => {
           ctx,
         );
 
-      const url = mockFetch.mock.calls[0][0] as string;
+      const url = mockFetch.mock.calls[0]![0] as string;
       expect(url).toContain('area=WA');
       expect(url).toContain('severity=Severe%2CExtreme');
       expect(url).toContain('status=actual');
@@ -446,7 +446,7 @@ describe('NwsService', () => {
       const result = await service.getNwsService().findStations(47.6062, -122.3321, 10, ctx);
 
       expect(result.stations.length).toBeGreaterThan(0);
-      expect(result.stations[0].stationId).toBeDefined();
+      expect(result.stations[0]!.stationId).toBeDefined();
       // Each station should have distance and bearing
       for (const s of result.stations) {
         expect(s.distance).toBeGreaterThanOrEqual(0);

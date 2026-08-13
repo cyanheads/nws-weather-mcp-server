@@ -187,7 +187,10 @@ describe('Injection attempts — nws_get_office_discussion', () => {
       wmoCollectiveId: 'FXUS66',
     });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({
+      tenantId: 'test',
+      errors: getOfficeDiscussionTool.errors,
+    });
     // An office code with a path-injection attempt — NWS API will reject the upstream
     // call, but verify the tool at least uppercases it before passing on
     const input = getOfficeDiscussionTool.input.parse({ office: 'sew' });
@@ -215,7 +218,7 @@ describe('Injection attempts — nws_get_zone_forecast', () => {
       periods: [],
     });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
     const input = getZoneForecastTool.input.parse({ zone_id: 'waz315' });
     await getZoneForecastTool.handler(input, ctx);
 
@@ -253,7 +256,7 @@ describe('No secrets in tool output', () => {
       ...mockForecastResult,
     });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
     const input = getForecastTool.input.parse({ latitude: 47.6, longitude: -122.3 });
     const result = await getForecastTool.handler(input, ctx);
 
@@ -267,7 +270,7 @@ describe('No secrets in tool output', () => {
 
     mockGetObservation.mockResolvedValueOnce(mockObsResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
     const input = getObservationsTool.input.parse({ station_id: 'KORD' });
     const result = await getObservationsTool.handler(input, ctx);
 
@@ -281,7 +284,7 @@ describe('No secrets in tool output', () => {
 
     mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({});
     const result = await searchAlertsTool.handler(input, ctx);
 

@@ -17,7 +17,13 @@ const { getZoneForecastTool } = await import(
   '@/mcp-server/tools/definitions/get-zone-forecast.tool.js'
 );
 
-const baseResult: ZoneForecastResult = {
+/**
+ * The tool's `format()` parameter: the same fields as `ZoneForecastResult` but with a
+ * mutable `periods` array, so one fixture serves both the service mock and `format()`.
+ */
+type ZoneForecastOutput = Parameters<NonNullable<typeof getZoneForecastTool.format>>[0];
+
+const baseResult: ZoneForecastOutput = {
   zoneId: 'WAZ315',
   updated: '2026-05-30T02:36:00-07:00',
   periods: [
@@ -56,7 +62,7 @@ describe('nws_get_zone_forecast extended', () => {
     it('trims and uppercases zone_id before calling service', async () => {
       mockGetZoneForecast.mockResolvedValueOnce(baseResult);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
       const input = getZoneForecastTool.input.parse({ zone_id: '  waz315  ' });
       await getZoneForecastTool.handler(input, ctx);
 
@@ -68,7 +74,7 @@ describe('nws_get_zone_forecast extended', () => {
     it('sets periodCount to 0 for empty periods result', async () => {
       mockGetZoneForecast.mockResolvedValueOnce({ ...baseResult, periods: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
       const input = getZoneForecastTool.input.parse({ zone_id: 'WAZ315' });
       await getZoneForecastTool.handler(input, ctx);
 
@@ -87,7 +93,7 @@ describe('nws_get_zone_forecast extended', () => {
       };
       mockGetZoneForecast.mockResolvedValueOnce(manyPeriods);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
       const input = getZoneForecastTool.input.parse({ zone_id: 'WAZ315' });
       await getZoneForecastTool.handler(input, ctx);
 
@@ -100,7 +106,7 @@ describe('nws_get_zone_forecast extended', () => {
     it('preserves zoneId as supplied (after normalization)', async () => {
       mockGetZoneForecast.mockResolvedValueOnce(baseResult);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
       const input = getZoneForecastTool.input.parse({ zone_id: 'WAZ315' });
       const result = await getZoneForecastTool.handler(input, ctx);
 
@@ -111,7 +117,7 @@ describe('nws_get_zone_forecast extended', () => {
     it('returns empty periods array when upstream has none', async () => {
       mockGetZoneForecast.mockResolvedValueOnce({ ...baseResult, periods: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
       const input = getZoneForecastTool.input.parse({ zone_id: 'WAZ315' });
       const result = await getZoneForecastTool.handler(input, ctx);
 
@@ -121,7 +127,7 @@ describe('nws_get_zone_forecast extended', () => {
     it('maps period number, name, and detailedForecast correctly', async () => {
       mockGetZoneForecast.mockResolvedValueOnce(baseResult);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
       const input = getZoneForecastTool.input.parse({ zone_id: 'WAZ315' });
       const result = await getZoneForecastTool.handler(input, ctx);
 
@@ -144,7 +150,7 @@ describe('nws_get_zone_forecast extended', () => {
 
   describe('format — period numbering', () => {
     it('renders period sequence numbers in order', () => {
-      const result: ZoneForecastResult = {
+      const result: ZoneForecastOutput = {
         zoneId: 'NYZ072',
         updated: '2026-04-03T06:00:00-04:00',
         periods: [
@@ -175,7 +181,7 @@ describe('nws_get_zone_forecast extended', () => {
       const err = new Error('Zone "WAZ999" not found or has no forecast');
       mockGetZoneForecast.mockRejectedValueOnce(err);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
       const input = getZoneForecastTool.input.parse({ zone_id: 'WAZ999' });
       await expect(getZoneForecastTool.handler(input, ctx)).rejects.toThrow('WAZ999');
     });

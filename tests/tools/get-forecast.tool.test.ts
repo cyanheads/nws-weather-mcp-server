@@ -65,7 +65,7 @@ describe('nws_get_forecast', () => {
   it('returns forecast periods', async () => {
     mockGetForecast.mockResolvedValueOnce(forecastResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
     const input = getForecastTool.input.parse({ latitude: 47.6, longitude: -122.3 });
     const result = await getForecastTool.handler(input, ctx);
 
@@ -74,15 +74,15 @@ describe('nws_get_forecast', () => {
     expect(result.location.county).toBe('WAC033');
     expect(result.generatedAt).toBe('2026-04-03T12:00:00Z');
     expect(result.periods).toHaveLength(1);
-    expect(result.periods[0].name).toBe('Today');
-    expect(result.periods[0].precipChancePct).toBe(10);
-    expect(result.periods[0].dewpointC).toBe(8.5);
+    expect(result.periods[0]!.name).toBe('Today');
+    expect(result.periods[0]!.precipChancePct).toBe(10);
+    expect(result.periods[0]!.dewpointC).toBe(8.5);
   });
 
   it('passes hourly flag to service', async () => {
     mockGetForecast.mockResolvedValueOnce(forecastResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
     const input = getForecastTool.input.parse({ latitude: 47.6, longitude: -122.3, hourly: true });
     await getForecastTool.handler(input, ctx);
 
@@ -129,7 +129,7 @@ describe('nws_get_forecast', () => {
         forecast: {
           ...forecastResult.forecast,
           periods: Array.from({ length: 156 }, (_, index) => ({
-            ...forecastResult.forecast.periods[0],
+            ...forecastResult.forecast.periods[0]!,
             number: index + 1,
             name: '',
             shortForecast: `Hour ${index + 1} conditions`,
@@ -149,7 +149,7 @@ describe('nws_get_forecast', () => {
 
       // The handler's returned periods populate structuredContent — capped at 48.
       expect(result.periods).toHaveLength(48);
-      expect(result.periods[47].shortForecast).toBe('Hour 48 conditions');
+      expect(result.periods[47]!.shortForecast).toBe('Hour 48 conditions');
 
       const enrichment = getEnrichment(ctx);
       expect(enrichment).toMatchObject({
@@ -172,7 +172,7 @@ describe('nws_get_forecast', () => {
         forecast: {
           ...forecastResult.forecast,
           periods: Array.from({ length: 14 }, (_, index) => ({
-            ...forecastResult.forecast.periods[0],
+            ...forecastResult.forecast.periods[0]!,
             number: index + 1,
             name: `Period ${index + 1}`,
           })),
@@ -225,7 +225,7 @@ describe('nws_get_forecast', () => {
       };
 
       const blocks = getForecastTool.format!(output);
-      expect(blocks[0].type).toBe('text');
+      expect(blocks[0]!.type).toBe('text');
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('Seattle, WA');
       expect(text).toContain('Forecast Zone:** WAZ558');

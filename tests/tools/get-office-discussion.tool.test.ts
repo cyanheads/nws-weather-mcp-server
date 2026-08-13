@@ -62,7 +62,7 @@ describe('nws_get_office_discussion', () => {
   it('returns discussion with all fields', async () => {
     mockGetOfficeDiscussion.mockResolvedValueOnce(discussionResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
     const input = getOfficeDiscussionTool.input.parse({ office: 'SEW' });
     const result = await getOfficeDiscussionTool.handler(input, ctx);
 
@@ -77,7 +77,7 @@ describe('nws_get_office_discussion', () => {
   it('uppercases office before passing to service', async () => {
     mockGetOfficeDiscussion.mockResolvedValueOnce(discussionResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
     const input = getOfficeDiscussionTool.input.parse({ office: 'sew', product_type: 'AFD' });
     await getOfficeDiscussionTool.handler(input, ctx);
 
@@ -89,7 +89,7 @@ describe('nws_get_office_discussion', () => {
       new Error('No AFD products found for office "BOGUS". Verify the 3-letter WFO code'),
     );
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
     const input = getOfficeDiscussionTool.input.parse({ office: 'BOGUS' });
     await expect(getOfficeDiscussionTool.handler(input, ctx)).rejects.toThrow(
       'Verify the 3-letter WFO code',
@@ -103,7 +103,7 @@ describe('nws_get_office_discussion', () => {
       ),
     );
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
     const input = getOfficeDiscussionTool.input.parse({ office: 'SEW', product_type: 'SPS' });
     await expect(getOfficeDiscussionTool.handler(input, ctx)).rejects.toThrow(
       'currently available',

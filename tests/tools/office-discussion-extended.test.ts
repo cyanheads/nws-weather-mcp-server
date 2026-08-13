@@ -36,7 +36,7 @@ describe('nws_get_office_discussion extended', () => {
     it('trims whitespace from office before calling service', async () => {
       mockGetOfficeDiscussion.mockResolvedValueOnce(baseResult);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
       const input = getOfficeDiscussionTool.input.parse({ office: '  sew  ' });
       await getOfficeDiscussionTool.handler(input, ctx);
 
@@ -47,7 +47,7 @@ describe('nws_get_office_discussion extended', () => {
       for (const type of ['AFD', 'HWO', 'ZFP', 'SPS'] as const) {
         mockGetOfficeDiscussion.mockResolvedValueOnce({ ...baseResult, productCode: type });
 
-        const ctx = createMockContext({ tenantId: 'test' });
+        const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
         const input = getOfficeDiscussionTool.input.parse({ office: 'SEW', product_type: type });
         const result = await getOfficeDiscussionTool.handler(input, ctx);
 
@@ -61,7 +61,7 @@ describe('nws_get_office_discussion extended', () => {
     it('returns all required fields', async () => {
       mockGetOfficeDiscussion.mockResolvedValueOnce(baseResult);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
       const input = getOfficeDiscussionTool.input.parse({ office: 'SEW' });
       const result = await getOfficeDiscussionTool.handler(input, ctx);
 
@@ -77,7 +77,7 @@ describe('nws_get_office_discussion extended', () => {
 
     it('logs at info level on success (no crash)', async () => {
       mockGetOfficeDiscussion.mockResolvedValueOnce(baseResult);
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
       const input = getOfficeDiscussionTool.input.parse({ office: 'BOU' });
       await expect(getOfficeDiscussionTool.handler(input, ctx)).resolves.toBeDefined();
     });
@@ -128,7 +128,7 @@ describe('nws_get_office_discussion extended', () => {
       const err = new Error('No HWO products found for office "KSEW"');
       mockGetOfficeDiscussion.mockRejectedValueOnce(err);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
       const input = getOfficeDiscussionTool.input.parse({ office: 'SEW', product_type: 'HWO' });
       await expect(getOfficeDiscussionTool.handler(input, ctx)).rejects.toThrow('No HWO products');
     });
@@ -137,7 +137,7 @@ describe('nws_get_office_discussion extended', () => {
       const err = new Error('Unexpected failure');
       mockGetOfficeDiscussion.mockRejectedValueOnce(err);
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
       const input = getOfficeDiscussionTool.input.parse({ office: 'SEW' });
       await expect(getOfficeDiscussionTool.handler(input, ctx)).rejects.toThrow(
         'Unexpected failure',

@@ -15,8 +15,10 @@ const { getObservationsTool } = await import(
 );
 
 /** Helper: call format() with a minimal observation, allowing field overrides. */
-function fmt(overrides: Partial<Parameters<typeof getObservationsTool.format>[0]> = {}) {
-  const base: Parameters<typeof getObservationsTool.format>[0] = {
+function fmt(
+  overrides: Partial<Parameters<NonNullable<typeof getObservationsTool.format>>[0]> = {},
+) {
+  const base: Parameters<NonNullable<typeof getObservationsTool.format>>[0] = {
     stationId: 'KSEA',
     stationName: 'Seattle-Tacoma Intl',
     timestamp: '2026-04-03T11:53:00+00:00',
@@ -37,7 +39,9 @@ function fmt(overrides: Partial<Parameters<typeof getObservationsTool.format>[0]
   return getObservationsTool.format!({ ...base, ...overrides });
 }
 
-function text(overrides: Partial<Parameters<typeof getObservationsTool.format>[0]> = {}) {
+function text(
+  overrides: Partial<Parameters<NonNullable<typeof getObservationsTool.format>>[0]> = {},
+) {
   const blocks = fmt(overrides);
   return (blocks[0] as { type: 'text'; text: string }).text;
 }

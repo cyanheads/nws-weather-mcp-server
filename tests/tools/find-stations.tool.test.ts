@@ -60,15 +60,15 @@ describe('nws_find_stations', () => {
   it('returns stations with distance and bearing', async () => {
     mockFindStations.mockResolvedValueOnce(stationsResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: findStationsTool.errors });
     const input = findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3 });
     const result = await findStationsTool.handler(input, ctx);
 
     expect(result.stations).toHaveLength(2);
-    expect(result.stations[0].stationId).toBe('KSEA');
-    expect(result.stations[0].distanceKm).toBe(12.3);
-    expect(result.stations[0].bearing).toBe('S');
-    expect(result.stations[1].elevationM).toBe(6);
+    expect(result.stations[0]!.stationId).toBe('KSEA');
+    expect(result.stations[0]!.distanceKm).toBe(12.3);
+    expect(result.stations[0]!.bearing).toBe('S');
+    expect(result.stations[1]!.elevationM).toBe(6);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalFound).toBe(2);
@@ -79,7 +79,7 @@ describe('nws_find_stations', () => {
   it('sets enrichment notice when no stations found', async () => {
     mockFindStations.mockResolvedValueOnce({ stations: [], totalFound: 0 });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: findStationsTool.errors });
     const input = findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3 });
     const result = await findStationsTool.handler(input, ctx);
 
@@ -94,7 +94,7 @@ describe('nws_find_stations', () => {
   it('passes limit to service', async () => {
     mockFindStations.mockResolvedValueOnce({ stations: [], totalFound: 0 });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: findStationsTool.errors });
     const input = findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 5 });
     await findStationsTool.handler(input, ctx);
 

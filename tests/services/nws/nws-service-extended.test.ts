@@ -213,9 +213,9 @@ describe('NwsService extended', () => {
       expect(result.zoneId).toBe('WAZ315');
       expect(result.updated).toBe('2026-05-30T02:36:00-07:00');
       expect(result.periods).toHaveLength(2);
-      expect(result.periods[0].name).toBe('Today');
-      expect(result.periods[0].number).toBe(1);
-      expect(result.periods[1].name).toBe('Tonight');
+      expect(result.periods[0]!.name).toBe('Today');
+      expect(result.periods[0]!.number).toBe(1);
+      expect(result.periods[1]!.name).toBe('Tonight');
     });
 
     it('returns empty periods when upstream provides none', async () => {
@@ -398,6 +398,7 @@ describe('NwsService extended', () => {
       const ctx = createMockContext({ tenantId: 'test' });
       const result = freshService.getNwsService().getZoneForecast('WAZ315', ctx);
 
+      await expect(result).rejects.toThrow();
       const err = await result.catch((e: unknown) => e);
       expect(String(err)).not.toContain('TOP_SECRET_TOKEN');
 

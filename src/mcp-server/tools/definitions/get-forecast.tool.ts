@@ -5,15 +5,17 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp, fToC } from '../format-utils.js';
 
 /**
- * Maximum forecast periods returned per call. Applied in the handler so
- * `structuredContent` and `content[]` share the same bounded projection —
- * the upstream hourly feed carries ~156 periods (7 days), which floods
- * context unbounded. The pre-cap total is surfaced via the
- * `totalPeriodCount` enrichment field, with a notice when truncation occurs.
+ * Forecast periods per page. Applied in the handler so `structuredContent` and
+ * `content[]` share the same bounded projection — the upstream hourly feed
+ * carries ~156 periods (7 days), which floods context unbounded. The pre-page
+ * total is surfaced via the `totalPeriodCount` enrichment field, and the periods
+ * past this window are reachable through the `nextCursor` continuation token
+ * rather than dropped.
  */
 const MAX_PERIODS = 48;
 
@@ -58,7 +60,13 @@ export const getForecastTool = tool('nws_get_forecast', {
       .boolean()
       .default(false)
       .describe(
-        'If true, returns hourly forecast (next 48 one-hour periods) instead of 12-hour named periods (14 periods). Hourly includes dewpoint and relative humidity.',
+        `If true, returns hourly forecast (${MAX_PERIODS} one-hour periods per page, ~156 available) instead of 12-hour named periods (14 periods). Hourly includes dewpoint and relative humidity.`,
+      ),
+    cursor: z
+      .string()
+      .optional()
+      .describe(
+        `Opaque continuation token from a previous response's nextCursor, to retrieve the next ${MAX_PERIODS} periods. Omit for the first page. Every call re-fetches the forecast, so consecutive periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated period array.`,
       ),
   }),
 
@@ -109,16 +117,22 @@ export const getForecastTool = tool('nws_get_forecast', {
   enrichment: {
     periodCount: z
       .number()
-      .describe(`Number of forecast periods returned (capped at ${MAX_PERIODS}).`),
+      .describe(`Number of forecast periods in this page (at most ${MAX_PERIODS}).`),
     totalPeriodCount: z
       .number()
-      .describe('Total forecast periods available upstream before the cap was applied.'),
+      .describe('Total forecast periods available upstream before the page window was applied.'),
     mode: z.string().describe('Forecast mode: "hourly" or "7-day"'),
+    nextCursor: z
+      .string()
+      .optional()
+      .describe(
+        'Opaque token for the next page of periods — pass it back as `cursor`. Omitted when this is the last page.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Set when upstream returned more periods than the cap — states how many periods were omitted.',
+        'Set when periods remain beyond this page, or when the supplied cursor points past the end of the period array.',
       ),
   },
 
@@ -126,6 +140,7 @@ export const getForecastTool = tool('nws_get_forecast', {
     periodCount: { label: 'Periods' },
     totalPeriodCount: { label: 'Total Periods' },
     mode: { label: 'Mode' },
+    nextCursor: { label: 'Next Cursor' },
   },
 
   async handler(input, ctx) {
@@ -136,24 +151,39 @@ export const getForecastTool = tool('nws_get_forecast', {
       ctx,
     );
 
-    const totalPeriodCount = result.forecast.periods.length;
-    const periods = result.forecast.periods.slice(0, MAX_PERIODS);
+    const allPeriods = [...result.forecast.periods];
+    const totalPeriodCount = allPeriods.length;
+
+    // One window over the fetched array feeds both the returned `periods`
+    // (structuredContent) and format() — a single slice through the single
+    // MAX_PERIODS constant, per issue #23. The cursor reaches the periods past
+    // it (issue #27) and carries its own page size, so the window stays
+    // MAX_PERIODS on every page.
+    const page = paginateArray(allPeriods, input.cursor, MAX_PERIODS, MAX_PERIODS, ctx);
 
     ctx.enrich({
-      periodCount: periods.length,
+      periodCount: page.items.length,
       totalPeriodCount,
       mode: input.hourly ? 'hourly' : '7-day',
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     });
-    if (totalPeriodCount > MAX_PERIODS) {
+    if (page.nextCursor) {
+      const lead = input.cursor
+        ? `Returning ${page.items.length} more of ${totalPeriodCount} forecast periods.`
+        : `Returning the first ${page.items.length} of ${totalPeriodCount} forecast periods to bound response size.`;
       ctx.enrich.notice(
-        `Returning the first ${MAX_PERIODS} of ${totalPeriodCount} forecast periods; the remaining ${totalPeriodCount - MAX_PERIODS} were omitted to bound response size.`,
+        `${lead} Pass nextCursor back as cursor for the next window. Periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated array.`,
+      );
+    } else if (input.cursor && page.items.length === 0) {
+      ctx.enrich.notice(
+        `The cursor points past the end of this forecast's ${totalPeriodCount} periods. Call again without a cursor to restart from the first period.`,
       );
     }
 
     return {
       location: result.location,
       generatedAt: result.forecast.generatedAt,
-      periods: periods.map((p) => ({
+      periods: page.items.map((p) => ({
         name: p.name,
         startTime: p.startTime,
         endTime: p.endTime,

@@ -3,7 +3,9 @@
  * @module tests/tools/get-forecast
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ForecastResult } from '@/services/nws/nws-service.js';
 
@@ -47,6 +49,23 @@ const forecastResult: ForecastResult = {
     ],
   },
 };
+
+/** Build a forecast result whose period array carries `count` distinguishable hourly periods. */
+function hourlyForecast(count: number): ForecastResult {
+  return {
+    ...forecastResult,
+    forecast: {
+      ...forecastResult.forecast,
+      periods: Array.from({ length: count }, (_, index) => ({
+        ...forecastResult.forecast.periods[0]!,
+        number: index + 1,
+        name: '',
+        shortForecast: `Hour ${index + 1} conditions`,
+        detailedForecast: '',
+      })),
+    },
+  };
+}
 
 describe('nws_get_forecast', () => {
   beforeEach(() => {
@@ -158,6 +177,8 @@ describe('nws_get_forecast', () => {
         mode: 'hourly',
       });
       expect(enrichment.notice).toContain('first 48 of 156');
+      // The 108 periods past the window are reachable, not merely disclosed.
+      expect(enrichment.nextCursor).toEqual(expect.any(String));
 
       // format() consumes the same capped result — both surfaces share one projection.
       const blocks = getForecastTool.format!(result);
@@ -189,6 +210,150 @@ describe('nws_get_forecast', () => {
       const enrichment = getEnrichment(ctx);
       expect(enrichment).toMatchObject({ periodCount: 14, totalPeriodCount: 14 });
       expect(enrichment.notice).toBeUndefined();
+    });
+  });
+
+  describe('cursor pagination (issue #27)', () => {
+    /** Run one page against the currently mocked forecast and return output + enrichment. */
+    async function page(cursor?: string) {
+      const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
+      const input = getForecastTool.input.parse({
+        latitude: 47.6,
+        longitude: -122.3,
+        hourly: true,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      const result = await getForecastTool.handler(input, ctx);
+      return { result, enrichment: getEnrichment(ctx) };
+    }
+
+    it('offers a nextCursor when periods remain beyond the first window', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const { result, enrichment } = await page();
+
+      expect(result.periods).toHaveLength(48);
+      expect(enrichment.nextCursor).toEqual(expect.any(String));
+      expect(enrichment.notice).toContain('cursor');
+    });
+
+    it('walks consecutive pages over one fetched array with no overlap and no gaps', async () => {
+      // The mock returns the same period array on every call, so this proves the
+      // windowing is contiguous over a single fetched collection. It does NOT
+      // claim anything about two separate live fetches.
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const seen: string[] = [];
+      const pageSizes: number[] = [];
+      let cursor: string | undefined;
+      do {
+        const { result, enrichment } = await page(cursor);
+        seen.push(...result.periods.map((p) => p.shortForecast));
+        pageSizes.push(result.periods.length);
+        cursor = enrichment.nextCursor as string | undefined;
+      } while (cursor);
+
+      expect(pageSizes).toEqual([48, 48, 48, 12]);
+      expect(seen).toEqual(
+        Array.from({ length: 156 }, (_, index) => `Hour ${index + 1} conditions`),
+      );
+      expect(new Set(seen).size).toBe(156);
+    });
+
+    it('omits nextCursor entirely when every period fits one page', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(14));
+
+      const { result, enrichment } = await page();
+
+      expect(result.periods).toHaveLength(14);
+      expect(enrichment).not.toHaveProperty('nextCursor');
+    });
+
+    it('omits nextCursor when the final page ends exactly on the array length', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(96));
+
+      const first = await page();
+      expect(first.enrichment.nextCursor).toEqual(expect.any(String));
+
+      const second = await page(first.enrichment.nextCursor as string);
+      expect(second.result.periods).toHaveLength(48);
+      expect(second.result.periods[47]!.shortForecast).toBe('Hour 96 conditions');
+      expect(second.enrichment).not.toHaveProperty('nextCursor');
+    });
+
+    it('returns an empty page for a cursor whose offset equals the array length', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(96));
+
+      const { result, enrichment } = await page(encodeCursor({ offset: 96, limit: 48 }));
+
+      expect(result.periods).toHaveLength(0);
+      expect(enrichment.periodCount).toBe(0);
+      expect(enrichment.totalPeriodCount).toBe(96);
+      expect(enrichment).not.toHaveProperty('nextCursor');
+      expect(enrichment.notice).toContain('past the end');
+    });
+
+    it('returns an empty page for a cursor past the end of the array', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(96));
+
+      const { result, enrichment } = await page(encodeCursor({ offset: 500, limit: 48 }));
+
+      expect(result.periods).toHaveLength(0);
+      expect(enrichment).not.toHaveProperty('nextCursor');
+      expect(enrichment.notice).toContain('past the end');
+    });
+
+    it('clamps an oversized cursor page size to the 48-period bound (contract: issue #23)', async () => {
+      // The cursor is opaque but forgeable. A larger encoded limit must not widen
+      // the projection structuredContent and format() share.
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const { result, enrichment } = await page(encodeCursor({ offset: 0, limit: 1000 }));
+
+      expect(result.periods).toHaveLength(48);
+      expect(enrichment.periodCount).toBe(48);
+      expect(getForecastTool.format!(result)[0]).toMatchObject({
+        text: expect.not.stringContaining('Hour 49 conditions'),
+      });
+    });
+
+    it('rejects a malformed cursor with InvalidParams (-32602), per the MCP pagination spec', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
+      const input = getForecastTool.input.parse({
+        latitude: 47.6,
+        longitude: -122.3,
+        hourly: true,
+        cursor: 'not-a-real-cursor',
+      });
+
+      await expect(getForecastTool.handler(input, ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.InvalidParams,
+      });
+    });
+
+    it('treats an empty-string cursor as the first page (form-based clients)', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const { result, enrichment } = await page('');
+
+      expect(result.periods[0]!.shortForecast).toBe('Hour 1 conditions');
+      expect(enrichment.periodCount).toBe(48);
+    });
+
+    it('renders the cursor-selected window in format(), not the first window', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const first = await page();
+      const second = await page(first.enrichment.nextCursor as string);
+
+      const blocks = getForecastTool.format!(second.result);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('Hour 49 conditions');
+      expect(text).toContain('Hour 96 conditions');
+      expect(text).not.toContain('Hour 48 conditions');
+      expect(text).not.toContain('Hour 97 conditions');
     });
   });
 

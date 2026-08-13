@@ -6,6 +6,7 @@
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AlertSearchResult } from '@/services/nws/nws-service.js';
 
@@ -502,7 +503,7 @@ describe('nws_search_alerts extended', () => {
   });
 
   describe('alert cap at 25', () => {
-    it('caps output at 25 alerts when upstream returns more', async () => {
+    it('caps output at 25 alerts when upstream returns more, and offers the rest via nextCursor', async () => {
       const manyAlerts = Array.from({ length: 30 }, (_, i) =>
         makeAlert({ id: `urn:test:${i}`, event: 'Wind Advisory' }),
       );
@@ -516,6 +517,9 @@ describe('nws_search_alerts extended', () => {
       const enrichment = getEnrichment(ctx);
       expect(enrichment.totalCount).toBe(30);
       expect(enrichment.shownCount).toBe(25);
+      // The 5 matches past the cap are reachable, not merely disclosed.
+      expect(enrichment.nextCursor).toEqual(expect.any(String));
+      expect(enrichment.notice).toContain('25 of 30');
     });
 
     it('returns all alerts when count is under the cap', async () => {
@@ -580,6 +584,190 @@ describe('nws_search_alerts extended', () => {
 
     it('rejects limit above the 25-alert cap', () => {
       expect(() => searchAlertsTool.input.parse({ limit: 26 })).toThrow();
+    });
+  });
+
+  describe('cursor pagination (issue #29)', () => {
+    /** Build a match set of `count` distinguishable alerts. */
+    function alertList(count: number): AlertSearchResult {
+      return {
+        alerts: Array.from({ length: count }, (_, index) =>
+          makeAlert({ id: `urn:test:${String(index).padStart(3, '0')}`, event: 'Wind Advisory' }),
+        ),
+      };
+    }
+
+    /** Run one page against the currently mocked match set. */
+    async function page(limit: number, cursor?: string) {
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({
+        limit,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      const result = await searchAlertsTool.handler(input, ctx);
+      return { result, enrichment: getEnrichment(ctx) };
+    }
+
+    it('offers a nextCursor and a truncation notice when matches remain beyond the limit', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const { result, enrichment } = await page(25);
+
+      expect(result.alerts).toHaveLength(25);
+      expect(enrichment.nextCursor).toEqual(expect.any(String));
+      expect(enrichment.notice).toContain('cursor');
+    });
+
+    it('walks consecutive pages over one fetched match set with no overlap and no gaps', async () => {
+      // The mock returns the same array on every call, so this proves contiguity
+      // within a single fetch. The active-alert feed changes continuously, so the
+      // same guarantee deliberately is NOT claimed across separate live calls.
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const seen: string[] = [];
+      const pageSizes: number[] = [];
+      let cursor: string | undefined;
+      do {
+        const { result, enrichment } = await page(25, cursor);
+        seen.push(...result.alerts.map((a) => a.id));
+        pageSizes.push(result.alerts.length);
+        cursor = enrichment.nextCursor as string | undefined;
+      } while (cursor);
+
+      expect(pageSizes).toEqual([25, 25, 23]);
+      expect(seen).toEqual(
+        Array.from({ length: 73 }, (_, index) => `urn:test:${String(index).padStart(3, '0')}`),
+      );
+      expect(new Set(seen).size).toBe(73);
+    });
+
+    it('keeps shownCount the size of this page, smaller than limit on a final partial page (contract: issue #21)', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const { result, enrichment } = await page(25, encodeCursor({ offset: 50, limit: 25 }));
+
+      expect(result.alerts).toHaveLength(23);
+      expect(enrichment.shownCount).toBe(23);
+      expect(enrichment.shownCount).not.toBe(25);
+    });
+
+    it('keeps totalCount the full match count on every page', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const first = await page(25);
+      const second = await page(25, first.enrichment.nextCursor as string);
+
+      expect(first.enrichment.totalCount).toBe(73);
+      expect(second.enrichment.totalCount).toBe(73);
+    });
+
+    it('omits nextCursor entirely when every match fits one page', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(3));
+
+      const { result, enrichment } = await page(25);
+
+      expect(result.alerts).toHaveLength(3);
+      expect(enrichment).not.toHaveProperty('nextCursor');
+      expect(enrichment.notice).toBeUndefined();
+    });
+
+    it('omits nextCursor when the final page ends exactly on the match count', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(50));
+
+      const first = await page(25);
+      expect(first.enrichment.nextCursor).toEqual(expect.any(String));
+
+      const second = await page(25, first.enrichment.nextCursor as string);
+      expect(second.result.alerts).toHaveLength(25);
+      expect(second.result.alerts[24]!.id).toBe('urn:test:049');
+      expect(second.enrichment).not.toHaveProperty('nextCursor');
+    });
+
+    it('returns an empty page for a cursor whose offset equals the match count', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(50));
+
+      const { result, enrichment } = await page(25, encodeCursor({ offset: 50, limit: 25 }));
+
+      expect(result.alerts).toHaveLength(0);
+      expect(enrichment.totalCount).toBe(50);
+      expect(enrichment.shownCount).toBe(0);
+      expect(enrichment).not.toHaveProperty('nextCursor');
+      expect(enrichment.notice).toContain('past the end');
+    });
+
+    it('returns an empty page for a cursor past the end of the match set', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(50));
+
+      const { result, enrichment } = await page(25, encodeCursor({ offset: 500, limit: 25 }));
+
+      expect(result.alerts).toHaveLength(0);
+      expect(enrichment).not.toHaveProperty('nextCursor');
+      expect(enrichment.notice).toContain('past the end');
+    });
+
+    it('clamps an oversized cursor page size to the 25-alert cap', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const { result, enrichment } = await page(25, encodeCursor({ offset: 0, limit: 1000 }));
+
+      expect(result.alerts).toHaveLength(25);
+      expect(enrichment.shownCount).toBe(25);
+      expect(enrichment.totalCount).toBe(73);
+    });
+
+    it('rejects a malformed cursor with InvalidParams (-32602), per the MCP pagination spec', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(50));
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ cursor: 'not-a-real-cursor' });
+
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.InvalidParams,
+      });
+    });
+
+    it('treats an empty-string cursor as the first page rather than a blank filter', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const { result, enrichment } = await page(25, '');
+
+      expect(result.alerts[0]!.id).toBe('urn:test:000');
+      expect(enrichment.shownCount).toBe(25);
+    });
+
+    it('keeps cursor out of the applied-filters echo (it shapes the response, not the query)', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const first = await page(25);
+      const second = await page(25, first.enrichment.nextCursor as string);
+
+      expect(second.enrichment.appliedFilters).toBe('national (no filters)');
+    });
+
+    it('scopes the continuation guarantee to one fetch, never across separate live calls', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const { enrichment } = await page(25);
+      const notice = enrichment.notice as string;
+
+      // The active-alert set churns continuously; the notice must not promise a
+      // gap-free/overlap-free walk across separate calls.
+      expect(notice).toMatch(/re-?fetch|changes between calls|as it stands/i);
+      expect(notice).not.toMatch(/guarantee[sd]? (?:no|gap-free)/i);
+    });
+
+    it('renders the cursor-selected window in format(), not the first window', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(73));
+
+      const first = await page(25);
+      const second = await page(25, first.enrichment.nextCursor as string);
+
+      const blocks = searchAlertsTool.format!(second.result);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('urn:test:025');
+      expect(text).toContain('urn:test:049');
+      expect(text).not.toContain('urn:test:024');
+      expect(text).not.toContain('urn:test:050');
     });
   });
 

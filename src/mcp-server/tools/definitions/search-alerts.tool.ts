@@ -5,9 +5,16 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { formatTimestamp, zoneCodeToTimeZone } from '../format-utils.js';
 
+/**
+ * Upper bound on alerts per page. `/alerts/active` rejects an upstream `limit`,
+ * so the service fetches and filters the whole active collection and this tool
+ * windows the result. Matches past the window are reachable through the
+ * `nextCursor` continuation token.
+ */
 const MAX_ALERTS = 25;
 const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
 const ARRAY_FILTER_FIELDS = ['event', 'severity', 'urgency', 'certainty'] as const;
@@ -218,7 +225,13 @@ const searchAlertsInputSchema = z.object({
     .max(MAX_ALERTS)
     .default(MAX_ALERTS)
     .describe(
-      'Maximum number of alerts to include in the response (1-25, default 25). totalCount still reports the full number of matches, so a small limit returns a digest of broad or national searches without dropping the total.',
+      'Maximum number of alerts to include in this page (1-25, default 25). totalCount still reports the full number of matches, so a small limit returns a digest of broad or national searches without dropping the total; pass the returned nextCursor as cursor to reach the rest.',
+    ),
+  cursor: z
+    .string()
+    .optional()
+    .describe(
+      "Opaque continuation token from a previous response's nextCursor. Omit for the first page. The token carries its own page size, so limit applies to the first page only. Every call re-fetches /alerts/active, so alerts are contiguous within one response but not across calls — the active set changes continuously as alerts are issued and expire, so a continued page covers the collection as it stands at that moment.",
     ),
 });
 
@@ -310,7 +323,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
           })
           .describe('Single active alert with event, severity, area, and timing'),
       )
-      .describe('Matching alerts (capped at the requested limit, max 25)'),
+      .describe('Matching alerts for this page (at most the requested limit, max 25)'),
   }),
 
   // Result-set context the agent reasons with — counts, applied filters echo, and empty-result
@@ -319,14 +332,20 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   enrichment: {
     totalCount: z
       .number()
-      .describe('Total number of matching alerts before the limit/cap is applied'),
+      .describe('Total number of matching alerts in this fetch, before the page window is applied'),
     shownCount: z.number().describe('Number of alerts included in this response'),
     appliedFilters: z.string().describe('Summary of applied search filters'),
+    nextCursor: z
+      .string()
+      .optional()
+      .describe(
+        'Opaque token for the next page of matches — pass it back as `cursor`. Omitted when this is the last page.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no alerts matched — echoes applied filters and suggests how to broaden the search.',
+        'Guidance when no alerts matched (echoes applied filters and suggests how to broaden), when matches remain beyond this page, or when the supplied cursor points past the end of the match set.',
       ),
   },
 
@@ -334,6 +353,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     totalCount: { label: 'Total Alerts' },
     shownCount: { label: 'Shown' },
     appliedFilters: { label: 'Filters' },
+    nextCursor: { label: 'Next Cursor' },
   },
 
   async handler(input, ctx) {
@@ -414,21 +434,45 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     }
 
     const result = await getNwsService().searchAlerts(normalizedInput, ctx);
-    const total = result.alerts.length;
-    const capped = result.alerts.slice(0, normalizedInput.limit);
+    const allAlerts = [...result.alerts];
+    const total = allAlerts.length;
     const appliedFilters = describeFilters(normalizedInput);
 
-    ctx.log.info('Alerts search completed', { total, shown: capped.length, appliedFilters });
+    // The fetched, filtered match set is windowed here — `/alerts/active` takes
+    // no upstream limit or cursor, so continuation is local to this array. The
+    // cursor carries its own page size, so `limit` shapes the first page only.
+    const page = paginateArray(
+      allAlerts,
+      normalizedInput.cursor,
+      normalizedInput.limit,
+      MAX_ALERTS,
+      ctx,
+    );
 
-    ctx.enrich({ totalCount: total, shownCount: capped.length, appliedFilters });
+    ctx.log.info('Alerts search completed', { total, shown: page.items.length, appliedFilters });
+
+    ctx.enrich({
+      totalCount: total,
+      shownCount: page.items.length,
+      appliedFilters,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    });
     if (total === 0) {
       ctx.enrich.notice(
         `No active alerts matched: ${appliedFilters}. Try a broader area, remove severity or event filters, or use nws_list_alert_types to verify event names.`,
       );
+    } else if (page.nextCursor) {
+      ctx.enrich.notice(
+        `Returning ${page.items.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift or repeat entries.`,
+      );
+    } else if (normalizedInput.cursor && page.items.length === 0) {
+      ctx.enrich.notice(
+        `The cursor points past the end of the ${total} alerts matching: ${appliedFilters}. Call again without a cursor to restart from the first match.`,
+      );
     }
 
     return {
-      alerts: capped.map((a) => ({ ...a, affectedZones: [...a.affectedZones] })),
+      alerts: page.items.map((a) => ({ ...a, affectedZones: [...a.affectedZones] })),
     };
   },
 

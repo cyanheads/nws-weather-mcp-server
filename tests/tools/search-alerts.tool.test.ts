@@ -51,12 +51,12 @@ describe('nws_search_alerts', () => {
   it('returns alerts with enrichment counts and filters', async () => {
     mockSearchAlerts.mockResolvedValueOnce(alertResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({ area: 'WA' });
     const result = await searchAlertsTool.handler(input, ctx);
 
-    expect(result.alerts[0].event).toBe('Wind Advisory');
-    expect(result.alerts[0].instruction).toBe('Secure outdoor objects.');
+    expect(result.alerts[0]!.event).toBe('Wind Advisory');
+    expect(result.alerts[0]!.instruction).toBe('Secure outdoor objects.');
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalCount).toBe(1);
@@ -68,7 +68,7 @@ describe('nws_search_alerts', () => {
   it('populates enrichment notice and zero counts for no alerts', async () => {
     mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({});
     const result = await searchAlertsTool.handler(input, ctx);
 
@@ -105,23 +105,21 @@ describe('nws_search_alerts', () => {
     await expect(result).rejects.toThrow('Invalid area code');
   });
 
-  it('normalizes empty-string location filters away before calling the service', async () => {
-    mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
-
-    const ctx = createMockContext({ tenantId: 'test' });
+  it('rejects explicitly blank location filters instead of widening to a national search', async () => {
+    // A provided-but-blank filter used to collapse to undefined and run the
+    // unfiltered national query, answering a different question than was asked.
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({ area: '', point: '', zone: '' });
-    await searchAlertsTool.handler(input, ctx);
+    const result = searchAlertsTool.handler(input, ctx);
 
-    const enrichment = getEnrichment(ctx);
-    expect(enrichment.appliedFilters).toBe('national (no filters)');
-    expect(mockSearchAlerts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        area: undefined,
-        point: undefined,
-        zone: undefined,
-      }),
-      ctx,
-    );
+    await expect(result).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: {
+        reason: 'blank_location_filter',
+        recovery: { hint: expect.stringContaining('Omit') },
+      },
+    });
+    expect(mockSearchAlerts).not.toHaveBeenCalled();
   });
 
   it('rejects mutually exclusive area and point filters before calling the service', async () => {
@@ -137,26 +135,25 @@ describe('nws_search_alerts', () => {
     expect(mockSearchAlerts).not.toHaveBeenCalled();
   });
 
-  it('ignores whitespace-only location filters when another real filter is present', async () => {
-    mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
-
-    const ctx = createMockContext({ tenantId: 'test' });
+  it('rejects a whitespace-only location filter even when another real filter is present', async () => {
+    // The blank zone used to be dropped silently, narrowing the search to area
+    // alone with no signal that a requested filter was discarded.
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({ area: 'TX', zone: '   ' });
-    await searchAlertsTool.handler(input, ctx);
+    const result = searchAlertsTool.handler(input, ctx);
 
-    expect(mockSearchAlerts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        area: 'TX',
-        zone: undefined,
-      }),
-      ctx,
-    );
+    await expect(result).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: { reason: 'blank_location_filter' },
+    });
+    await expect(result).rejects.toThrow('zone');
+    expect(mockSearchAlerts).not.toHaveBeenCalled();
   });
 
   it('passes all filter params to service', async () => {
     mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({
       area: 'OK',
       severity: ['Extreme'],
@@ -180,7 +177,7 @@ describe('nws_search_alerts', () => {
   it('trims and normalizes area before passing filters to the service', async () => {
     mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({ area: ' wa ' });
     await searchAlertsTool.handler(input, ctx);
 
@@ -195,7 +192,7 @@ describe('nws_search_alerts', () => {
   it('includes certainty and non-default status in the enrichment filter summary', async () => {
     mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({
       certainty: ['Observed'],
       status: 'Test',
@@ -246,7 +243,7 @@ describe('nws_search_alerts', () => {
       const blocks = searchAlertsTool.format!({
         alerts: [
           {
-            ...alertResult.alerts[0],
+            ...alertResult.alerts[0]!,
             affectedZones: ['WAZ558', 'WAC033'],
           },
         ],

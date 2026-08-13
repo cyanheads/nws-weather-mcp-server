@@ -17,7 +17,13 @@ vi.mock('@/services/nws/nws-service.js', () => ({
 
 const { searchAlertsTool } = await import('@/mcp-server/tools/definitions/search-alerts.tool.js');
 
-function makeAlert(overrides: Partial<AlertSearchResult['alerts'][0]> = {}) {
+/**
+ * The tool's `format()` alert element: the same fields as the service `Alert` but with a
+ * mutable `affectedZones` array, so one fixture serves both the service mock and `format()`.
+ */
+type AlertOutput = Parameters<NonNullable<typeof searchAlertsTool.format>>[0]['alerts'][number];
+
+function makeAlert(overrides: Partial<AlertOutput> = {}): AlertOutput {
   return {
     id: 'urn:oid:test',
     event: 'Tornado Warning',
@@ -46,7 +52,7 @@ describe('nws_search_alerts extended', () => {
     it('accepts boundary point +90,+180', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ point: '90,180' });
       await searchAlertsTool.handler(input, ctx);
 
@@ -59,7 +65,7 @@ describe('nws_search_alerts extended', () => {
     it('accepts boundary point -90,-180', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ point: '-90,-180' });
       await searchAlertsTool.handler(input, ctx);
 
@@ -129,7 +135,7 @@ describe('nws_search_alerts extended', () => {
     it('salvages a point with whitespace after the comma (regression: issue #20)', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ point: '47.6, -122.3' });
       await searchAlertsTool.handler(input, ctx);
 
@@ -145,7 +151,7 @@ describe('nws_search_alerts extended', () => {
     it('passes zone parameter to service', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ zone: 'WAZ558' });
       await searchAlertsTool.handler(input, ctx);
 
@@ -176,7 +182,7 @@ describe('nws_search_alerts extended', () => {
     it('includes zone in enrichment filter summary', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ zone: 'WAZ558' });
       await searchAlertsTool.handler(input, ctx);
 
@@ -189,7 +195,7 @@ describe('nws_search_alerts extended', () => {
       // it must be upper-cased like the sibling zone tools.
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ zone: 'waz315' });
       await searchAlertsTool.handler(input, ctx);
 
@@ -199,13 +205,250 @@ describe('nws_search_alerts extended', () => {
       );
       expect(getEnrichment(ctx).appliedFilters).toContain('zone=WAZ315');
     });
+
+    it('accepts a county zone code with the C infix', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ zone: 'WAC033' });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ zone: 'WAC033' }),
+        ctx,
+      );
+    });
+  });
+
+  describe('zone shape validation (issue #20)', () => {
+    it('rejects a malformed zone before the upstream call', async () => {
+      // "not-a-zone" used to reach /alerts/active and return NWS's raw parameter
+      // regex to the caller with no server-owned reason or recovery hint.
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ zone: 'not-a-zone' });
+      const result = searchAlertsTool.handler(input, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: {
+          reason: 'invalid_zone',
+          recovery: { hint: expect.stringContaining('WAZ558') },
+        },
+      });
+      await expect(result).rejects.toThrow('Invalid zone');
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('rejects a well-formed zone whose 2-letter prefix is not a real area code', async () => {
+      // QQZ123 satisfies a bare ^[A-Z]{2}[CZ]\d{3}$ but QQ is not in the NWS
+      // prefix enumeration, so it leaks the same raw upstream regex.
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ zone: 'QQZ123' });
+      const result = searchAlertsTool.handler(input, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: { reason: 'invalid_zone' },
+      });
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('rejects a zone with the wrong digit count', async () => {
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ zone: 'WAZ55' });
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: { reason: 'invalid_zone' },
+      });
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('rejects a zone with an infix other than C or Z', async () => {
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ zone: 'WAX558' });
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: { reason: 'invalid_zone' },
+      });
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('lets a well-formed zone with no matching upstream zone through to a clean empty search', async () => {
+      // WAZ999 is a real prefix with no such zone: NWS answers 200 with zero
+      // features. The local shape check must not turn that into an error.
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ zone: 'WAZ999' });
+      const result = await searchAlertsTool.handler(input, ctx);
+
+      expect(result.alerts).toHaveLength(0);
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ zone: 'WAZ999' }),
+        ctx,
+      );
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(0);
+      expect(enrichment.appliedFilters).toContain('zone=WAZ999');
+      expect(enrichment.notice).toContain('No active alerts matched');
+    });
+
+    it('applies the shape check to the normalized value, so a padded lowercase zone is salvaged', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ zone: '  waz558  ' });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ zone: 'WAZ558' }),
+        ctx,
+      );
+    });
+  });
+
+  describe('provided-but-empty filters (issue #30)', () => {
+    it.each([
+      ['area', { area: '   ' }],
+      ['point', { point: '' }],
+      ['zone', { zone: '   ' }],
+    ] as const)('rejects a blank %s rather than running a national search', async (field, args) => {
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse(args);
+      const result = searchAlertsTool.handler(input, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: {
+          reason: 'blank_location_filter',
+          recovery: { hint: expect.stringContaining('Omit') },
+        },
+      });
+      await expect(result).rejects.toThrow(field);
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it.each(['event', 'severity', 'urgency', 'certainty'] as const)(
+      'rejects an explicitly empty %s array',
+      async (field) => {
+        const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+        const input = searchAlertsTool.input.parse({ [field]: [] });
+        const result = searchAlertsTool.handler(input, ctx);
+
+        await expect(result).rejects.toMatchObject({
+          code: JsonRpcErrorCode.ValidationError,
+          data: {
+            reason: 'empty_filter_array',
+            recovery: { hint: expect.stringContaining('Omit') },
+          },
+        });
+        await expect(result).rejects.toThrow(field);
+        expect(mockSearchAlerts).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects an event array whose only entry is blank', async () => {
+      // ["   "] used to survive the non-empty check, so appliedFilters echoed
+      // `event=   ` for a term the service then discarded, matching every event.
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ event: ['   '] });
+      const result = searchAlertsTool.handler(input, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: { reason: 'empty_filter_array' },
+      });
+      await expect(result).rejects.toThrow('blank');
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('keeps an event array with at least one real entry, dropping the blank terms from the echo', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ event: [' Tornado Warning ', '   '] });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ event: ['Tornado Warning'] }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toBe('event=Tornado Warning');
+    });
+
+    it('runs a national search when every filter is genuinely omitted', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({});
+      const result = await searchAlertsTool.handler(input, ctx);
+
+      expect(result.alerts).toHaveLength(0);
+      expect(getEnrichment(ctx).appliedFilters).toBe('national (no filters)');
+      expect(mockSearchAlerts).toHaveBeenCalledOnce();
+    });
+
+    it('salvages a whitespace-padded point instead of rejecting it as blank', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ point: '  47.6,-122.3  ' });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ point: '47.6,-122.3' }),
+        ctx,
+      );
+    });
+
+    it('salvages a whitespace-padded area instead of rejecting it as blank', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ area: ' wa ' });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(expect.objectContaining({ area: 'WA' }), ctx);
+    });
+
+    it('reports a blank point as a blank filter, not a malformed point', async () => {
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ point: '   ' });
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'blank_location_filter' },
+      });
+    });
+
+    it('still reports a malformed non-blank point as invalid_point', async () => {
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ point: '47.6,' });
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'invalid_point' },
+      });
+    });
+
+    it('reports a blank zone as a blank filter, not an invalid zone shape', async () => {
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ zone: '' });
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'blank_location_filter' },
+      });
+    });
+
+    it('reports a blank area as a blank filter, not an invalid area code', async () => {
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ area: '' });
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'blank_location_filter' },
+      });
+    });
   });
 
   describe('marine area codes', () => {
     it('accepts valid marine area code PZ', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ area: 'PZ' });
       await searchAlertsTool.handler(input, ctx);
 
@@ -215,7 +458,7 @@ describe('nws_search_alerts extended', () => {
     it('accepts valid marine area code GM', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ area: 'gm' });
       await searchAlertsTool.handler(input, ctx);
 
@@ -238,18 +481,18 @@ describe('nws_search_alerts extended', () => {
         alerts: [makeAlert({ event: 'Tornado Warning' })],
       });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ event: ['tornado'] });
       const result = await searchAlertsTool.handler(input, ctx);
 
       expect(result.alerts).toHaveLength(1);
-      expect(result.alerts[0].event).toBe('Tornado Warning');
+      expect(result.alerts[0]!.event).toBe('Tornado Warning');
     });
 
     it('includes event in enrichment filter summary', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ event: ['tornado'] });
       await searchAlertsTool.handler(input, ctx);
 
@@ -265,7 +508,7 @@ describe('nws_search_alerts extended', () => {
       );
       mockSearchAlerts.mockResolvedValueOnce({ alerts: manyAlerts });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({});
       const result = await searchAlertsTool.handler(input, ctx);
 
@@ -279,7 +522,7 @@ describe('nws_search_alerts extended', () => {
       const alerts = [makeAlert(), makeAlert({ id: 'urn:test:2', event: 'Flood Watch' })];
       mockSearchAlerts.mockResolvedValueOnce({ alerts });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({});
       const result = await searchAlertsTool.handler(input, ctx);
 
@@ -297,7 +540,7 @@ describe('nws_search_alerts extended', () => {
       );
       mockSearchAlerts.mockResolvedValueOnce({ alerts: manyAlerts });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ limit: 3 });
       const result = await searchAlertsTool.handler(input, ctx);
 
@@ -311,7 +554,7 @@ describe('nws_search_alerts extended', () => {
       const alerts = [makeAlert(), makeAlert({ id: 'urn:test:2', event: 'Flood Watch' })];
       mockSearchAlerts.mockResolvedValueOnce({ alerts });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ limit: 10 });
       const result = await searchAlertsTool.handler(input, ctx);
 
@@ -324,7 +567,7 @@ describe('nws_search_alerts extended', () => {
     it('keeps limit out of the applied-filters echo (it shapes the response, not the query)', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ limit: 5 });
       await searchAlertsTool.handler(input, ctx);
 
@@ -351,15 +594,15 @@ describe('nws_search_alerts extended', () => {
       });
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [alert] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({});
       const result = await searchAlertsTool.handler(input, ctx);
 
-      expect(result.alerts[0].headline).toBeNull();
-      expect(result.alerts[0].instruction).toBeNull();
-      expect(result.alerts[0].onset).toBeNull();
-      expect(result.alerts[0].ends).toBeNull();
-      expect(result.alerts[0].expires).toBeNull();
+      expect(result.alerts[0]!.headline).toBeNull();
+      expect(result.alerts[0]!.instruction).toBeNull();
+      expect(result.alerts[0]!.onset).toBeNull();
+      expect(result.alerts[0]!.ends).toBeNull();
+      expect(result.alerts[0]!.expires).toBeNull();
     });
 
     it('format() omits onset/ends/expires lines when null', () => {
@@ -381,7 +624,7 @@ describe('nws_search_alerts extended', () => {
     it('includes severity in enrichment filter summary', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ severity: ['Extreme', 'Severe'] });
       await searchAlertsTool.handler(input, ctx);
 
@@ -392,7 +635,7 @@ describe('nws_search_alerts extended', () => {
     it('includes urgency in enrichment filter summary', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      const ctx = createMockContext({ tenantId: 'test' });
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ urgency: ['Immediate'] });
       await searchAlertsTool.handler(input, ctx);
 

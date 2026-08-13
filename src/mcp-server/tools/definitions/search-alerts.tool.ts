@@ -10,6 +10,7 @@ import { formatTimestamp, zoneCodeToTimeZone } from '../format-utils.js';
 
 const MAX_ALERTS = 25;
 const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
+const ARRAY_FILTER_FIELDS = ['event', 'severity', 'urgency', 'certainty'] as const;
 
 /**
  * Strict coordinate pattern NWS enforces on the /alerts/active `point` filter.
@@ -19,6 +20,17 @@ const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
  * let blank/padded segments coerce to 0 and slip through.
  */
 const NWS_POINT_PATTERN = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/;
+
+/**
+ * Shape NWS enforces on the /alerts/active `zone` filter: a 2-letter area prefix,
+ * a C (county) or Z (forecast) infix, and exactly 3 digits. The prefix is checked
+ * against VALID_AREA_CODES rather than a bare [A-Z]{2} wildcard — that set is
+ * character-for-character the enumeration in NWS's own zone-code pattern, and
+ * "QQZ123" satisfies the wildcard while still leaking a raw upstream 400 (issue #20).
+ * A real prefix with no matching zone ("WAZ999") stays valid here: NWS answers it
+ * with a clean zero-result search.
+ */
+const NWS_ZONE_PATTERN = /^([A-Z]{2})[CZ]\d{3}$/;
 
 /** Valid area codes: US states, DC, territories, and marine areas. */
 const VALID_AREA_CODES = new Set([
@@ -119,7 +131,11 @@ function describeFilters(input: Record<string, unknown>): string {
   return parts.length > 0 ? parts.join(', ') : 'national (no filters)';
 }
 
-/** Trim optional string filters and treat blank values as omitted. */
+/**
+ * Trim optional string filters and reduce blank values to undefined. Presence is
+ * read from the raw input before this runs — once collapsed, `undefined` means
+ * both "omitted" and "explicitly blank" (issue #30).
+ */
 function normalizeOptionalFilter(value: string | undefined): string | undefined {
   if (value == null) return;
   const normalized = value.trim();
@@ -127,7 +143,17 @@ function normalizeOptionalFilter(value: string | undefined): string | undefined 
 }
 
 /**
- * Trim and normalize optional location filters; mutex enforcement happens in the
+ * Trim free-text event terms and drop blanks, so the terms the service filters on
+ * are exactly the terms `describeFilters()` echoes back (issue #30). The enum-typed
+ * arrays need no equivalent — Zod constrains them to exact literals.
+ */
+function normalizeEventFilter(events: string[] | undefined): string[] | undefined {
+  if (events == null) return;
+  return events.map((event) => event.trim()).filter((event) => event.length > 0);
+}
+
+/**
+ * Trim and normalize optional filters; presence and mutex enforcement happen in the
  * handler. `point` also drops internal whitespace so "47.6, -122.3" salvages to
  * the NWS-accepted "47.6,-122.3"; `zone` is upper-cased like `area` and the
  * sibling zone tools so "waz315" doesn't trip the upstream zone-code regex (issue #20).
@@ -138,6 +164,7 @@ function normalizeSearchAlertsInput(input: SearchAlertsInput): SearchAlertsInput
     area: normalizeOptionalFilter(input.area)?.toUpperCase(),
     point: normalizeOptionalFilter(input.point)?.replace(/\s+/g, ''),
     zone: normalizeOptionalFilter(input.zone)?.toUpperCase(),
+    event: normalizeEventFilter(input.event),
   };
 }
 
@@ -223,6 +250,27 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       recovery:
         'Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").',
     },
+    {
+      reason: 'invalid_zone',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Zone code does not match the NWS zone-code shape',
+      recovery:
+        'Provide a 2-letter state/territory or marine code, then C for a county zone or Z for a forecast zone, then 3 digits (e.g., "WAZ558", "WAC033"). Zone codes come from affectedZones in nws_search_alerts, forecastZone in nws_get_forecast, or forecastZone in nws_find_stations.',
+    },
+    {
+      reason: 'blank_location_filter',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'An area, point, or zone filter was provided with a blank value',
+      recovery:
+        'Omit the filter entirely to search nationally, or provide a real area, point, or zone value.',
+    },
+    {
+      reason: 'empty_filter_array',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'An event, severity, urgency, or certainty filter was provided with no usable entries',
+      recovery:
+        'Omit the filter entirely to leave it unset, or provide at least one non-blank entry.',
+    },
   ],
 
   input: searchAlertsInputSchema,
@@ -291,6 +339,37 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   async handler(input, ctx) {
     const normalizedInput = normalizeSearchAlertsInput(input);
 
+    // Presence comes from the raw input: normalization reduces a blank value to
+    // undefined, which is also what an omitted filter looks like. Reading presence
+    // after that step is what let a blank filter widen into a national search (issue #30).
+    const blankLocationFilters = LOCATION_FILTER_FIELDS.filter(
+      (fieldName) => input[fieldName] !== undefined && normalizedInput[fieldName] === undefined,
+    );
+    if (blankLocationFilters.length > 0) {
+      throw ctx.fail(
+        'blank_location_filter',
+        `Blank location filter${blankLocationFilters.length === 1 ? '' : 's'}: ${blankLocationFilters.map((fieldName) => `"${fieldName}"`).join(', ')}. A provided area, point, or zone must carry a value.`,
+        { ...ctx.recoveryFor('blank_location_filter') },
+      );
+    }
+
+    const emptyArrayFilters = ARRAY_FILTER_FIELDS.filter(
+      (fieldName) => input[fieldName] !== undefined && !normalizedInput[fieldName]?.length,
+    );
+    if (emptyArrayFilters.length > 0) {
+      const detail = emptyArrayFilters
+        .map(
+          (fieldName) =>
+            `"${fieldName}" (${input[fieldName]?.length ? 'only blank entries' : 'empty array'})`,
+        )
+        .join(', ');
+      throw ctx.fail(
+        'empty_filter_array',
+        `Filter${emptyArrayFilters.length === 1 ? '' : 's'} with no usable entries: ${detail}. Each one filters nothing.`,
+        { ...ctx.recoveryFor('empty_filter_array') },
+      );
+    }
+
     const activeLocationFilters = LOCATION_FILTER_FIELDS.filter(
       (fieldName) => normalizedInput[fieldName],
     );
@@ -319,6 +398,17 @@ export const searchAlertsTool = tool('nws_search_alerts', {
           'invalid_point',
           `Invalid point "${normalizedInput.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
           { ...ctx.recoveryFor('invalid_point') },
+        );
+      }
+    }
+
+    if (normalizedInput.zone) {
+      const [, areaPrefix] = NWS_ZONE_PATTERN.exec(normalizedInput.zone) ?? [];
+      if (areaPrefix == null || !VALID_AREA_CODES.has(areaPrefix)) {
+        throw ctx.fail(
+          'invalid_zone',
+          `Invalid zone "${normalizedInput.zone}". Provide a 2-letter state/territory or marine code, then C or Z, then 3 digits (e.g., "WAZ558", "WAC033").`,
+          { ...ctx.recoveryFor('invalid_zone') },
         );
       }
     }

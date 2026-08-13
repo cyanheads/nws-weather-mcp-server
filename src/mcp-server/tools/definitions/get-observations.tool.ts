@@ -64,7 +64,11 @@ function formatWind(speed: number | null, direction: number | null, gust: number
   return result;
 }
 
-/** Trim optional station IDs and treat blank values as omitted. */
+/**
+ * Trim optional station IDs and reduce blank values to undefined. Presence is read
+ * from the raw input before this runs — once collapsed, `undefined` means both
+ * "omitted" and "explicitly blank" (issue #34).
+ */
 function normalizeStationId(stationId: string | undefined): string | undefined {
   if (stationId == null) return;
   const normalized = stationId.trim();
@@ -81,6 +85,13 @@ export const getObservationsTool = tool('nws_get_observations', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Neither station_id nor a (latitude, longitude) pair was provided',
       recovery: 'Provide either station_id or both latitude and longitude.',
+    },
+    {
+      reason: 'blank_station_id',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'station_id was provided with a blank value',
+      recovery:
+        'Omit station_id to resolve the nearest station from coordinates, or provide a real station ID (e.g., "KSEA"). Use nws_find_stations to discover station IDs.',
     },
     {
       reason: 'station_not_found',
@@ -181,6 +192,17 @@ export const getObservationsTool = tool('nws_get_observations', {
 
   async handler(input, ctx) {
     const normalizedStationId = normalizeStationId(input.station_id);
+
+    // Presence comes from the raw input, and this runs before the missing_input
+    // guard: a blank station_id used to clear both, so coordinates silently
+    // resolved a station the caller never asked for (issue #34).
+    if (input.station_id !== undefined && normalizedStationId === undefined) {
+      throw ctx.fail(
+        'blank_station_id',
+        'Blank station_id. A provided station_id must carry a value.',
+        { ...ctx.recoveryFor('blank_station_id') },
+      );
+    }
 
     if (!normalizedStationId && (input.latitude == null || input.longitude == null)) {
       throw ctx.fail('missing_input', undefined, {

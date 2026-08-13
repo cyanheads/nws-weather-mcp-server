@@ -61,7 +61,7 @@ describe('nws_get_observations', () => {
   it('returns observation data by station ID', async () => {
     mockGetObservation.mockResolvedValueOnce(observationResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
     const input = getObservationsTool.input.parse({ station_id: 'KSEA' });
     const result = await getObservationsTool.handler(input, ctx);
 
@@ -70,13 +70,13 @@ describe('nws_get_observations', () => {
     expect(result.textDescription).toBe('Mostly Cloudy');
     expect(result.windGustKmh).toBeNull();
     expect(result.cloudLayers).toHaveLength(1);
-    expect(result.cloudLayers[0].amount).toBe('BKN');
+    expect(result.cloudLayers[0]!.amount).toBe('BKN');
   });
 
   it('rounds raw upstream float fields in structuredContent to match format()', async () => {
     mockGetObservation.mockResolvedValueOnce(observationResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
     const input = getObservationsTool.input.parse({ station_id: 'KSEA' });
     const result = await getObservationsTool.handler(input, ctx);
 
@@ -89,13 +89,13 @@ describe('nws_get_observations', () => {
     expect(result.barometricPressurePa).toBe(101693); // 101693.25
     expect(result.visibilityM).toBe(16093); // 16093.44
     expect(result.relativeHumidityPct).toBe(67); // 66.720955975373
-    expect(result.cloudLayers[0].baseM).toBe(1524); // 1524.123
+    expect(result.cloudLayers[0]!.baseM).toBe(1524); // 1524.123
   });
 
   it('preserves null measurements through rounding (does not coerce to 0)', async () => {
     mockGetObservation.mockResolvedValueOnce(observationResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
     const input = getObservationsTool.input.parse({ station_id: 'KSEA' });
     const result = await getObservationsTool.handler(input, ctx);
 
@@ -107,7 +107,7 @@ describe('nws_get_observations', () => {
   it('trims station_id before calling the service', async () => {
     mockGetObservation.mockResolvedValueOnce(observationResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
     const input = getObservationsTool.input.parse({ station_id: ' KSEA ' });
     await getObservationsTool.handler(input, ctx);
 
@@ -120,7 +120,7 @@ describe('nws_get_observations', () => {
   it('returns observation data by coordinates', async () => {
     mockGetObservation.mockResolvedValueOnce(observationResult);
 
-    const ctx = createMockContext({ tenantId: 'test' });
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
     const input = getObservationsTool.input.parse({ latitude: 47.6, longitude: -122.3 });
     const result = await getObservationsTool.handler(input, ctx);
 
@@ -131,25 +131,26 @@ describe('nws_get_observations', () => {
     );
   });
 
-  it('ignores blank station_id when coordinates are provided', async () => {
-    mockGetObservation.mockResolvedValueOnce(observationResult);
-
-    const ctx = createMockContext({ tenantId: 'test' });
+  it('rejects a blank station_id instead of resolving a different station from coordinates', async () => {
+    // The blank station_id used to be dropped, so the coordinate branch answered
+    // with the nearest station — a station the caller never asked for.
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
     const input = getObservationsTool.input.parse({
       station_id: '   ',
-      latitude: 47.6,
-      longitude: -122.3,
+      latitude: 47.6062,
+      longitude: -122.3321,
     });
-    await getObservationsTool.handler(input, ctx);
+    const result = getObservationsTool.handler(input, ctx);
 
-    expect(mockGetObservation).toHaveBeenCalledWith(
-      expect.objectContaining({
-        stationId: undefined,
-        latitude: 47.6,
-        longitude: -122.3,
-      }),
-      ctx,
-    );
+    await expect(result).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: {
+        reason: 'blank_station_id',
+        recovery: { hint: expect.stringContaining('Omit station_id') },
+      },
+    });
+    await expect(result).rejects.toThrow('station_id');
+    expect(mockGetObservation).not.toHaveBeenCalled();
   });
 
   it('throws when neither station_id nor coordinates provided', async () => {
@@ -166,7 +167,9 @@ describe('nws_get_observations', () => {
     });
   });
 
-  it('treats whitespace-only station_id as omitted when coordinates are missing', async () => {
+  it('names the blank station_id, not missing_input, when coordinates are also absent', async () => {
+    // Both are wrong, but the blank station_id is the caller's actual mistake —
+    // reporting missing_input sends them to supply coordinates they never wanted.
     const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
     const input = getObservationsTool.input.parse({ station_id: '   ' });
     const result = getObservationsTool.handler(input, ctx);
@@ -174,10 +177,43 @@ describe('nws_get_observations', () => {
     await expect(result).rejects.toMatchObject({
       code: JsonRpcErrorCode.ValidationError,
       data: {
-        reason: 'missing_input',
-        recovery: { hint: expect.stringContaining('station_id or both latitude and longitude') },
+        reason: 'blank_station_id',
+        recovery: { hint: expect.stringContaining('Omit station_id') },
       },
     });
+    expect(mockGetObservation).not.toHaveBeenCalled();
+  });
+
+  it('resolves the nearest station when station_id is genuinely omitted', async () => {
+    mockGetObservation.mockResolvedValueOnce(observationResult);
+
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
+    const input = getObservationsTool.input.parse({ latitude: 47.6062, longitude: -122.3321 });
+    const result = await getObservationsTool.handler(input, ctx);
+
+    expect(result.stationId).toBe('KSEA');
+    expect(mockGetObservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stationId: undefined,
+        latitude: 47.6062,
+        longitude: -122.3321,
+      }),
+      ctx,
+    );
+  });
+
+  it('salvages a whitespace-padded station_id instead of rejecting it as blank', async () => {
+    mockGetObservation.mockResolvedValueOnce(observationResult);
+
+    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
+    const input = getObservationsTool.input.parse({ station_id: '  KSEA  ' });
+    const result = await getObservationsTool.handler(input, ctx);
+
+    expect(result.stationId).toBe('KSEA');
+    expect(mockGetObservation).toHaveBeenCalledWith(
+      expect.objectContaining({ stationId: 'KSEA' }),
+      ctx,
+    );
   });
 
   it('throws when only latitude provided', async () => {

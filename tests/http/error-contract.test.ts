@@ -451,6 +451,87 @@ describe('HTTP JSON-RPC error contracts', () => {
     }
   });
 
+  it('mirrors every provided-but-empty rejection onto both client surfaces over HTTP', async () => {
+    // structuredContent-only clients read error.data.reason; format()-only clients
+    // read the content[] text, where the framework mirrors data.recovery.hint.
+    const cases = [
+      {
+        id: 'alerts-blank-area',
+        tool: 'nws_search_alerts',
+        args: { area: '   ' },
+        reason: 'blank_location_filter',
+        hint: 'Omit',
+      },
+      {
+        id: 'alerts-empty-severity',
+        tool: 'nws_search_alerts',
+        args: { severity: [] },
+        reason: 'empty_filter_array',
+        hint: 'Omit',
+      },
+      {
+        id: 'alerts-invalid-zone',
+        tool: 'nws_search_alerts',
+        args: { zone: 'QQZ123' },
+        reason: 'invalid_zone',
+        hint: 'WAZ558',
+      },
+      {
+        id: 'observations-blank-station',
+        tool: 'nws_get_observations',
+        args: { station_id: '   ', latitude: 47.6062, longitude: -122.3321 },
+        reason: 'blank_station_id',
+        hint: 'Omit station_id',
+      },
+    ] as const;
+
+    const mockFetch = vi.fn<typeof fetch>();
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+
+      for (const testCase of cases) {
+        const response = await postJsonRpc(
+          server.port,
+          {
+            jsonrpc: '2.0',
+            id: testCase.id,
+            method: 'tools/call',
+            params: { name: testCase.tool, arguments: testCase.args },
+          },
+          sessionId,
+        );
+
+        const body = response.body as {
+          result?: { content: { type: string; text: string }[] };
+        };
+        expect(response.statusCode, testCase.id).toBe(200);
+        expect(body.result, testCase.id).toMatchObject({
+          isError: true,
+          structuredContent: {
+            error: {
+              code: JsonRpcErrorCode.ValidationError,
+              data: { reason: testCase.reason },
+            },
+          },
+        });
+
+        const text = body
+          .result!.content.filter((block) => block.type === 'text')
+          .map((block) => block.text)
+          .join('\n');
+        expect(text, testCase.id).toContain('Recovery:');
+        expect(text, testCase.id).toContain(testCase.hint);
+      }
+
+      // Every rejection is local — nothing reached the NWS API.
+      expect(mockFetch).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('returns NotFound when a direct station has no recent observations over HTTP', async () => {
     const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = String(input);

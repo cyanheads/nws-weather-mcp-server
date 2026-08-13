@@ -63,7 +63,9 @@ Searches active weather alerts (watches, warnings, advisories) across the US. Us
 |---|---|---|---|
 | `area` | string | No | US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM" for Gulf of Mexico). Most common filter. |
 | `point` | string | No | Coordinates as "lat,lon" (e.g., "47.6,-122.3"). Returns alerts whose geometry contains this point. More precise than `area` but may miss alerts with imprecise geometries. |
-| `zone` | string | No | NWS forecast zone (e.g., "WAZ558") or county zone (e.g., "WAC033"). Get zone IDs from `nws_get_forecast` response metadata or the `/points` endpoint. |
+| `zone` | string | No | NWS forecast zone (e.g., "WAZ558") or county zone (e.g., "WAC033"). Both zone types are valid here. Get zone IDs from `nws_get_forecast` response metadata or the `/points` endpoint. |
+| `region_type` | string | No | Restrict to land or marine alerts: "Land" or "Marine". Sent upstream lowercased. Mutually exclusive with `area`, `point`, `zone`, and `region`. |
+| `region` | string[] | No | NWS marine region groups: "AL" (Alaska waters), "AT" (Atlantic Ocean), "GL" (Great Lakes), "GM" (Gulf of Mexico), "PA" (Eastern Pacific and US West Coast), "PI" (Central and Western Pacific). Sent upstream comma-joined. Marine alerts only. Mutually exclusive with `area`, `point`, `zone`, and `region_type`. |
 | `event` | string[] | No | Filter to specific event types (e.g., ["Tornado Warning", "Severe Thunderstorm Warning"]). Accepts partial matches and is case-insensitive -- "tornado" matches "Tornado Warning" and "Tornado Watch". Use `nws_list_alert_types` to discover valid event names. |
 | `severity` | string[] | No | Filter by severity: "Extreme", "Severe", "Moderate", "Minor", "Unknown". Accepts multiple. |
 | `urgency` | string[] | No | Filter by urgency: "Immediate", "Expected", "Future", "Past". Accepts multiple. |
@@ -74,7 +76,12 @@ Searches active weather alerts (watches, warnings, advisories) across the US. Us
 
 **API endpoint:** `GET /alerts/active` with query params.
 
-**Returns:** Array of alerts: `id`, `event`, `headline`, `description`, `instruction` (recommended actions), `severity`, `urgency`, `certainty`, `areaDesc`, `onset`, `ends` (hazard end; `null` when open-ended), `expires`, `senderName`. Also includes `affectedZones` (zone IDs for chaining). Empty array when no alerts match -- this is good news, not an error.
+**Returns:** Array of alerts: `id`, `event`, `headline`, `description`, `instruction` (recommended actions), `severity`, `urgency`, `certainty`, `areaDesc`, `senderName`, plus two distinct groups of timestamps and lifecycle state:
+
+- **Hazard timing:** `onset` (hazard begin), `ends` (hazard end; `null` when open-ended).
+- **Message lifecycle:** `sent` (when the office transmitted this CAP message), `effective` (when this message version takes effect -- a message property, not the hazard's), `expires` (when a superseding statement is due), `status` (the alert's own CAP status, distinct from the `status` request filter), `messageType` (`Alert` original issuance / `Update` / `Cancel`), and `references` (prior messages this one supersedes, as `identifier` + `sent`; empty for an original issuance).
+
+Also includes `affectedZones`, each entry a `code` plus its NWS `type` (`forecast`, `county`, or `fire`). Only `forecast` entries chain into `nws_get_zone_forecast`; every type is a valid value for this tool's own `zone` filter. Empty array when no alerts match -- this is good news, not an error.
 
 ---
 
@@ -150,13 +157,13 @@ Fetches the latest narrative product from a Weather Forecast Office (WFO). Prima
 
 ### `nws_get_zone_forecast`
 
-Fetches the text-based forecast for a public NWS forecast zone. Returns named periods (e.g., "Today", "Tonight") with narrative text from local forecasters. Completes the alert-to-forecast chain — `nws_search_alerts` returns zone codes in `affectedZones`, and `nws_find_stations` returns `forecastZone`.
+Fetches the text-based forecast for a public NWS forecast zone. Returns named periods (e.g., "Today", "Tonight") with narrative text from local forecasters. Completes the alert-to-forecast chain — `nws_search_alerts` returns zones in `affectedZones` as `code` + `type`, and `nws_find_stations` returns `forecastZone`. Only `affectedZones` entries typed `forecast` resolve here; `county` and `fire` zones have no text forecast product upstream.
 
 **Input:**
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `zone_id` | string | Yes | Public forecast zone code (e.g., "WAZ315"). Returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone`), and `nws_search_alerts` (`affectedZones`). |
+| `zone_id` | string | Yes | Public forecast zone code (e.g., "WAZ315"). Returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone`), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`). |
 
 **API endpoint:** `GET /zones/forecast/{zone_id}/forecast`
 

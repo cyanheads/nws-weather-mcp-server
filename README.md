@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.7.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3+-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3+-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -58,10 +58,12 @@ Get the weather forecast for a US location.
 
 Search active weather alerts with flexible filtering.
 
-- Filter by area (state/territory/marine codes), point (lat,lon), zone, event type, severity, urgency, certainty, or status
-- `area`, `point`, and `zone` are mutually exclusive; specify at most one location filter
+- Filter by area (state/territory/marine codes), point (lat,lon), zone, land/marine `region_type`, marine `region` groups, event type, severity, urgency, certainty, or status
+- `area`, `point`, `zone`, `region_type`, and `region` are mutually exclusive; specify at most one location filter
 - National search when no filters provided
-- A filter provided with no usable value — a blank `area`/`point`/`zone`, or an empty `event`/`severity`/`urgency`/`certainty` array — is rejected rather than dropped, so a search never silently widens to national results
+- A filter provided with no usable value — a blank `area`/`point`/`zone`, or an empty `event`/`severity`/`urgency`/`certainty`/`region` array — is rejected rather than dropped, so a search never silently widens to national results
+- Each `affectedZones` entry carries its NWS zone `type` (`forecast`, `county`, or `fire`) alongside the `code`, so callers can tell which codes chain into `nws_get_zone_forecast`
+- Alerts include the CAP message lifecycle — `sent`, `effective`, `status`, `messageType`, and the prior messages an update `references` — distinct from the hazard's own `onset`/`ends`
 - Event matching is case-insensitive and partial, so `"tornado"` matches both watches and warnings
 - `status` defaults to live `Actual` alerts, but can be set to `Exercise`, `System`, `Test`, or `Draft`
 - Optional `limit` (1–25, default 25) sizes the page; `totalCount` reports the full match count, with a truncation notice and guidance to narrow filters
@@ -121,10 +123,10 @@ Get the latest narrative product from a Weather Forecast Office (WFO).
 
 Get the text forecast for a public NWS forecast zone.
 
-- `zone_id`: forecast zone code (e.g., `WAZ315`) — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (`affectedZones`)
+- `zone_id`: forecast zone code (e.g., `WAZ315`) — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`)
 - Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters
 - Completes the alert-to-forecast chain: look up alert zones, then retrieve zone forecasts
-- County zone codes (`XXC###`) are not supported — use the forecast zone code
+- County (`XXC###`) and fire zone codes are not supported here — NWS publishes no text forecast for them. They remain valid values for the `zone` filter on `nws_search_alerts`
 
 ## Resources
 

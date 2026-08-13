@@ -42,7 +42,8 @@ Retrieves the weather forecast for a US location. Provide coordinates and get ba
 |---|---|---|---|
 | `latitude` | number | Yes | Latitude in decimal degrees (e.g., `47.6062`). Truncated to 4 decimal places per API requirement. |
 | `longitude` | number | Yes | Longitude in decimal degrees (e.g., `-122.3321`). Truncated to 4 decimal places. |
-| `hourly` | boolean | No | If true, returns hourly forecast (next 48 one-hour periods; upstream carries ~156 over 7 days) instead of 12-hour named periods (14 periods). Default false. Hourly mode includes dewpoint and relative humidity not present in period mode. |
+| `hourly` | boolean | No | If true, returns hourly forecast (48 one-hour periods per page; upstream carries ~156 over 7 days) instead of 12-hour named periods (14 periods). Default false. Hourly mode includes dewpoint and relative humidity not present in period mode. |
+| `cursor` | string | No | Opaque continuation token from a previous response's `nextCursor`, selecting the next 48-period window. Omit for the first page. |
 
 **API flow:** `GET /points/{lat},{lon}` -> follow `forecast` or `forecastHourly` URL from response properties.
 
@@ -68,6 +69,8 @@ Searches active weather alerts (watches, warnings, advisories) across the US. Us
 | `urgency` | string[] | No | Filter by urgency: "Immediate", "Expected", "Future", "Past". Accepts multiple. |
 | `certainty` | string[] | No | Filter by certainty: "Observed", "Likely", "Possible", "Unlikely", "Unknown". Accepts multiple. |
 | `status` | string | No | Alert status filter. Default "Actual". Options: "Actual", "Exercise", "System", "Test", "Draft". Almost always want "Actual". |
+| `limit` | number | No | Alerts per page (1-25, default 25). Client-side only -- never sent upstream. `totalCount` still reports the full match count. |
+| `cursor` | string | No | Opaque continuation token from a previous response's `nextCursor`. Omit for the first page. The token carries its own page size, so `limit` shapes the first page only. |
 
 **API endpoint:** `GET /alerts/active` with query params.
 
@@ -104,7 +107,8 @@ Finds weather observation stations near a location. Use to discover station IDs,
 |---|---|---|---|
 | `latitude` | number | Yes | Center latitude for proximity search. |
 | `longitude` | number | Yes | Center longitude for proximity search. |
-| `limit` | number | No | Max stations to return (1-50, default 10). The API may return up to ~70 stations for a grid cell. |
+| `limit` | number | No | Stations per page (1-50, default 10). The API may return up to ~70 stations for a grid cell. |
+| `cursor` | string | No | Opaque continuation token from a previous response's `nextCursor`. Omit for the first page. The token carries its own page size, so `limit` shapes the first page only. |
 
 **API flow:** `GET /points/{lat},{lon}` -> follow `observationStations` URL.
 
@@ -189,8 +193,9 @@ Static list of all valid NWS alert event type names (111 types). Useful referenc
 ### API Quirks
 
 - **No geocoding.** The API is coordinates-only. The server should require lat/lon from the LLM. Adding internal geocoding (Census Bureau or Nominatim) is a nice-to-have but adds a dependency for marginal gain -- most LLMs can provide coordinates when asked.
-- **No `limit` param on alerts.** The `/alerts/active` endpoints don't support a `limit` query parameter (returns 400). Filter by area/severity to control result size.
-- **Hourly forecast = 156 periods.** The hourly endpoint returns 7 days of hourly data. The handler caps returned periods at 48 so `structuredContent` and `content[]` carry the same bounded set -- the pre-cap total and a truncation notice are surfaced via enrichment.
+- **No `limit` or cursor param on alerts.** The `/alerts/active` endpoints don't support a `limit` query parameter (returns 400) and offer no upstream cursor. The service fetches and filters the whole active collection; `limit` and `cursor` window that array locally, via the framework's `paginateArray`.
+- **Hourly forecast = 156 periods.** The hourly endpoint returns 7 days of hourly data. The handler windows returned periods to 48 so `structuredContent` and `content[]` carry the same bounded set -- the pre-page total and a truncation notice are surfaced via enrichment, and `nextCursor` reaches the rest.
+- **Continuation is local to one fetch.** All three paged tools re-fetch their collection on every call and cache nothing but `/points` grid resolution, so consecutive pages are contiguous within a single response, not across separate calls. Harmless for the near-static station registry, and near-harmless for forecasts (reissued a few times a day); the active-alert set churns continuously, so a `nws_search_alerts` page 2 is a second, independent snapshot.
 - **Observation units are metric.** Temperature in Celsius, wind in km/h, pressure in Pa. Convert to a readable format in `format()` (F/C with both shown, mph, inHg/hPa).
 - **Grid endpoint 500s.** The NWS backend occasionally returns 500 on gridpoint forecast requests. These are transient -- retry with backoff.
 - **`/points` is the routing layer.** Almost every workflow starts here. The response contains URLs for forecast, hourly forecast, observation stations, forecast zone, county, and fire weather zone. Parse and follow these rather than constructing grid URLs manually.

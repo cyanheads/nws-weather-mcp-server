@@ -17,9 +17,10 @@ Full design in `docs/design.md`. Key constraints:
 - **Grid caching:** `/points` responses are highly cacheable (grid cells don't change). Cached in-process via a `Map` with 1h TTL — grid cells are geography, not tenant data.
 - **Units are metric:** Temperature in Celsius, wind in km/h, pressure in Pa. Convert to readable format in `format()` (show both F/C, mph, inHg/hPa).
 - **No geocoding:** API is coordinates-only. Tools accept lat/lon directly.
-- **Alert quirks:** `/alerts/active` has no `limit` param (returns 400). Filter by area/severity instead.
+- **Alert quirks:** `/alerts/active` has no `limit` param (returns 400) and no upstream cursor. Filter by area/severity, then window the fetched array locally.
 - **Transient 500s:** Grid forecast endpoints occasionally fail. Retry with backoff.
-- **Hourly = 156 periods:** Handler caps returned periods at 48 so `structuredContent` and `content[]` share the same bounded set; pre-cap total + truncation notice surfaced via enrichment.
+- **Hourly = 156 periods:** Handler windows returned periods to 48 so `structuredContent` and `content[]` share the same bounded set; pre-page total + truncation notice surfaced via enrichment.
+- **Paging is local windowing, never upstream.** `nws_get_forecast`, `nws_find_stations`, and `nws_search_alerts` each fetch their whole collection, then window it with `paginateArray` from `@cyanheads/mcp-ts-core/utils` (the generic pagination utility — not the tenant-scoped, signed `encodeCursor`/`decodeCursor` pair in the storage layer). Each takes an opaque `cursor` input and surfaces `nextCursor` as enrichment, **omitted** on the last page per the MCP spec, so the Zod field is `.optional()` and never `.nullable()`. A bad cursor surfaces as `-32602 InvalidParams` from `decodeCursor` — leave it; do not convert it to a declared `errors[]` reason. Nothing caches the fetched collection (only `/points` grid resolution, 1h), so pages are contiguous within one response and **not** across separate calls: never document or promise a cross-call no-gap/no-overlap guarantee, least of all for alerts.
 
 ### Tools (7)
 
@@ -77,6 +78,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 
 export const findStationsTool = tool('nws_find_stations', {
@@ -85,7 +87,8 @@ export const findStationsTool = tool('nws_find_stations', {
   input: z.object({
     latitude: z.number().min(-90).max(90).describe('Center latitude for proximity search.'),
     longitude: z.number().min(-180).max(180).describe('Center longitude for proximity search.'),
-    limit: z.number().int().min(1).max(50).default(10).describe('Max stations to return (1-50).'),
+    limit: z.number().int().min(1).max(50).default(10).describe('Stations per page (1-50).'),
+    cursor: z.string().optional().describe("Continuation token from a previous response's nextCursor."),
   }),
   output: z.object({
     stations: z.array(z.object({
@@ -97,8 +100,10 @@ export const findStationsTool = tool('nws_find_stations', {
   }),
 
   async handler(input, ctx) {
-    const result = await getNwsService().findStations(input.latitude, input.longitude, input.limit, ctx);
-    return { stations: result.stations.map((s) => ({ /* ... */ })) };
+    // The service returns every nearby station; the tool windows it.
+    const result = await getNwsService().findStations(input.latitude, input.longitude, ctx);
+    const page = paginateArray([...result.stations], input.cursor, input.limit, 50, ctx);
+    return { stations: page.items.map((s) => ({ /* ... */ })) };
   },
 
   // format() populates content[] — the markdown twin of structuredContent.
@@ -373,6 +378,9 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 // Framework — z is re-exported, no separate zod import needed
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+// Cursor pagination over an in-memory array — the generic utility, not the
+// storage layer's same-named tenant-scoped pair.
+import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
 
 // Server's own code — via path alias
 import { getNwsService } from '@/services/nws/nws-service.js';

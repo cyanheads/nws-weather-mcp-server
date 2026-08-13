@@ -46,7 +46,8 @@ Seven tools for real-time US weather data:
 Get the weather forecast for a US location.
 
 - Default returns named 12-hour periods (14 total, ~7 days)
-- Hourly mode returns the next 48 one-hour periods with dewpoint and humidity — the upstream feed carries ~156, and the pre-cap total plus a truncation notice are surfaced in the enrichment block
+- Hourly mode returns 48 one-hour periods per page with dewpoint and humidity — the upstream feed carries ~156, and the pre-page total plus a truncation notice are surfaced in the enrichment block
+- Pass the returned `nextCursor` back as `cursor` to reach the remaining periods; it is omitted on the last page
 - Coordinates resolve to NWS grid internally via `/points` endpoint
 - Formatted timestamps use the resolved local time zone
 - Returns forecast zone and county zone codes for chaining into `nws_search_alerts`
@@ -63,7 +64,8 @@ Search active weather alerts with flexible filtering.
 - A filter provided with no usable value — a blank `area`/`point`/`zone`, or an empty `event`/`severity`/`urgency`/`certainty` array — is rejected rather than dropped, so a search never silently widens to national results
 - Event matching is case-insensitive and partial, so `"tornado"` matches both watches and warnings
 - `status` defaults to live `Actual` alerts, but can be set to `Exercise`, `System`, `Test`, or `Draft`
-- Optional `limit` (1–25, default 25) caps the returned alerts; `totalCount` reports the full match count, with a truncation notice and guidance to narrow filters
+- Optional `limit` (1–25, default 25) sizes the page; `totalCount` reports the full match count, with a truncation notice and guidance to narrow filters
+- Pass the returned `nextCursor` back as `cursor` to reach matches beyond the page. Consecutive pages are contiguous within one response only — every call re-fetches `/alerts/active`, and that set changes continuously as alerts are issued and expire
 - Validates area, point, and zone locally before the API call — malformed values fail fast as `invalid_area_code`, `invalid_point`, or `invalid_zone` instead of leaking a raw upstream 400
 
 ---
@@ -88,6 +90,8 @@ Discover nearby observation stations.
 - Sorted by haversine distance from query point
 - Returns distance (km) and compass bearing
 - Includes zone codes, elevation, time zone
+- Optional `limit` (1–50, default 10) sizes the page; `totalFound` reports every station near the point and holds steady across pages
+- Pass the returned `nextCursor` back as `cursor` to reach stations beyond the page; it is omitted on the last page
 - Useful for finding station IDs for `nws_get_observations`
 
 ---

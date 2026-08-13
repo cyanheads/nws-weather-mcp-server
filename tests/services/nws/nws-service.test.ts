@@ -15,6 +15,8 @@ import {
   pointsResponse,
   stationInfoResponse,
   stationsResponse,
+  updateAlertsResponse,
+  zoneTypedAlertsResponse,
 } from '../../fixtures/nws-responses.js';
 
 const mockFetch = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>();
@@ -137,6 +139,132 @@ describe('NwsService', () => {
 
       expect(result.alerts[0]!.ends).toBeNull();
       expect(result.alerts[0]!.onset).toBe('2026-06-21T11:00:00-07:00');
+    });
+
+    it('keeps each affected zone paired with its upstream type (regression: issue #31)', async () => {
+      // The zone type lives in the /zones/{type}/{code} URL. Keeping only the
+      // last segment flattened forecast, county, and fire zones into one
+      // indistinguishable string[], so callers could not tell which codes chain
+      // into nws_get_zone_forecast.
+      mockFetch.mockResolvedValueOnce(jsonResponse(zoneTypedAlertsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().searchAlerts({}, ctx);
+
+      expect(result.alerts[0]!.affectedZones).toEqual([
+        { code: 'WAZ558', type: 'forecast' },
+        { code: 'WAZ507', type: 'forecast' },
+      ]);
+      expect(result.alerts[1]!.affectedZones).toEqual([{ code: 'WAC033', type: 'county' }]);
+      expect(result.alerts[2]!.affectedZones).toEqual([
+        { code: 'WAZ027', type: 'forecast' },
+        { code: 'WAC007', type: 'county' },
+        { code: 'WAZ690', type: 'fire' },
+      ]);
+    });
+
+    it('reports an unrecognized zone URL shape as an unknown type rather than guessing', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          features: [
+            {
+              properties: {
+                ...alertsResponse.features[0]!.properties,
+                affectedZones: ['WAZ558'],
+              },
+            },
+          ],
+        }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().searchAlerts({}, ctx);
+
+      expect(result.alerts[0]!.affectedZones).toEqual([{ code: 'WAZ558', type: 'unknown' }]);
+    });
+
+    it('maps the CAP lifecycle fields on an original issuance (issue #33)', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(alertsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().searchAlerts({}, ctx);
+
+      expect(result.alerts[0]).toMatchObject({
+        sent: '2026-04-03T06:00:00-07:00',
+        effective: '2026-04-03T06:00:00-07:00',
+        status: 'Actual',
+        messageType: 'Alert',
+        references: [],
+      });
+      // The hazard-timing fields keep their own meaning alongside the new ones.
+      expect(result.alerts[0]!.onset).toBe('2026-04-03T12:00:00-07:00');
+      expect(result.alerts[0]!.ends).toBe('2026-04-03T18:00:00-07:00');
+      expect(result.alerts[0]!.expires).toBe('2026-04-04T00:00:00-07:00');
+    });
+
+    it('compacts prior-alert references on an Update message to identifier and sent (issue #33)', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(updateAlertsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().searchAlerts({}, ctx);
+
+      expect(result.alerts[0]!.messageType).toBe('Update');
+      expect(result.alerts[0]!.references).toEqual([
+        {
+          identifier: 'urn:oid:2.49.0.1.840.0.update.001.1',
+          sent: '2026-08-12T21:54:00-06:00',
+        },
+        {
+          identifier: 'urn:oid:2.49.0.1.840.0.update.000.1',
+          sent: '2026-08-12T18:30:00-06:00',
+        },
+      ]);
+      // The upstream @id and sender keys are deliberately not carried through.
+      expect(JSON.stringify(result.alerts[0]!.references)).not.toContain('sender');
+      expect(JSON.stringify(result.alerts[0]!.references)).not.toContain('@id');
+    });
+
+    it('treats an absent references array as no prior messages', async () => {
+      const { references: _dropped, ...withoutReferences } = alertsResponse.features[0]!.properties;
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ features: [{ properties: withoutReferences }] }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().searchAlerts({}, ctx);
+
+      expect(result.alerts[0]!.references).toEqual([]);
+    });
+
+    it('sends region_type lowercased and region comma-joined upstream (issue #32)', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(emptyAlertsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      await service.getNwsService().searchAlerts({ region: ['GL', 'GM'] }, ctx);
+
+      expect(String(mockFetch.mock.calls[0]![0])).toBe(
+        'https://api.weather.gov/alerts/active?region=GL%2CGM',
+      );
+
+      mockFetch.mockResolvedValueOnce(jsonResponse(emptyAlertsResponse));
+      await service.getNwsService().searchAlerts({ region_type: 'Marine' }, ctx);
+
+      // NWS rejects "Marine" with its own enumeration error — only the lowercase
+      // form is accepted upstream.
+      expect(String(mockFetch.mock.calls[1]![0])).toBe(
+        'https://api.weather.gov/alerts/active?region_type=marine',
+      );
+    });
+
+    it('omits region and region_type from the query when they are not supplied', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(emptyAlertsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      await service.getNwsService().searchAlerts({ region: [], area: 'WA' }, ctx);
+
+      const url = String(mockFetch.mock.calls[0]![0]);
+      expect(url).not.toContain('region');
+      expect(url).toContain('area=WA');
     });
 
     it('normalizes each supported status value to lowercase for the upstream API', async () => {

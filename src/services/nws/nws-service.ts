@@ -21,6 +21,7 @@ import {
 } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import type {
+  AffectedZone,
   Alert,
   ForecastPeriod,
   ForecastResponse,
@@ -45,6 +46,23 @@ const pointsCache = new Map<string, { data: PointsMetadata; expires: number }>()
 function extractZoneCode(url: string): string {
   const lastSlash = url.lastIndexOf('/');
   return lastSlash >= 0 ? url.slice(lastSlash + 1) : url;
+}
+
+/**
+ * NWS zone URL shape: `.../zones/{type}/{code}`. Callers of single-zone fields
+ * (`forecastZone`, `county`) already know the type from the field name, but an
+ * alert's `affectedZones` mixes forecast, county, and fire zones in one array,
+ * so the type segment has to survive extraction there.
+ */
+const ZONE_URL_PATTERN = /\/zones\/([^/]+)\/([^/]+)\/?$/;
+
+/** Split an alert zone URL into its code and NWS zone type. */
+function parseAffectedZone(url: string): AffectedZone {
+  const [, type, code] = ZONE_URL_PATTERN.exec(url) ?? [];
+  // Not a zone URL — keep the value as the code and report the type as unknown
+  // rather than guessing one the caller might act on.
+  if (!type || !code) return { code: extractZoneCode(url), type: 'unknown' };
+  return { code, type };
 }
 
 /** Truncate coordinate to 4 decimal places per NWS API requirement. */
@@ -354,17 +372,27 @@ function parseAlert(feature: Record<string, unknown>): Alert {
     id: p.id as string,
     event: p.event as string,
     headline: (p.headline as string) ?? null,
-    description: p.description as string,
+    description: (p.description as string) ?? null,
     instruction: (p.instruction as string) ?? null,
     severity: p.severity as string,
     urgency: p.urgency as string,
     certainty: p.certainty as string,
     areaDesc: p.areaDesc as string,
+    sent: p.sent as string,
+    effective: p.effective as string,
     onset: (p.onset as string) ?? null,
     ends: (p.ends as string) ?? null,
     expires: (p.expires as string) ?? null,
+    status: p.status as string,
+    messageType: p.messageType as string,
+    // Compact each upstream CAP reference to the pair that identifies the prior
+    // message, dropping its @id and sender.
+    references: ((p.references as Record<string, unknown>[]) ?? []).map((r) => ({
+      identifier: r.identifier as string,
+      sent: r.sent as string,
+    })),
     senderName: p.senderName as string,
-    affectedZones: ((p.affectedZones as string[]) ?? []).map(extractZoneCode),
+    affectedZones: ((p.affectedZones as string[]) ?? []).map(parseAffectedZone),
   };
 }
 
@@ -564,6 +592,8 @@ export class NwsService {
       area?: string | undefined;
       point?: string | undefined;
       zone?: string | undefined;
+      region_type?: string | undefined;
+      region?: string[] | undefined;
       event?: string[] | undefined;
       severity?: string[] | undefined;
       urgency?: string[] | undefined;
@@ -577,6 +607,10 @@ export class NwsService {
     if (params.area) url.searchParams.set('area', params.area);
     if (params.point) url.searchParams.set('point', params.point);
     if (params.zone) url.searchParams.set('zone', params.zone);
+    // NWS accepts only the lowercase region_type values and only the uppercase
+    // marine region codes; either casing mismatch is a 400 enumeration error.
+    if (params.region_type) url.searchParams.set('region_type', params.region_type.toLowerCase());
+    if (params.region?.length) url.searchParams.set('region', params.region.join(','));
     if (params.severity?.length) url.searchParams.set('severity', params.severity.join(','));
     if (params.urgency?.length) url.searchParams.set('urgency', params.urgency.join(','));
     if (params.certainty?.length) url.searchParams.set('certainty', params.certainty.join(','));
@@ -863,14 +897,14 @@ export class NwsService {
       url,
       ctx,
       MAX_RETRIES,
-      `Zone "${zoneId}" not found or has no forecast. Provide a public forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts (the "affectedZones" list).`,
+      `Zone "${zoneId}" not found or has no forecast. Provide a public forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county and fire zones have no text forecast product.`,
       (message) =>
+        // The tool's zone_not_found contract owns the recovery text; resolving it
+        // here keeps one copy rather than a second that drifts from the first.
         notFound(message, {
           zoneId,
           reason: 'zone_not_found',
-          recovery: {
-            hint: `Obtain a valid forecast zone code from: the "forecastZone" field in nws_get_forecast output, the "forecastZone" column in nws_find_stations, or "affectedZones" in nws_search_alerts. Zone codes follow the pattern XXZ### (e.g., "WAZ315").`,
-          },
+          ...ctx.recoveryFor('zone_not_found'),
         }),
     );
 

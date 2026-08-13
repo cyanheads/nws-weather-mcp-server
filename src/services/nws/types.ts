@@ -49,21 +49,51 @@ export interface ForecastResponse {
   readonly updateTime: string;
 }
 
+/**
+ * One entry of an alert's `affectedZones`, with the zone type NWS encodes in the
+ * zone URL path preserved alongside the code. The types are not interchangeable:
+ * only `forecast` zones have a zone text forecast, so callers need the type to
+ * know which codes chain into `nws_get_zone_forecast`.
+ */
+export interface AffectedZone {
+  /** Zone code, e.g. `WAZ558` (forecast) or `WAC033` (county). */
+  readonly code: string;
+  /**
+   * NWS zone type from the `/zones/{type}/{code}` URL — `forecast`, `county`, or
+   * `fire`. `unknown` when the upstream value is not a zone URL.
+   */
+  readonly type: string;
+}
+
+/** A prior CAP message this alert supersedes, compacted to the identifying pair. */
+export interface AlertReference {
+  /** CAP identifier of the superseded message. */
+  readonly identifier: string;
+  /** When the superseded message was issued (ISO 8601). */
+  readonly sent: string;
+}
+
 /** Active alert from /alerts/active. */
 export interface Alert {
-  readonly affectedZones: readonly string[];
+  readonly affectedZones: readonly AffectedZone[];
   readonly areaDesc: string;
   readonly certainty: string;
-  readonly description: string;
+  /** NWS omits this on some alerts (e.g. a Coastal Flood Advisory) — issue #37. */
+  readonly description: string | null;
+  readonly effective: string;
   readonly ends: string | null;
   readonly event: string;
   readonly expires: string | null;
   readonly headline: string | null;
   readonly id: string;
   readonly instruction: string | null;
+  readonly messageType: string;
   readonly onset: string | null;
+  readonly references: readonly AlertReference[];
   readonly senderName: string;
+  readonly sent: string;
   readonly severity: string;
+  readonly status: string;
   readonly urgency: string;
 }
 

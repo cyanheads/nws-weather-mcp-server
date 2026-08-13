@@ -96,6 +96,16 @@ describe('nws_get_zone_forecast', () => {
     expect(mockGetZoneForecast).toHaveBeenCalledWith('WAZ315', ctx);
   });
 
+  it('points zone-code discovery at the forecast-typed affectedZones entries (issue #31)', () => {
+    // The old text named affectedZones wholesale, so a caller following it could
+    // pick a county entry that this tool categorically cannot serve.
+    const zoneNotFound = getZoneForecastTool.errors!.find((e) => e.reason === 'zone_not_found')!;
+
+    expect(zoneNotFound.recovery).toContain('affectedZones');
+    expect(zoneNotFound.recovery).toMatch(/type.*forecast/i);
+    expect(getZoneForecastTool.description).toMatch(/type.*forecast/i);
+  });
+
   it('propagates zone_not_found error for invalid zone', async () => {
     mockGetZoneForecast.mockRejectedValueOnce(
       new Error('Zone "WAZ999" not found or has no forecast'),

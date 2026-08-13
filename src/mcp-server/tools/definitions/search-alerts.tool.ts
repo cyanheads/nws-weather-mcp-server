@@ -16,8 +16,23 @@ import { formatTimestamp, zoneCodeToTimeZone } from '../format-utils.js';
  * `nextCursor` continuation token.
  */
 const MAX_ALERTS = 25;
-const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
-const ARRAY_FILTER_FIELDS = ['event', 'severity', 'urgency', 'certainty'] as const;
+
+/**
+ * Filters that scope the search geographically. NWS rejects any pairing of these
+ * with a 400 — including region_type with region, which are incompatible with
+ * each other as well as with area/point/zone — so one mutual-exclusion check
+ * over the whole set covers every combination.
+ */
+const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone', 'region_type', 'region'] as const;
+
+/** Free-text location filters that must be rejected when provided blank (issue #30). */
+const STRING_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
+
+/** Array filters that must be rejected when provided with no usable entries (issue #30). */
+const ARRAY_FILTER_FIELDS = ['event', 'severity', 'urgency', 'certainty', 'region'] as const;
+
+/** NWS marine region groups from the upstream MarineRegionCode enumeration. */
+const MARINE_REGIONS = ['AL', 'AT', 'GL', 'GM', 'PA', 'PI'] as const;
 
 /**
  * Strict coordinate pattern NWS enforces on the /alerts/active `point` filter.
@@ -126,6 +141,9 @@ function describeFilters(input: Record<string, unknown>): string {
   if (input.area) parts.push(`area=${input.area}`);
   if (input.point) parts.push(`point=${input.point}`);
   if (input.zone) parts.push(`zone=${input.zone}`);
+  if (input.region_type) parts.push(`region_type=${input.region_type}`);
+  if (Array.isArray(input.region) && input.region.length)
+    parts.push(`region=${input.region.join(', ')}`);
   if (Array.isArray(input.event) && input.event.length)
     parts.push(`event=${input.event.join(', ')}`);
   if (Array.isArray(input.severity) && input.severity.length)
@@ -194,6 +212,18 @@ const searchAlertsInputSchema = z.object({
     .describe(
       'NWS forecast zone (e.g., "WAZ558") or county zone (e.g., "WAC033"). Mutually exclusive with area and point.',
     ),
+  region_type: z
+    .enum(['Land', 'Marine'])
+    .optional()
+    .describe(
+      'Restrict to land-based or marine alerts. Mutually exclusive with area, point, zone, and region.',
+    ),
+  region: z
+    .array(z.enum(MARINE_REGIONS))
+    .optional()
+    .describe(
+      'Restrict to NWS marine region groups: "AL" (Alaska waters), "AT" (Atlantic Ocean), "GL" (Great Lakes), "GM" (Gulf of Mexico), "PA" (Eastern Pacific and US West Coast), "PI" (Central and Western Pacific). Marine alerts only — a land alert never matches. Mutually exclusive with area, point, zone, and region_type.',
+    ),
   event: z
     .array(z.string())
     .optional()
@@ -239,15 +269,15 @@ type SearchAlertsInput = z.infer<typeof searchAlertsInputSchema>;
 
 export const searchAlertsTool = tool('nws_search_alerts', {
   description:
-    'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, event type, severity, urgency, or certainty. area, point, and zone are mutually exclusive. Omit all filters for a national search.',
+    'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, land/marine region, event type, severity, urgency, or certainty. area, point, zone, region_type, and region are mutually exclusive — provide at most one. Omit all filters for a national search.',
   annotations: { readOnlyHint: true },
   errors: [
     {
       reason: 'mutually_exclusive_filters',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'More than one of area, point, or zone provided',
+      when: 'More than one of area, point, zone, region_type, or region provided',
       recovery:
-        'Provide at most one of area, point, or zone — they are mutually exclusive filters.',
+        'Provide at most one of area, point, zone, region_type, or region — they are mutually exclusive filters.',
     },
     {
       reason: 'invalid_area_code',
@@ -280,7 +310,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     {
       reason: 'empty_filter_array',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'An event, severity, urgency, or certainty filter was provided with no usable entries',
+      when: 'An event, severity, urgency, certainty, or region filter was provided with no usable entries',
       recovery:
         'Omit the filter entirely to leave it unset, or provide at least one non-blank entry.',
     },
@@ -296,12 +326,25 @@ export const searchAlertsTool = tool('nws_search_alerts', {
             id: z.string().describe('Alert ID'),
             event: z.string().describe('Event type (e.g., "Tornado Warning")'),
             headline: z.string().nullable().describe('Alert headline'),
-            description: z.string().describe('Full alert description'),
+            description: z
+              .string()
+              .nullable()
+              .describe('Full alert description; null when NWS publishes the alert without one'),
             instruction: z.string().nullable().describe('Recommended actions'),
             severity: z.string().describe('Severity level'),
             urgency: z.string().describe('Urgency level'),
             certainty: z.string().describe('Certainty level'),
             areaDesc: z.string().describe('Affected area description'),
+            sent: z
+              .string()
+              .describe(
+                'Message issuance time (ISO 8601) — when the office transmitted this CAP message. Describes the message, not the hazard: use it to judge how stale the report is.',
+              ),
+            effective: z
+              .string()
+              .describe(
+                'Message effective time (ISO 8601) — when this version of the CAP message takes effect. A property of the message, not of the hazard: distinct from onset (when the hazard begins) and from expires (when a superseding message is due). Usually equals sent.',
+              ),
             onset: z
               .string()
               .nullable()
@@ -318,8 +361,45 @@ export const searchAlertsTool = tool('nws_search_alerts', {
               .describe(
                 'Message expiration (ISO 8601) — when NWS will issue a superseding statement. NOT when the hazard ends; the hazard window is described in the headline.',
               ),
+            status: z
+              .string()
+              .describe(
+                'This alert\'s own CAP status as reported by NWS ("Actual", "Exercise", "System", "Test", "Draft"). Distinct from the status input filter, which selects which alerts are searched — with the default filter every returned alert reads "Actual".',
+              ),
+            messageType: z
+              .string()
+              .describe(
+                'CAP message type: "Alert" for an original issuance, "Update" for a revision of an earlier message, "Cancel" for a cancellation.',
+              ),
+            references: z
+              .array(
+                z
+                  .object({
+                    identifier: z.string().describe('CAP identifier of the superseded message'),
+                    sent: z.string().describe('When the superseded message was issued (ISO 8601)'),
+                  })
+                  .describe('One prior message this alert supersedes'),
+              )
+              .describe(
+                'Prior alert messages this one supersedes, newest first. Empty for an original issuance — never inferred when NWS reports none.',
+              ),
             senderName: z.string().describe('Issuing office'),
-            affectedZones: z.array(z.string()).describe('Affected zone codes'),
+            affectedZones: z
+              .array(
+                z
+                  .object({
+                    code: z
+                      .string()
+                      .describe('Zone code, e.g. "WAZ558" (forecast) or "WAC033" (county)'),
+                    type: z
+                      .string()
+                      .describe(
+                        'NWS zone type: "forecast", "county", or "fire" ("unknown" when upstream reports a shape this server cannot type). Only "forecast" codes have a zone text forecast — pass those to nws_get_zone_forecast. All types are valid values for this tool\'s own zone filter.',
+                      ),
+                  })
+                  .describe('Affected zone with its NWS zone type'),
+              )
+              .describe('Affected zones, each with the zone type that decides where it can chain'),
           })
           .describe('Single active alert with event, severity, area, and timing'),
       )
@@ -362,7 +442,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     // Presence comes from the raw input: normalization reduces a blank value to
     // undefined, which is also what an omitted filter looks like. Reading presence
     // after that step is what let a blank filter widen into a national search (issue #30).
-    const blankLocationFilters = LOCATION_FILTER_FIELDS.filter(
+    const blankLocationFilters = STRING_FILTER_FIELDS.filter(
       (fieldName) => input[fieldName] !== undefined && normalizedInput[fieldName] === undefined,
     );
     if (blankLocationFilters.length > 0) {
@@ -390,13 +470,14 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       );
     }
 
-    const activeLocationFilters = LOCATION_FILTER_FIELDS.filter(
-      (fieldName) => normalizedInput[fieldName],
-    );
+    const activeLocationFilters = LOCATION_FILTER_FIELDS.filter((fieldName) => {
+      const value = normalizedInput[fieldName];
+      return Array.isArray(value) ? value.length > 0 : Boolean(value);
+    });
     if (activeLocationFilters.length > 1) {
       throw ctx.fail(
         'mutually_exclusive_filters',
-        `Provided ${activeLocationFilters.join(', ')}; only one of area, point, or zone is allowed.`,
+        `Provided ${activeLocationFilters.join(', ')}; only one of area, point, zone, region_type, or region is allowed.`,
         { ...ctx.recoveryFor('mutually_exclusive_filters') },
       );
     }
@@ -472,7 +553,11 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     }
 
     return {
-      alerts: page.items.map((a) => ({ ...a, affectedZones: [...a.affectedZones] })),
+      alerts: page.items.map((a) => ({
+        ...a,
+        affectedZones: [...a.affectedZones],
+        references: [...a.references],
+      })),
     };
   },
 
@@ -494,7 +579,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       // Derive a representative IANA zone from the first affected zone code so
       // alert timestamps render with named US abbreviations (PDT/CDT/EDT) like
       // forecast/observations, rather than falling back to numeric UTC offsets.
-      const alertTimeZone = zoneCodeToTimeZone(a.affectedZones[0]);
+      const alertTimeZone = zoneCodeToTimeZone(a.affectedZones[0]?.code);
 
       lines.push(`### ${a.event}`);
       lines.push(`_ID: ${a.id}_`);
@@ -508,12 +593,24 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       if (a.expires) {
         lines.push(`**Message valid until:** ${formatTimestamp(a.expires, alertTimeZone)}`);
       }
+      lines.push(`**Message type:** ${a.messageType} | **Status:** ${a.status}`);
+      lines.push(
+        `**Message sent:** ${formatTimestamp(a.sent, alertTimeZone)} | **Message effective:** ${formatTimestamp(a.effective, alertTimeZone)}`,
+      );
+      if (a.references.length > 0) {
+        const priors = a.references
+          .map((r) => `${r.identifier} (sent ${formatTimestamp(r.sent, alertTimeZone)})`)
+          .join('; ');
+        lines.push(`**Supersedes:** ${priors}`);
+      }
       lines.push(`**From:** ${a.senderName}`);
       if (a.affectedZones.length > 0) {
-        lines.push(`**Zones:** ${a.affectedZones.join(', ')}`);
+        lines.push(`**Zones:** ${a.affectedZones.map((z) => `${z.code} (${z.type})`).join(', ')}`);
       }
-      lines.push('');
-      lines.push(a.description);
+      if (a.description) {
+        lines.push('');
+        lines.push(a.description);
+      }
       if (a.instruction) {
         lines.push('');
         lines.push(`**Recommended Actions:** ${a.instruction}`);

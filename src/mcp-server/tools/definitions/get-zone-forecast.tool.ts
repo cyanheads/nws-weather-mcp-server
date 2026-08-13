@@ -9,7 +9,7 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 
 export const getZoneForecastTool = tool('nws_get_zone_forecast', {
   description:
-    'Get the text forecast for a public NWS forecast zone. Returns named forecast periods (e.g., "Today", "Tonight", "Monday") with detailed narrative text — the human-readable, zone-level forecast written by local forecasters. Completes the alert-to-forecast chain: nws_search_alerts returns zone codes in "affectedZones", and nws_find_stations returns them in the "forecastZone" column; use those codes here. Zone codes follow the pattern XXZ### (e.g., "WAZ315" for Western Washington lowlands). County zone codes (XXC###) are not supported — use the forecast zone code.',
+    'Get the text forecast for a public NWS forecast zone. Returns named forecast periods (e.g., "Today", "Tonight", "Monday") with detailed narrative text — the human-readable, zone-level forecast written by local forecasters. Completes the alert-to-forecast chain: nws_search_alerts returns each affected zone in "affectedZones" as a code plus a type, and nws_find_stations returns codes in the "forecastZone" column. Only affectedZones entries with type "forecast" work here; entries typed "county" or "fire" have no text forecast upstream and will not resolve. Zone codes follow the pattern XXZ### (e.g., "WAZ315" for Western Washington lowlands).',
   annotations: { readOnlyHint: true },
   errors: [
     {
@@ -17,7 +17,7 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
       code: JsonRpcErrorCode.NotFound,
       when: 'Zone code is not a valid public forecast zone or has no forecast available',
       recovery:
-        'Use the "forecastZone" field from nws_get_forecast, the "forecastZone" column from nws_find_stations, or "affectedZones" from nws_search_alerts. Zone codes follow the pattern XXZ### (e.g., "WAZ315"). County codes (XXC###) are not supported.',
+        'Use an affectedZones entry from nws_search_alerts whose type is "forecast" (entries typed "county" or "fire" have no forecast product), the "forecastZone" field from nws_get_forecast, or the "forecastZone" column from nws_find_stations. Zone codes follow the pattern XXZ### (e.g., "WAZ315").',
     },
   ],
 
@@ -27,7 +27,7 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
       .trim()
       .min(1)
       .describe(
-        'NWS public forecast zone code (e.g., "WAZ315" for the Western Washington lowlands including Seattle). Returned as "forecastZone" by nws_get_forecast and nws_find_stations, or in "affectedZones" by nws_search_alerts. Format: two-letter state + "Z" + three-digit number.',
+        'NWS public forecast zone code (e.g., "WAZ315" for the Western Washington lowlands including Seattle). Returned as "forecastZone" by nws_get_forecast and nws_find_stations, or as the "code" of an "affectedZones" entry with type "forecast" in nws_search_alerts. Format: two-letter state + "Z" + three-digit number.',
       ),
   }),
 

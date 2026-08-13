@@ -4,6 +4,7 @@
  * @module tests/tools/search-alerts-extended
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
@@ -35,11 +36,16 @@ function makeAlert(overrides: Partial<AlertOutput> = {}): AlertOutput {
     urgency: 'Immediate',
     certainty: 'Observed',
     areaDesc: 'Cleveland County',
+    sent: '2026-04-03T19:55:00Z',
+    effective: '2026-04-03T19:55:00Z',
     onset: '2026-04-03T20:00:00Z',
     ends: '2026-04-03T21:00:00Z',
     expires: '2026-04-03T22:00:00Z',
+    status: 'Actual',
+    messageType: 'Alert',
+    references: [],
     senderName: 'NWS Norman OK',
-    affectedZones: ['OKZ027'],
+    affectedZones: [{ code: 'OKZ027', type: 'forecast' }],
     ...overrides,
   };
 }
@@ -445,6 +451,121 @@ describe('nws_search_alerts extended', () => {
     });
   });
 
+  describe('region filters (issue #32)', () => {
+    it('passes region_type through to the service', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ region_type: 'Marine' });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ region_type: 'Marine' }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toContain('region_type=Marine');
+    });
+
+    it('passes a multi-value region array through to the service', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ region: ['GL', 'GM'] });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ region: ['GL', 'GM'] }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toContain('region=GL, GM');
+    });
+
+    it.each([
+      ['region_type + area', { region_type: 'Marine', area: 'WA' }],
+      ['region_type + point', { region_type: 'Land', point: '47.6,-122.3' }],
+      ['region_type + zone', { region_type: 'Land', zone: 'WAZ558' }],
+      ['region + area', { region: ['GL'], area: 'WA' }],
+      ['region + point', { region: ['GL'], point: '47.6,-122.3' }],
+      ['region + zone', { region: ['GL'], zone: 'WAZ558' }],
+      ['region_type + region', { region_type: 'Marine', region: ['GL'] }],
+    ] as const)('rejects %s as mutually exclusive', async (_label, args) => {
+      // Upstream answers each of these pairings with a 400 naming the conflict —
+      // including region_type with region, which are incompatible with each other.
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse(args);
+      const result = searchAlertsTool.handler(input, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: { reason: 'mutually_exclusive_filters' },
+      });
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('rejects an explicitly empty region array before the upstream call', async () => {
+      // `?region=` returns NWS's raw enumeration error; the empty array must be
+      // caught locally under the declared reason instead.
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ region: [] });
+      const result = searchAlertsTool.handler(input, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: {
+          reason: 'empty_filter_array',
+          recovery: { hint: expect.stringContaining('Omit') },
+        },
+      });
+      await expect(result).rejects.toThrow('region');
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('reports an empty region as its own problem rather than as a mutex conflict', async () => {
+      // Ordering pinned by issue #30: the empty-array check runs ahead of the
+      // mutual-exclusion check, so the caller learns which filter is unusable.
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ region: [], area: 'WA' });
+      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'empty_filter_array' },
+      });
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unknown region_type at the schema, keeping semantic reasons for the handler', () => {
+      // A closed set is a type constraint: bad literals fail as -32602 at the
+      // transport, the same way a bad severity literal already does.
+      expect(() => searchAlertsTool.input.parse({ region_type: 'land' })).toThrow();
+      expect(() => searchAlertsTool.input.parse({ region_type: '' })).toThrow();
+      expect(() => searchAlertsTool.input.parse({ region: ['ZZ'] })).toThrow();
+    });
+
+    it('advertises region without a minimum item count so the handler owns the empty case', () => {
+      // A schema-level .min(1) would reject `region: []` at the transport as a
+      // generic -32602, making the declared reason and hint unreachable.
+      const schema = z.toJSONSchema(searchAlertsTool.input, { io: 'input' }) as {
+        properties: Record<string, Record<string, unknown>>;
+      };
+
+      expect(schema.properties.region).toMatchObject({ type: 'array' });
+      expect(schema.properties.region).not.toHaveProperty('minItems');
+      expect(schema.properties.region_type).toMatchObject({ enum: ['Land', 'Marine'] });
+    });
+
+    it('leaves a national search unfiltered when neither region filter is supplied', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({});
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.not.objectContaining({ region_type: expect.anything() }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toBe('national (no filters)');
+    });
+  });
+
   describe('marine area codes', () => {
     it('accepts valid marine area code PZ', async () => {
       mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
@@ -805,6 +926,49 @@ describe('nws_search_alerts extended', () => {
       expect(t).not.toContain('Hazard onset');
       expect(t).not.toContain('Hazard ends');
       expect(t).not.toContain('Message valid until');
+    });
+
+    it('accepts an alert whose upstream description is null (issue #37)', async () => {
+      const alert = makeAlert({ description: null });
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [alert] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({});
+      const result = await searchAlertsTool.handler(input, ctx);
+
+      /**
+       * The regression lives at the output-schema boundary, not in the handler:
+       * `description` was declared non-nullable while NWS returns null for it on
+       * some alerts, so a single such alert rejected the whole response instead of
+       * coming back with a null field. Parsing the result is the assertion.
+       */
+      const parsed = searchAlertsTool.output.parse(result);
+      expect(parsed.alerts).toHaveLength(1);
+      expect(parsed.alerts[0]!.description).toBeNull();
+    });
+
+    it('format() omits the description paragraph when it is null', () => {
+      const withText = searchAlertsTool.format!({
+        alerts: [makeAlert({ description: 'Take shelter.' })],
+      });
+      const withNull = searchAlertsTool.format!({
+        alerts: [makeAlert({ description: null })],
+      });
+
+      const kept = (withText[0] as { type: 'text'; text: string }).text;
+      const omitted = (withNull[0] as { type: 'text'; text: string }).text;
+
+      expect(kept).toContain('Take shelter.');
+      expect(omitted).not.toContain('Take shelter.');
+      expect(omitted).not.toContain('null');
+      expect(omitted).toContain('**From:** NWS Norman OK');
+      /**
+       * Omitted, not blanked. Pushing a null description leaves the surrounding
+       * spacer lines behind, so the paragraph becomes a run of empty lines rather
+       * than disappearing — which `not.toContain` cannot see.
+       */
+      expect(omitted).not.toMatch(/\n{3,}/);
+      expect(kept).not.toMatch(/\n{3,}/);
     });
   });
 

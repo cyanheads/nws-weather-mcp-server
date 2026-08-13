@@ -262,6 +262,38 @@ describe('NwsService extended', () => {
       await expect(result).rejects.toThrow('WAZ999');
     });
 
+    it('puts the tool contract recovery on the wire, naming the forecast zone type (issue #31)', async () => {
+      // The throw lives here but the recovery text belongs to the tool's
+      // zone_not_found contract. A second hardcoded copy in this file is what
+      // kept pointing callers at untyped affectedZones after the tool was fixed.
+      const { getZoneForecastTool } = await import(
+        '@/mcp-server/tools/definitions/get-zone-forecast.tool.js'
+      );
+      const contractRecovery = getZoneForecastTool.errors!.find(
+        (e) => e.reason === 'zone_not_found',
+      )!.recovery;
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({}, 404))
+        .mockResolvedValueOnce(jsonResponse({}, 404))
+        .mockResolvedValueOnce(jsonResponse({}, 404));
+
+      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
+      const error = (await service
+        .getNwsService()
+        .getZoneForecast('WAC033', ctx)
+        .catch((e: unknown) => e)) as {
+        data?: { reason?: string; recovery?: { hint?: string } };
+        message?: string;
+      };
+
+      expect(error.data?.reason).toBe('zone_not_found');
+      expect(error.data?.recovery?.hint).toBe(contractRecovery);
+      expect(error.data?.recovery?.hint).toMatch(/type.*forecast/i);
+      // The message names the same discriminator, for clients that read only it.
+      expect(error.message).toMatch(/type "forecast"/i);
+    });
+
     it('retries on transient 500 and succeeds', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse({}, 500))

@@ -16,6 +16,19 @@ vi.mock('@/services/nws/nws-service.js', () => ({
 
 const { searchAlertsTool } = await import('@/mcp-server/tools/definitions/search-alerts.tool.js');
 
+/**
+ * CAP lifecycle defaults (issue #33). NWS populates all five on every active
+ * alert, so every fixture below carries them; tests that assert on lifecycle
+ * behavior override the fields they exercise.
+ */
+const lifecycle = {
+  sent: '2026-04-03T05:00:00-07:00',
+  effective: '2026-04-03T05:00:00-07:00',
+  status: 'Actual',
+  messageType: 'Alert',
+  references: [] as { identifier: string; sent: string }[],
+};
+
 const alertResult: AlertSearchResult = {
   alerts: [
     {
@@ -28,14 +41,32 @@ const alertResult: AlertSearchResult = {
       urgency: 'Expected',
       certainty: 'Likely',
       areaDesc: 'King County',
+      ...lifecycle,
       onset: '2026-04-03T12:00:00-07:00',
       ends: '2026-04-03T18:00:00-07:00',
       expires: '2026-04-04T00:00:00-07:00',
       senderName: 'NWS Seattle WA',
-      affectedZones: ['WAZ558'],
+      affectedZones: [{ code: 'WAZ558', type: 'forecast' }],
     },
   ],
 };
+
+/**
+ * The tool's `format()` alert element: the same fields as the service `Alert`,
+ * with mutable arrays, so one fixture serves both the service mock and `format()`.
+ */
+type AlertOutput = Parameters<NonNullable<typeof searchAlertsTool.format>>[0]['alerts'][number];
+
+/** The shared alert in the shape `format()` accepts, with per-test overrides. */
+function formatAlert(overrides: Partial<AlertOutput> = {}): AlertOutput {
+  const alert = alertResult.alerts[0]!;
+  return {
+    ...alert,
+    affectedZones: [...alert.affectedZones],
+    references: [...alert.references],
+    ...overrides,
+  };
+}
 
 describe('nws_search_alerts', () => {
   beforeEach(() => {
@@ -131,7 +162,9 @@ describe('nws_search_alerts', () => {
       code: JsonRpcErrorCode.ValidationError,
       data: { reason: 'mutually_exclusive_filters' },
     });
-    await expect(result).rejects.toThrow('only one of area, point, or zone is allowed');
+    await expect(result).rejects.toThrow(
+      'only one of area, point, zone, region_type, or region is allowed',
+    );
     expect(mockSearchAlerts).not.toHaveBeenCalled();
   });
 
@@ -224,6 +257,7 @@ describe('nws_search_alerts', () => {
             urgency: 'Immediate',
             certainty: 'Observed',
             areaDesc: 'King County',
+            ...lifecycle,
             onset: '2026-04-03T12:00:00Z',
             ends: '2026-04-03T13:00:00Z',
             expires: '2026-04-03T14:00:00Z',
@@ -239,17 +273,91 @@ describe('nws_search_alerts', () => {
       expect(text).toContain('Move to interior room');
     });
 
-    it('renders affected zones when present', () => {
+    it('renders affected zones with their type so forecast-eligible codes are identifiable (issue #31)', () => {
+      // Both codes still render; each now carries the zone type that decides
+      // whether nws_get_zone_forecast will accept it.
       const blocks = searchAlertsTool.format!({
         alerts: [
-          {
-            ...alertResult.alerts[0]!,
-            affectedZones: ['WAZ558', 'WAC033'],
-          },
+          formatAlert({
+            affectedZones: [
+              { code: 'WAZ558', type: 'forecast' },
+              { code: 'WAC033', type: 'county' },
+            ],
+          }),
         ],
       });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('**Zones:** WAZ558, WAC033');
+      expect(text).toContain('**Zones:** WAZ558 (forecast), WAC033 (county)');
+    });
+
+    it('renders a county-only alert without implying any code is forecast-eligible (issue #31)', () => {
+      const blocks = searchAlertsTool.format!({
+        alerts: [
+          formatAlert({
+            event: 'Severe Thunderstorm Warning',
+            affectedZones: [{ code: 'WAC033', type: 'county' }],
+          }),
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('**Zones:** WAC033 (county)');
+      expect(text).not.toContain('(forecast)');
+    });
+
+    it('renders the CAP lifecycle fields alongside the hazard timing (issue #33)', () => {
+      const blocks = searchAlertsTool.format!({
+        alerts: [
+          formatAlert({
+            sent: '2026-04-03T05:00:00-07:00',
+            effective: '2026-04-03T05:30:00-07:00',
+            status: 'Actual',
+            messageType: 'Alert',
+            references: [],
+          }),
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      expect(text).toContain('**Message type:** Alert');
+      expect(text).toContain('**Status:** Actual');
+      expect(text).toContain('**Message sent:**');
+      expect(text).toContain('**Message effective:**');
+      // An original issuance supersedes nothing — no fabricated reference line.
+      expect(text).not.toContain('**Supersedes:**');
+    });
+
+    it('renders superseded prior alerts on an Update message (issue #33)', () => {
+      const blocks = searchAlertsTool.format!({
+        alerts: [
+          formatAlert({
+            messageType: 'Update',
+            references: [
+              { identifier: 'urn:oid:prior.001.1', sent: '2026-04-03T04:00:00-07:00' },
+              { identifier: 'urn:oid:prior.000.1', sent: '2026-04-03T03:00:00-07:00' },
+            ],
+          }),
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      expect(text).toContain('**Message type:** Update');
+      expect(text).toContain('**Supersedes:**');
+      expect(text).toContain('urn:oid:prior.001.1');
+      expect(text).toContain('urn:oid:prior.000.1');
+    });
+
+    it('keeps the lifecycle lines from displacing the hazard timing block (issues #7, #18, #33)', () => {
+      const blocks = searchAlertsTool.format!({ alerts: [formatAlert()] });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      // onset → ends → message TTL stays intact, with the lifecycle block after it.
+      expect(text.indexOf('**Hazard onset:**')).toBeLessThan(text.indexOf('**Hazard ends:**'));
+      expect(text.indexOf('**Hazard ends:**')).toBeLessThan(
+        text.indexOf('**Message valid until:**'),
+      );
+      expect(text.indexOf('**Message valid until:**')).toBeLessThan(
+        text.indexOf('**Message type:**'),
+      );
     });
 
     it('labels expires as "Message valid until" rather than "Expires" (regression: issue #7)', () => {
@@ -268,11 +376,12 @@ describe('nws_search_alerts', () => {
             urgency: 'Future',
             certainty: 'Possible',
             areaDesc: 'Green Lake WI',
+            ...lifecycle,
             onset: '2026-04-20T07:00:00-05:00', // Mon 7 AM CDT — hazard begins later
             ends: '2026-04-21T15:00:00-05:00', // Tue 3 PM CDT — hazard ends
             expires: '2026-04-19T18:45:00-05:00', // Sun 6:45 PM CDT — message refreshes earlier
             senderName: 'NWS Milwaukee/Sullivan WI',
-            affectedZones: ['WIZ046'],
+            affectedZones: [{ code: 'WIZ046', type: 'forecast' }],
           },
         ],
       });
@@ -301,11 +410,12 @@ describe('nws_search_alerts', () => {
             urgency: 'Expected',
             certainty: 'Likely',
             areaDesc: 'King County',
+            ...lifecycle,
             onset: '2026-06-22T11:00:00-07:00', // hazard begins Mon
             ends: '2026-06-24T23:00:00-07:00', // hazard ends Wed — after the message refresh
             expires: '2026-06-22T03:00:00-07:00', // message refresh, before onset
             senderName: 'NWS Seattle WA',
-            affectedZones: ['WAZ558'],
+            affectedZones: [{ code: 'WAZ558', type: 'forecast' }],
           },
         ],
       });
@@ -333,11 +443,12 @@ describe('nws_search_alerts', () => {
             urgency: 'Expected',
             certainty: 'Likely',
             areaDesc: 'King County',
+            ...lifecycle,
             onset: '2026-07-04T15:00:00Z', // 8:00 AM PDT
             ends: '2026-07-04T18:00:00Z', // 11:00 AM PDT
             expires: '2026-07-04T20:00:00Z', // 1:00 PM PDT
             senderName: 'NWS Seattle WA',
-            affectedZones: ['WAZ558'],
+            affectedZones: [{ code: 'WAZ558', type: 'forecast' }],
           },
         ],
       });
@@ -362,6 +473,7 @@ describe('nws_search_alerts', () => {
             urgency: 'Expected',
             certainty: 'Likely',
             areaDesc: 'Open ocean',
+            ...lifecycle,
             onset: '2026-04-19T15:00:00-04:00',
             ends: '2026-04-19T21:00:00-04:00',
             expires: '2026-04-19T21:00:00-04:00',
@@ -389,11 +501,12 @@ describe('nws_search_alerts', () => {
             urgency: 'Immediate',
             certainty: 'Observed',
             areaDesc: 'Cleveland County',
+            ...lifecycle,
             onset: '2026-07-04T19:00:00Z', // 2:00 PM CDT
             ends: '2026-07-04T19:30:00Z', // 2:30 PM CDT
             expires: '2026-07-04T20:00:00Z',
             senderName: 'NWS Norman OK',
-            affectedZones: ['OKC027'],
+            affectedZones: [{ code: 'OKC027', type: 'county' }],
           },
         ],
       });

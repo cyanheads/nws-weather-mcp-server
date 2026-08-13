@@ -71,7 +71,7 @@ Searches active weather alerts (watches, warnings, advisories) across the US. Us
 | `urgency` | string[] | No | Filter by urgency: "Immediate", "Expected", "Future", "Past". Accepts multiple. |
 | `certainty` | string[] | No | Filter by certainty: "Observed", "Likely", "Possible", "Unlikely", "Unknown". Accepts multiple. |
 | `status` | string | No | Alert status filter. Default "Actual". Options: "Actual", "Exercise", "System", "Test", "Draft". Almost always want "Actual". |
-| `limit` | number | No | Alerts per page (1-25, default 25). Client-side only -- never sent upstream. `totalCount` still reports the full match count. |
+| `limit` | number | No | Alerts per page (1-25, default 25). Client-side only -- never sent upstream. `totalCount` still reports the full distinct-alert match count. |
 | `cursor` | string | No | Opaque continuation token from a previous response's `nextCursor`. Omit for the first page. The token carries its own page size, so `limit` shapes the first page only. |
 
 **API endpoint:** `GET /alerts/active` with query params.
@@ -203,9 +203,27 @@ Static list of all valid NWS alert event type names (111 types). Useful referenc
 - **No `limit` or cursor param on alerts.** The `/alerts/active` endpoints don't support a `limit` query parameter (returns 400) and offer no upstream cursor. The service fetches and filters the whole active collection; `limit` and `cursor` window that array locally, via the framework's `paginateArray`.
 - **Hourly forecast = 156 periods.** The hourly endpoint returns 7 days of hourly data. The handler windows returned periods to 48 so `structuredContent` and `content[]` carry the same bounded set -- the pre-page total and a truncation notice are surfaced via enrichment, and `nextCursor` reaches the rest.
 - **Continuation is local to one fetch.** All three paged tools re-fetch their collection on every call and cache nothing but `/points` grid resolution, so consecutive pages are contiguous within a single response, not across separate calls. Harmless for the near-static station registry, and near-harmless for forecasts (reissued a few times a day); the active-alert set churns continuously, so a `nws_search_alerts` page 2 is a second, independent snapshot.
+- **`/alerts/active` repeats alerts within one response.** NWS emits some alerts twice in a single fetch, byte-identical in `id`, `sent`, `event`, and `areaDesc` — a multi-zone Air Quality Alert from one office is a reliable shape. The service collapses them on `id`, keeping the first occurrence, in `NwsService.searchAlerts()` on the raw feature array. That placement is deliberate: it sits ahead of both the event filter and the tool's page window, so no count is inflated and a duplicate cannot straddle a page boundary. Note this is a *different* phenomenon from the cross-call drift above — within one fetch an `id` now appears at most once, so the same `id` arriving on two pages of a page walk means the active set moved between calls.
 - **Observation units are metric.** Temperature in Celsius, wind in km/h, pressure in Pa. Convert to a readable format in `format()` (F/C with both shown, mph, inHg/hPa).
 - **Grid endpoint 500s.** The NWS backend occasionally returns 500 on gridpoint forecast requests. These are transient -- retry with backoff.
 - **`/points` is the routing layer.** Almost every workflow starts here. The response contains URLs for forecast, hourly forecast, observation stations, forecast zone, county, and fire weather zone. Parse and follow these rather than constructing grid URLs manually.
+
+### Count vocabulary on the paged tools
+
+`nws_get_forecast`, `nws_find_stations`, and `nws_search_alerts` each fetch a whole collection and window it locally, so each reports two different quantities. They use one pair of names, matching the framework's own enrichment convention (`ctx.enrich.total()` writes `totalCount`; `ctx.enrich.truncated()` writes `shown`):
+
+| Enrichment field | Meaning |
+|---|---|
+| `totalCount` | Everything that matched, before any limit or page window. Constant across the pages of one query. |
+| `shown` | How many are in this response. Tracks the returned array, never the requested `limit`. |
+
+`totalCount > shown` is the truncation signal — it is how an agent learns results were withheld and that `nextCursor` is worth following.
+
+**Decision:** these two names replaced three per-tool vocabularies (`totalFound`/`totalCount`, `totalCount`/`shownCount`, `totalPeriodCount`/`periodCount`). `totalCount` had landed on opposite sides of the limit in two tools, so an agent that learned it from one read the other's truncation disclosure as its own opposite. The retired names were removed rather than kept as aliases: a fourth set of fields alongside the existing three would have made the surface worse, and a caller reaching for a retired name now gets `undefined` — a loud miss — instead of a silently different number.
+
+On `nws_search_alerts`, `totalCount` counts *distinct* alerts, after the upstream duplicates described above are collapsed.
+
+`nws_get_zone_forecast` is not part of this set: it takes no `limit` and returns every period, so its single `periodCount` is both quantities at once and cannot invert.
 
 ### Config
 

@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.8.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3+-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.9.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3+-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -46,7 +46,7 @@ Seven tools for real-time US weather data:
 Get the weather forecast for a US location.
 
 - Default returns named 12-hour periods (14 total, ~7 days)
-- Hourly mode returns 48 one-hour periods per page with dewpoint and humidity — the upstream feed carries ~156, and the pre-page total plus a truncation notice are surfaced in the enrichment block
+- Hourly mode returns 48 one-hour periods per page with dewpoint and humidity — the upstream feed carries ~156, and the pre-page total (`totalCount`, against this page's `shown`) plus a truncation notice are surfaced in the enrichment block
 - Pass the returned `nextCursor` back as `cursor` to reach the remaining periods; it is omitted on the last page
 - Coordinates resolve to NWS grid internally via `/points` endpoint
 - Formatted timestamps use the resolved local time zone
@@ -66,7 +66,8 @@ Search active weather alerts with flexible filtering.
 - Alerts include the CAP message lifecycle — `sent`, `effective`, `status`, `messageType`, and the prior messages an update `references` — distinct from the hazard's own `onset`/`ends`
 - Event matching is case-insensitive and partial, so `"tornado"` matches both watches and warnings
 - `status` defaults to live `Actual` alerts, but can be set to `Exercise`, `System`, `Test`, or `Draft`
-- Optional `limit` (1–25, default 25) sizes the page; `totalCount` reports the full match count, with a truncation notice and guidance to narrow filters
+- Optional `limit` (1–25, default 25) sizes the page; `totalCount` reports the full match count and `shown` the size of this page, with a truncation notice and guidance to narrow filters
+- Alerts NWS repeats verbatim within one fetch are collapsed on `id`, so `totalCount` counts distinct alerts and a duplicate never straddles a page boundary
 - Pass the returned `nextCursor` back as `cursor` to reach matches beyond the page. Consecutive pages are contiguous within one response only — every call re-fetches `/alerts/active`, and that set changes continuously as alerts are issued and expire
 - Validates area, point, and zone locally before the API call — malformed values fail fast as `invalid_area_code`, `invalid_point`, or `invalid_zone` instead of leaking a raw upstream 400
 
@@ -92,7 +93,7 @@ Discover nearby observation stations.
 - Sorted by haversine distance from query point
 - Returns distance (km) and compass bearing
 - Includes zone codes, elevation, time zone
-- Optional `limit` (1–50, default 10) sizes the page; `totalFound` reports every station near the point and holds steady across pages
+- Optional `limit` (1–50, default 10) sizes the page; `totalCount` reports every station near the point and holds steady across pages, while `shown` is the size of this page
 - Pass the returned `nextCursor` back as `cursor` to reach stations beyond the page; it is omitted on the last page
 - Useful for finding station IDs for `nws_get_observations`
 

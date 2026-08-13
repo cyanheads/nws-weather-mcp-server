@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-08-13 · ⚠️ Breaking
+
+nws_find_stations, nws_get_forecast, and nws_search_alerts unify their paging counts on totalCount/shown; nws_find_stations.totalCount changes meaning (breaking); nws_search_alerts collapses upstream-duplicate alerts
+
 ## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-08-12 · ⚠️ Breaking
 
 affectedZones entries are now code+type objects (breaking); nws_search_alerts adds region/region_type filters and CAP message-lifecycle fields; a null alert description no longer fails the whole response

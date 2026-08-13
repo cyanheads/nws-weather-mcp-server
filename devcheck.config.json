@@ -7,7 +7,8 @@
       "tsc-alias",
       "@cyanheads/mcp-ts-core",
       "depcheck",
-      "@vitest/coverage-istanbul"
+      "@vitest/coverage-istanbul",
+      "@socketsecurity/bun-security-scanner"
     ],
     "ignorePatterns": []
   },
@@ -16,16 +17,5 @@
   },
   "packaging": {
     "pluginManifests": true
-  },
-  "skillVersions": {
-    "ignore": [
-      "api-auth",
-      "api-errors",
-      "api-services",
-      "api-telemetry",
-      "field-test",
-      "report-issue-local",
-      "tool-defs-analysis"
-    ]
   }
 }

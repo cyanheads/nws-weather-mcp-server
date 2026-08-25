@@ -20,11 +20,30 @@ type TestServer = {
   port: number;
 };
 
+type JsonRpcFrame = {
+  error?: unknown;
+  id?: unknown;
+  method?: string;
+  result?: unknown;
+};
+
 type RpcHttpResponse = {
   body: unknown;
   headers: http.IncomingHttpHeaders;
+  /**
+   * Server-to-client notification frames (`notifications/message` and friends)
+   * that arrived on the SSE stream ahead of the response. `ctx.log` emits at
+   * every level since mcp-ts-core 0.12.0, so a handler that logs interleaves
+   * frames before its own result.
+   */
+  notifications: JsonRpcFrame[];
   statusCode: number;
 };
+
+/** A frame is the answer to a request when it carries `result` or `error`, never `method`. */
+function isResponseFrame(frame: JsonRpcFrame): boolean {
+  return frame.method === undefined && (frame.result !== undefined || frame.error !== undefined);
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -93,6 +112,7 @@ async function postJsonRpc(
         if (contentType.includes('text/event-stream')) {
           let buffer = '';
           let settled = false;
+          const notifications: JsonRpcFrame[] = [];
 
           const finish = (parsedBody: unknown) => {
             if (settled) return;
@@ -100,6 +120,7 @@ async function postJsonRpc(
             resolve({
               statusCode: response.statusCode ?? 0,
               headers: response.headers,
+              notifications,
               body: parsedBody,
             });
             response.destroy();
@@ -121,7 +142,13 @@ async function postJsonRpc(
                 .trim();
 
               if (data.length === 0) continue;
-              finish(JSON.parse(data));
+              const parsed = JSON.parse(data) as JsonRpcFrame;
+              // Notifications (ctx.log, progress) stream ahead of the answer.
+              if (!isResponseFrame(parsed)) {
+                notifications.push(parsed);
+                continue;
+              }
+              finish(parsed);
               return;
             }
           });
@@ -139,6 +166,7 @@ async function postJsonRpc(
           resolve({
             statusCode: response.statusCode ?? 0,
             headers: response.headers,
+            notifications: [],
             body: raw.length > 0 ? JSON.parse(raw) : null,
           });
         });
@@ -630,6 +658,126 @@ describe('HTTP JSON-RPC error contracts', () => {
         isError: true,
         structuredContent: { error: { code: JsonRpcErrorCode.NotFound } },
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('streams handler ctx.log lines to the client as notifications/message', async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === 'https://api.weather.gov/alerts/active?status=actual') {
+        return jsonResponse(emptyAlertsResponse);
+      }
+      throw new Error(`Unexpected upstream URL: ${url}`);
+    });
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        {
+          jsonrpc: '2.0',
+          id: 'alerts-log-notifications',
+          method: 'tools/call',
+          params: {
+            name: 'nws_search_alerts',
+            arguments: {},
+          },
+        },
+        sessionId,
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect((response.body as { result?: unknown }).result).toBeDefined();
+
+      // The handler's ctx.log calls reach the client ahead of the result.
+      const logFrames = response.notifications.filter(
+        (frame) => frame.method === 'notifications/message',
+      ) as { params: { data: { message: string }; level: string } }[];
+      expect(logFrames.length).toBeGreaterThan(0);
+      expect(logFrames.map((frame) => frame.params.data.message)).toContain(
+        'Alerts search completed',
+      );
+      expect(logFrames.every((frame) => frame.params.level === 'info')).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects an undeclared tool argument by name', async () => {
+    const mockFetch = vi.fn<typeof fetch>();
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        {
+          jsonrpc: '2.0',
+          id: 'find-stations-unknown-key',
+          method: 'tools/call',
+          params: {
+            name: 'nws_find_stations',
+            arguments: {
+              latitude: 47.6,
+              longitude: -122.3,
+              // Not on the schema. Tool inputs advertise additionalProperties:
+              // false, so this is rejected by name instead of stripped.
+              radius_km: 50,
+            },
+          },
+        },
+        sessionId,
+      );
+
+      expect(response.statusCode).toBe(200);
+      const body = response.body as { result?: { isError?: boolean }; error?: { message: string } };
+      const message = body.error?.message ?? JSON.stringify(body.result);
+      expect(message).toContain('radius_km');
+      expect(mockFetch).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('advertises strict inputs and the error envelope on tools/list', async () => {
+    const mockFetch = vi.fn<typeof fetch>();
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        { jsonrpc: '2.0', id: 'tools-list', method: 'tools/list', params: {} },
+        sessionId,
+      );
+
+      expect(response.statusCode).toBe(200);
+      const tools = (
+        response.body as {
+          result: {
+            tools: {
+              inputSchema: Record<string, unknown>;
+              name: string;
+              outputSchema?: { properties?: Record<string, unknown> };
+            }[];
+          };
+        }
+      ).result.tools;
+
+      const findStations = tools.find((entry) => entry.name === 'nws_find_stations');
+      expect(findStations).toBeDefined();
+      // Strict inputs (0.12.0): the advertised schema forbids extra keys.
+      expect(findStations?.inputSchema.additionalProperties).toBe(false);
+      expect(findStations?.inputSchema.$schema).toBe(
+        'https://json-schema.org/draft/2020-12/schema',
+      );
+      // The advertised outputSchema declares the failure envelope alongside
+      // the success fields, so a validating client accepts an error result.
+      expect(findStations?.outputSchema?.properties).toHaveProperty('error');
+      expect(findStations?.outputSchema?.properties).toHaveProperty('stations');
     } finally {
       await server.close();
     }

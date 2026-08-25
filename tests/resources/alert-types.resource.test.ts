@@ -39,15 +39,12 @@ describe('nws://alert-types resource', () => {
   });
 
   it('list returns resource metadata', async () => {
-    // `list` receives the SDK's request-handler extra, not a Context — a minimal
-    // literal is enough for a listing that ignores it.
-    const extra = {
-      signal: new AbortController().signal,
-      requestId: 'test',
-      sendNotification: () => Promise.resolve(),
-      sendRequest: () => Promise.resolve({} as never),
-    };
-    const listed = await alertTypesResource.list!(extra);
+    // `list` receives the SDK's own request context, not a framework Context.
+    // The listing ignores it, so pass an empty stand-in typed off the callback
+    // itself rather than hand-rolling the SDK shape — that shape grows between
+    // SDK majors, and a literal copy of it goes stale silently.
+    type ListContext = Parameters<NonNullable<typeof alertTypesResource.list>>[0];
+    const listed = await alertTypesResource.list!({} as ListContext);
 
     expect(listed.resources).toHaveLength(1);
     expect(listed.resources[0]!.uri).toBe('nws://alert-types');

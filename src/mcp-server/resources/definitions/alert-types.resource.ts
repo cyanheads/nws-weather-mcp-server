@@ -11,6 +11,9 @@ export const alertTypesResource = resource('nws://alert-types', {
   description:
     'Static list of all valid NWS alert event type names. Useful reference when constructing event filters for nws_search_alerts.',
   mimeType: 'application/json',
+  // NWS revises its event-type vocabulary on the order of years, and the list
+  // is public reference data with nothing tenant-specific in it.
+  cacheHint: { ttlMs: 3_600_000, cacheScope: 'public' },
   params: z.object({}),
 
   async handler(_params, ctx) {

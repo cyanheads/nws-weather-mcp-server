@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.1](changelog/0.9.x/0.9.1.md) — 2026-08-25
+
+mcp-ts-core ^0.12.3 adopts SDK v2: the server now also speaks MCP protocol revision 2026-07-28, tool inputs are strict, outputSchema declares the error envelope, and discovery results carry one-hour cache hints; session mode settles on stateless everywhere
+
 ## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-08-13 · ⚠️ Breaking
 
 nws_find_stations, nws_get_forecast, and nws_search_alerts unify their paging counts on totalCount/shown; nws_find_stations.totalCount changes meaning (breaking); nws_search_alerts collapses upstream-duplicate alerts

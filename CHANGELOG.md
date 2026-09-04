@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.2](changelog/0.9.x/0.9.2.md) — 2026-09-04 · 🛡️ Security
+
+A 501 from NWS now fails fast instead of retrying, a caller disconnect classifies as RequestCancelled instead of Timeout, server identity no longer depends on the caller's working directory, and new dependency overrides clear 6 transitive fast-uri and qs advisories. mcp-ts-core moves ^0.12.3 to ^0.12.5.
+
 ## [0.9.1](changelog/0.9.x/0.9.1.md) — 2026-08-25
 
 mcp-ts-core ^0.12.3 adopts SDK v2: the server now also speaks MCP protocol revision 2026-07-28, tool inputs are strict, outputSchema declares the error envelope, and discovery results carry one-hour cache hints; session mode settles on stateless everywhere

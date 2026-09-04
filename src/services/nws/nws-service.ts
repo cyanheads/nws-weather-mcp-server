@@ -9,6 +9,7 @@ import {
   JsonRpcErrorCode,
   McpError,
   notFound,
+  requestCancelled,
   serializationError,
   serviceUnavailable,
   timeout,
@@ -78,6 +79,7 @@ function pointsCacheKey(lat: number, lon: number): string {
 const DEFAULT_NOT_FOUND = 'Requested NWS resource not found.';
 const POINTS_NOT_FOUND =
   'NWS only covers the US. Provide coordinates within US states, territories, or adjacent marine areas.';
+const CANCELLED_MESSAGE = 'NWS API request cancelled — the caller disconnected.';
 
 type NotFoundFactory = (message: string) => Error;
 
@@ -123,6 +125,13 @@ function parseNwsErrorDetail(text: string): string | null {
 function isRetryableNwsError(error: unknown): boolean {
   if (error instanceof TypeError) return true;
   if (error instanceof McpError) {
+    /**
+     * A 501 arrives as ServiceUnavailable carrying `data.retryable: false` — the
+     * framework's in-band opt-out for a method the upstream will never implement.
+     * Honor it the way `withRetry`'s default predicate does, so replacing that
+     * predicate here does not silently re-enable retries the framework disabled.
+     */
+    if (error.data?.retryable === false) return false;
     return [
       JsonRpcErrorCode.ServiceUnavailable,
       JsonRpcErrorCode.Timeout,
@@ -145,7 +154,15 @@ async function fetchNwsResponse(url: string, ctx: Context): Promise<Response> {
       signal,
     });
   } catch (error) {
-    if (ctx.signal.aborted) throw error;
+    /**
+     * This path does not go through `fetchWithTimeout`, so the framework's own
+     * abort classification never runs. A caller that went away is neither a
+     * server failure nor a timeout: raising it as `RequestCancelled` keeps it
+     * out of `withRetry` and answers the HTTP transport with 499.
+     */
+    if (ctx.signal.aborted) {
+      throw requestCancelled(CANCELLED_MESSAGE, { url }, { cause: error });
+    }
 
     const name = error instanceof Error ? error.name : '';
     if (name === 'AbortError' || name === 'TimeoutError') {
@@ -229,15 +246,13 @@ function nwsFetch<T>(
       }
 
       // Body already consumed via `response.text()` above — captureBody: false
-      // avoids the helper trying to read it again. NWS 500s are well-known
-      // transient failures (especially grid forecast endpoints), so remap
-      // 500/501 from InternalError → ServiceUnavailable to keep them retryable.
+      // avoids the helper trying to read it again. The helper classifies the
+      // whole 5xx range as ServiceUnavailable, which keeps NWS's well-known
+      // transient 500s (especially grid forecast endpoints) retryable.
       throw await httpErrorFromResponse(response, {
         service: 'NWS',
         data: { url },
         captureBody: false,
-        codeOverride: (status) =>
-          status === 500 || status === 501 ? JsonRpcErrorCode.ServiceUnavailable : undefined,
       });
     },
     {
@@ -251,11 +266,16 @@ function nwsFetch<T>(
       isTransient: isRetryableNwsError,
     },
   ).catch((error) => {
-    if (!isRetryableNwsError(error) || ctx.signal.aborted) {
-      throw error;
+    /**
+     * `withRetry` rejects with the raw abort reason when the caller disconnects
+     * during a backoff sleep, so the classification above is bypassed. Without
+     * this the DOMException named `AbortError` reads as a `Timeout` downstream.
+     */
+    if (ctx.signal.aborted && !(error instanceof McpError)) {
+      throw requestCancelled(CANCELLED_MESSAGE, { url }, { cause: error });
     }
 
-    if (error instanceof McpError) {
+    if (!isRetryableNwsError(error) || error instanceof McpError) {
       throw error;
     }
 

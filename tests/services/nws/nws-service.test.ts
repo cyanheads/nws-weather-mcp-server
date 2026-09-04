@@ -765,6 +765,125 @@ describe('NwsService', () => {
     });
   });
 
+  describe('cancellation and upstream status classification', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Build the DOMException-shaped rejection `fetch` raises on an aborted signal. */
+    function abortRejection(): Error {
+      const error = new Error('The operation was aborted.');
+      error.name = 'AbortError';
+      return error;
+    }
+
+    it('retries an upstream 500 and surfaces ServiceUnavailable once attempts are spent', async () => {
+      mockFetch.mockImplementation(async () => jsonResponse({}, 500));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+      const assertion = expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ServiceUnavailable,
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+      expect(mockFetch.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it('fails fast on an upstream 501 instead of retrying a method NWS does not implement', async () => {
+      mockFetch.mockImplementation(async () => jsonResponse({}, 501));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+      const assertion = expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        data: { retryable: false },
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('classifies a caller disconnect as RequestCancelled, not Timeout', async () => {
+      const controller = new AbortController();
+      mockFetch.mockImplementation(async () => {
+        controller.abort();
+        throw abortRejection();
+      });
+
+      const ctx = createMockContext({ tenantId: 'test', signal: controller.signal });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+      const assertion = expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.RequestCancelled,
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('classifies a caller disconnect on a retry attempt as RequestCancelled', async () => {
+      const controller = new AbortController();
+      mockFetch.mockResolvedValueOnce(jsonResponse({}, 500)).mockImplementation(async () => {
+        controller.abort();
+        throw abortRejection();
+      });
+
+      const ctx = createMockContext({ tenantId: 'test', signal: controller.signal });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+      const assertion = expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.RequestCancelled,
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('classifies a caller disconnect during retry backoff as RequestCancelled', async () => {
+      const controller = new AbortController();
+      mockFetch.mockImplementation(async () => jsonResponse({}, 500));
+
+      const ctx = createMockContext({ tenantId: 'test', signal: controller.signal });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+      const assertion = expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.RequestCancelled,
+      });
+
+      // Let the first attempt fail and arm the backoff sleep, then disconnect.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      controller.abort();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('still classifies an upstream stall as Timeout when the caller is present', async () => {
+      mockFetch.mockImplementation(async () => {
+        const error = new Error('The operation timed out.');
+        error.name = 'TimeoutError';
+        throw error;
+      });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+      const assertion = expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.Timeout,
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+    });
+  });
+
   describe('init/accessor', () => {
     it('throws if service not initialized', async () => {
       vi.resetModules();

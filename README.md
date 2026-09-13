@@ -29,7 +29,7 @@
 
 ## Overview
 
-An MCP server over the National Weather Service API (`api.weather.gov`). Get US forecasts, active alerts, current observations, forecast-office narrative products, and zone-level text forecasts for any coordinate in the 50 states, US territories, and adjacent marine areas. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+US weather data from the National Weather Service API (`api.weather.gov`). Get forecasts, active alerts, current observations, forecast-office narrative products, and zone-level text forecasts for any coordinate in the 50 states, US territories, and adjacent marine areas. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
@@ -135,7 +135,7 @@ NWS-specific:
 - Automatic coordinate-to-grid resolution via `/points`, cached for 1h since grid cells rarely change
 - Request timeouts plus retry/backoff for transient NWS API failures
 - Zero-auth access — no API keys required
-- Dual-unit display for observations (F/C, mph/km/h, inHg/hPa, mi/km); coverage spans the 50 states, US territories, and adjacent marine areas
+- Dual-unit display for observations (F/C, mph/km/h, inHg/hPa, mi/km)
 
 Agent-friendly output:
 

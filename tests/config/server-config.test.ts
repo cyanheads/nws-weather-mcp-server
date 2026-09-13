@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 describe('server-config', () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -32,5 +33,23 @@ describe('server-config', () => {
     const first = getServerConfig();
     const second = getServerConfig();
     expect(first).toBe(second);
+  });
+
+  it.each(['', `\${NWS_USER_AGENT}`, `\${user_config.nws_user_agent}`])(
+    'uses the default User-Agent when the host supplies %j',
+    async (value) => {
+      vi.stubEnv('NWS_USER_AGENT', value);
+      const { getServerConfig } = await import('@/config/server-config.js');
+      expect(getServerConfig().userAgent).toBe(
+        '(nws-weather-mcp-server, github.com/cyanheads/nws-weather-mcp-server)',
+      );
+    },
+  );
+
+  it('preserves a placeholder embedded in a real User-Agent value', async () => {
+    const value = `(weather-\${region}, contact@example.com)`;
+    vi.stubEnv('NWS_USER_AGENT', value);
+    const { getServerConfig } = await import('@/config/server-config.js');
+    expect(getServerConfig().userAgent).toBe(value);
   });
 });

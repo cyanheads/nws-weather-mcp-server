@@ -3,9 +3,9 @@
   "version": "0.9.2",
   "description": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads",
+    "name": "Casey Hand",
     "email": "casey@caseyjhand.com",
-    "url": "https://github.com/cyanheads"
+    "url": "https://caseyjhand.com"
   },
   "homepage": "https://github.com/cyanheads/nws-weather-mcp-server#readme",
   "repository": "https://github.com/cyanheads/nws-weather-mcp-server",
@@ -17,7 +17,7 @@
     "shortDescription": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API.",
     "longDescription": "Real-time US weather from the National Weather Service API (api.weather.gov), covering the 50 states, US territories, and adjacent marine areas. Seven coordinate-driven tools: 7-day and hourly forecasts, active alerts filtered by area/zone/event/severity, current observations from the nearest station, nearby station discovery, alert event-type listing, forecast-office narrative discussions (AFD/HWO/ZFP/SPS), and zone-level text forecasts. The API does not geocode — resolve place names to latitude/longitude before calling. No API key required. Runs over STDIO or Streamable HTTP.",
     "developerName": "cyanheads",
-    "category": "",
+    "category": "data",
     "capabilities": ["Read"],
     "websiteURL": "https://github.com/cyanheads/nws-weather-mcp-server",
     "defaultPrompt": []

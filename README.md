@@ -27,9 +27,11 @@
 
 ---
 
-## Tools
+## Overview
 
-Seven tools for real-time US weather data:
+An MCP server over the National Weather Service API (`api.weather.gov`). Get US forecasts, active alerts, current observations, forecast-office narrative products, and zone-level text forecasts for any coordinate in the 50 states, US territories, and adjacent marine areas. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:----------|:------------|
@@ -41,118 +43,106 @@ Seven tools for real-time US weather data:
 | `nws_get_office_discussion` | Latest narrative product (AFD, HWO, ZFP, SPS) from a Weather Forecast Office. |
 | `nws_get_zone_forecast` | Text forecast periods for a public NWS forecast zone. |
 
-### `nws_get_forecast`
+### Resources
 
-Get the weather forecast for a US location.
+| Resource | Description |
+|:---------|:------------|
+| `nws://alert-types` | Static list of all valid NWS alert event type names. |
+
+Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't support resources.
+
+## Capability reference
+
+### `nws_get_forecast` <sub>tool</sub>
 
 - Default returns named 12-hour periods (14 total, ~7 days)
 - Hourly mode returns 48 one-hour periods per page with dewpoint and humidity — the upstream feed carries ~156, and the pre-page total (`totalCount`, against this page's `shown`) plus a truncation notice are surfaced in the enrichment block
 - Pass the returned `nextCursor` back as `cursor` to reach the remaining periods; it is omitted on the last page
-- Coordinates resolve to NWS grid internally via `/points` endpoint
+- Coordinates resolve to NWS grid internally via `/points`
 - Formatted timestamps use the resolved local time zone
 - Returns forecast zone and county zone codes for chaining into `nws_search_alerts`
 
 ---
 
-### `nws_search_alerts`
+### `nws_search_alerts` <sub>tool</sub>
 
-Search active weather alerts with flexible filtering.
-
-- Filter by area (state/territory/marine codes), point (lat,lon), zone, land/marine `region_type`, marine `region` groups, event type, severity, urgency, certainty, or status
-- `area`, `point`, `zone`, `region_type`, and `region` are mutually exclusive; specify at most one location filter
-- National search when no filters provided
-- A filter provided with no usable value — a blank `area`/`point`/`zone`, or an empty `event`/`severity`/`urgency`/`certainty`/`region` array — is rejected rather than dropped, so a search never silently widens to national results
-- Each `affectedZones` entry carries its NWS zone `type` (`forecast`, `county`, or `fire`) alongside the `code`, so callers can tell which codes chain into `nws_get_zone_forecast`
-- Alerts include the CAP message lifecycle — `sent`, `effective`, `status`, `messageType`, and the prior messages an update `references` — distinct from the hazard's own `onset`/`ends`
-- Event matching is case-insensitive and partial, so `"tornado"` matches both watches and warnings
-- `status` defaults to live `Actual` alerts, but can be set to `Exercise`, `System`, `Test`, or `Draft`
-- Optional `limit` (1–25, default 25) sizes the page; `totalCount` reports the full match count and `shown` the size of this page, with a truncation notice and guidance to narrow filters
-- Alerts NWS repeats verbatim within one fetch are collapsed on `id`, so `totalCount` counts distinct alerts and a duplicate never straddles a page boundary
-- Pass the returned `nextCursor` back as `cursor` to reach matches beyond the page. Consecutive pages are contiguous within one response only — every call re-fetches `/alerts/active`, and that set changes continuously as alerts are issued and expire
-- Validates area, point, and zone locally before the API call — malformed values fail fast as `invalid_area_code`, `invalid_point`, or `invalid_zone` instead of leaking a raw upstream 400
+- `area`, `point`, `zone`, `region_type`, and `region` are mutually exclusive location filters (at most one, or none for a national search); `event` matches case-insensitively and partially (`"tornado"` matches both watches and warnings); `status` defaults to `Actual` (also `Exercise`, `System`, `Test`, `Draft`)
+- A blank string filter or an empty-array filter is rejected rather than silently widened to an unfiltered search
+- Area/point/zone shape is validated locally before the API call, failing fast with typed `invalid_area_code` / `invalid_point` / `invalid_zone` reasons instead of a raw upstream 400
+- `limit` (1-25, default 25) pages results; `totalCount` is the full distinct-alert count (duplicates collapsed on `id`) against `shown`, and `nextCursor` continues — pages are contiguous only within one response, since every call re-fetches the live feed
+- Each `affectedZones` entry carries its zone `type` (`forecast`/`county`/`fire`) so callers know which codes chain into `nws_get_zone_forecast`
+- CAP message-lifecycle fields (`sent`, `effective`, `status`, `messageType`, `references`) are distinct from the hazard's own `onset`/`ends`
 
 ---
 
-### `nws_get_observations`
+### `nws_get_observations` <sub>tool</sub>
 
-Current measured conditions from a weather station.
-
-- Look up by coordinates (finds nearest station) or station ID directly
-- A blank or whitespace-only `station_id` is rejected rather than dropped, so coordinates never silently answer for a station that was asked for by name
-- Coordinate lookups choose the nearest station from the candidates returned by NWS
-- Dual-unit display: F/C, mph/km/h, inHg/hPa, mi/km
-- Observation timestamps use the station's local time zone when available
-- Warns when most measurements are unavailable from a station
+- Look up by coordinates (resolves nearest station) or `station_id` directly; a blank/whitespace-only `station_id` is rejected rather than silently falling back to coordinates
+- Dual-unit display on every measurement: F/C, mph/km/h, inHg/hPa, mi/km
+- Observation timestamps use the station's local time zone when known
+- Flags observations older than 2 hours with a staleness notice, and warns separately when most measurements are unavailable from the station
 
 ---
 
-### `nws_find_stations`
+### `nws_find_stations` <sub>tool</sub>
 
-Discover nearby observation stations.
-
-- Sorted by haversine distance from query point
-- Returns distance (km) and compass bearing
-- Includes zone codes, elevation, time zone
-- Optional `limit` (1–50, default 10) sizes the page; `totalCount` reports every station near the point and holds steady across pages, while `shown` is the size of this page
+- Sorted by haversine distance from the query point; each result carries distance (km), bearing, zone codes, elevation, and time zone
+- Optional `limit` (1-50, default 10) sizes the page; `totalCount` reports every station near the point and holds steady across pages, while `shown` is the size of this page
 - Pass the returned `nextCursor` back as `cursor` to reach stations beyond the page; it is omitted on the last page
 - Useful for finding station IDs for `nws_get_observations`
 
 ---
 
-### `nws_list_alert_types`
-
-List all valid NWS alert event type names.
+### `nws_list_alert_types` <sub>tool</sub>
 
 - Returns the full set of event types the NWS API recognizes (e.g., "Tornado Warning", "Heat Advisory")
 - Use to discover valid values for the `event` filter in `nws_search_alerts`
 
 ---
 
-### `nws_get_office_discussion`
+### `nws_get_office_discussion` <sub>tool</sub>
 
-Get the latest narrative product from a Weather Forecast Office (WFO).
-
-- `office`: 3-letter WFO code (e.g., `SEW` for Seattle) — returned as the `office` field by `nws_get_forecast`
-- `product_type`: `AFD` (Area Forecast Discussion, default), `HWO` (Hazardous Weather Outlook), `ZFP` (Zone Forecast Product), `SPS` (Special Weather Statement)
-- Two-hop fetch: lists products by office/type (newest first), then retrieves full product text
+- `office`: 3-letter WFO code (e.g., "SEW" for Seattle) — returned as the `office` field by `nws_get_forecast`
+- `product_type`: `AFD` (default, forecaster reasoning and model analysis), `HWO` (1-7 day hazard outlook), `ZFP` (zone-by-zone text forecast), `SPS` (short-fuse advisory)
 - Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`
-- Unknown office returns a clear error with recovery instructions (the NWS API returns HTTP 200 with an empty list, not a 404)
+- An unknown office, or a valid office with no current product of the requested type, fails with a typed `no_products` error and recovery guidance — NWS answers HTTP 200 with an empty list rather than a 404
 
 ---
 
-### `nws_get_zone_forecast`
+### `nws_get_zone_forecast` <sub>tool</sub>
 
-Get the text forecast for a public NWS forecast zone.
-
-- `zone_id`: forecast zone code (e.g., `WAZ315`) — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`)
+- `zone_id`: forecast zone code (e.g., "WAZ315") — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`)
 - Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters
 - Completes the alert-to-forecast chain: look up alert zones, then retrieve zone forecasts
-- County (`XXC###`) and fire zone codes are not supported here — NWS publishes no text forecast for them. They remain valid values for the `zone` filter on `nws_search_alerts`
+- County (`XXC###`) and fire zone codes are not supported here — NWS publishes no text forecast for them, though they remain valid values for the `zone` filter on `nws_search_alerts`; an unsupported or unknown zone fails with a typed `zone_not_found` error
 
-## Resources
+---
 
-| URI Pattern | Description |
-|:------------|:------------|
-| `nws://alert-types` | Static list of all valid NWS alert event type names. |
+### `nws://alert-types` <sub>resource</sub>
+
+- Static list of all valid NWS alert event type names, returned as `application/json`
+- Duplicates `nws_list_alert_types` for MCP clients that support resources rather than tools
+- Cached publicly for 1 hour — NWS revises this vocabulary on the order of years
+- No parameters
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core):
-
-- Declarative tool definitions — single file per tool, framework handles registration and validation
-- Unified error handling across all tools
-- Pluggable auth (`none`, `jwt`, `oauth`)
-- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
-- Structured logging with optional OpenTelemetry tracing
-- Runs locally (stdio/HTTP) or on Cloudflare Workers from the same codebase
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
 NWS-specific:
 
-- Zero-auth access to the NWS API — no API keys required
-- Automatic coordinate-to-grid resolution with caching (1h TTL)
+- Sends the required `User-Agent` header automatically (configurable via `NWS_USER_AGENT`) — NWS returns 403 without one
+- Automatic coordinate-to-grid resolution via `/points`, cached for 1h since grid cells rarely change
 - Request timeouts plus retry/backoff for transient NWS API failures
-- Dual-unit display for observations (F/C, mph/km/h, inHg/hPa, mi/km)
-- Continental US, Alaska, Hawaii, and US territories coverage
+- Zero-auth access — no API keys required
+- Dual-unit display for observations (F/C, mph/km/h, inHg/hPa, mi/km); coverage spans the 50 states, US territories, and adjacent marine areas
+
+Agent-friendly output:
+
+- Provenance — forecast, observation, and station responses echo office codes, time zones, and forecast/county zone codes so agents can chain directly into `nws_get_office_discussion`, `nws_get_zone_forecast`, and `nws_search_alerts` without re-deriving them
+- Guidance over silence — empty, truncated, or cursor-past-end results carry a `notice` naming the cause and the concrete next step, rather than an empty array or a bare page
+- Discriminated output contracts — zone `type` (`forecast`/`county`/`fire`), CAP `status`/`messageType` distinct from hazard `onset`/`ends`, and typed error reasons (`invalid_area_code`, `no_products`, `zone_not_found`, …) — callers branch on data, not string parsing
+- Response shaping — upstream single-unit floats are normalized into dual-unit pairs (F/C, mph/km/h, inHg/hPa, mi/km) and rounded to match what `format()` renders, so structured and text output agree
 
 ## Getting started
 
@@ -294,10 +284,12 @@ See [`.env.example`](.env.example) for the full list including auth, storage, an
 
 | Directory | Purpose |
 |:----------|:--------|
+| `src/index.ts` | `createApp()` entry point — registers tools and the resource. |
 | `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`). |
 | `src/mcp-server/resources/definitions/` | Resource definitions (`*.resource.ts`). |
 | `src/services/nws/` | NWS API client and response types. |
 | `src/config/` | Environment variable parsing and validation with Zod. |
+| `tests/` | Unit and integration tests mirroring `src/`. |
 
 ## Development guide
 
@@ -306,6 +298,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for domain-specific logging, `ctx.state` for storage
 - Add new tools/resources to the barrel exports and the `createApp()` arrays in `src/index.ts`
+- Wrap NWS API calls: validate raw JSON → normalize to domain types → return the output schema; never fabricate missing fields
 
 ## Contributing
 

@@ -2,7 +2,9 @@
 
 **Server:** nws-weather-mcp-server
 **Version:** 0.9.2
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.0`
+**Engines:** Bun ≥1.4.0, Node ≥24.0.0
+**MCP SDK:** `@modelcontextprotocol/server` ^2.0.0
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -68,6 +70,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 - **Use `ctx.state`** for tenant-scoped storage. Never access persistence directly.
 - **Need input the caller didn't supply?** `return ctx.requestInput(...)` and read `ctx.inputs` when the handler is re-entered. Never `await` for user input mid-handler.
 - **Secrets in env vars only** — never hardcoded.
+- **Cut noise.** Add only what earns its place: no speculative generality, no guards for states the framework already prevents, no abstraction until a third caller proves it, no option nothing sets.
 - **Close the loop on issues.** When implementing work tracked by a GitHub issue, comment on the issue with what landed and close it. Do both — a comment without a close leaves stale issues open; a close without a comment leaves no record of what shipped. The comment is for future readers — state the concrete changes, not the conversation that produced them.
 
 ---
@@ -192,7 +195,7 @@ Handlers receive a unified `ctx` object. Key properties:
 
 Handlers throw — the framework catches, classifies, and formats.
 
-**Recommended: typed error contract.** Tools that surface domain-specific failures declare `errors: [{ reason, code, when, recovery, retryable? }]`. The handler then receives `ctx.fail(reason, msg?, data?)` typed against the reason union (`ctx.fail('typo')` is a TS error). Spread `ctx.recoveryFor('reason')` to copy the contract's recovery hint onto the wire — the framework mirrors `data.recovery.hint` into `content[]` text. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`) bubble freely without declaration.
+**Recommended: typed error contract.** Tools that surface domain-specific failures declare `errors: [{ reason, code, when, recovery, retryable? }]`. The handler then receives `ctx.fail(reason, msg?, data?)` typed against the reason union (`ctx.fail('typo')` is a TS error). Spread `ctx.recoveryFor('reason')` to copy the contract's recovery hint onto the wire — the framework mirrors `data.recovery.hint` into `content[]` text. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`, `RequestCancelled`) bubble freely without declaration.
 
 ```ts
 errors: [
@@ -262,9 +265,9 @@ src/
 
 ## Skills
 
-Skills are modular instructions in `skills/` at the project root. Read them directly when a task matches — e.g., `skills/add-tool/SKILL.md` when adding a tool.
+Skills are modular instructions in `framework-skills/` at the project root. Read them directly when a task matches — e.g., `framework-skills/add-tool/SKILL.md` when adding a tool. `bun run list-skills` prints the registry. Keep development skills out of root `skills/`, which plugin hosts automatically load for installing agents.
 
-**Agent skill directory:** Copy skills into the directory your agent discovers (Claude Code: `.claude/skills/`, others: equivalent). Skills then load as context without referencing `skills/` paths. After framework updates, run the `maintenance` skill — Phase B re-syncs the agent directory.
+**Agent skill directory:** Copy skills into the directory your agent discovers (Claude Code: `.claude/skills/`, others: equivalent). Skills then load as context without referencing `framework-skills/` paths. After framework updates, run the `maintenance` skill — Phase B re-syncs the agent directory.
 
 Available skills:
 
@@ -288,8 +291,9 @@ Available skills:
 | `tool-defs-analysis` | Read-only audit of MCP definition language across the surface — voice, leaks, defaults, recovery hints, output descriptions |
 | `techniques` | Catalog of response/data-shaping techniques — overflow handling, payload shaping, retrieval patterns |
 | `code-simplifier` | Post-session cleanup against `git diff` — modernize syntax, consolidate duplication, align with the codebase |
-| `git-wrapup` | Land working-tree changes as a versioned commit + annotated tag — version bump, changelog, verify, tag. Local only. |
-| `release-and-publish` | Push + npm + MCP Registry + GH Release + Docker. Picks up from `git-wrapup` |
+| `git-wrapup` | Land working-tree changes as a commit stack — version bump, changelog, verify; opens a release PR only when the project declares release PR mode. No tag. |
+| `release-pr-review` | Review and fix an open release PR; release PR mode only. |
+| `release-and-publish` | Tag + push + npm + MCP Registry + GH Release + Docker. Picks up from `git-wrapup`. |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
 | `api-canvas` | DataCanvas: register tabular data, run SQL, export, plus the `spillover()` helper for big result sets — Tier 3 opt-in |
 | `api-config` | AppConfig, parseConfig, env vars |
@@ -303,7 +307,7 @@ Available skills:
 | `api-utils` | Formatting, parsing, security, pagination, scheduling, telemetry helpers |
 | `api-workers` | Cloudflare Workers runtime |
 
-**Chaining skills into pipelines.** When the user wants a multi-phase effort — build this server out, QA-and-fix the surface, update-and-ship — *and you can spawn sub-agents*, `skills/orchestrations/SKILL.md` sequences the task skills above into a gated pipeline with verification at each step. Read it to drive the run. Optional: skip it if you can't orchestrate sub-agents, and ignore it entirely if you were *spawned* as one — you've already been scoped to a single phase.
+**Chaining skills into pipelines.** When the user wants a multi-phase effort — build this server out, QA-and-fix the surface, update-and-ship — *and you can spawn sub-agents*, `framework-skills/orchestrations/SKILL.md` sequences the task skills above into a gated pipeline with verification at each step. Read it to drive the run. Optional: skip it if you can't orchestrate sub-agents, and ignore it entirely if you were *spawned* as one — you've already been scoped to a single phase.
 
 When you complete a skill's checklist, check the boxes and add a completion timestamp at the end (e.g., `Completed: 2026-03-11`).
 
@@ -317,7 +321,8 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run rebuild` | Clean + build |
 | `bun run clean` | Remove build artifacts |
 | `bun run devcheck` | Lint + format + typecheck + security + changelog sync |
-| `bun run audit:refresh` | Delete `bun.lock`, reinstall, re-audit. Use when `devcheck` flags a transitive advisory — Bun's `update` is sticky on transitive resolutions, so the advisory may be a stale-lockfile false positive. If it survives the refresh, it's real. |
+| `bun run audit:fix` | Upgrade vulnerable packages within existing ranges with `bun audit fix`; then try `bun update <name>` and `bun dedupe`. |
+| `bun run audit:refresh` | Last resort: delete `bun.lock`, reinstall, re-audit. Re-resolves every ranged dependency, including the framework. |
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting (safe autofixes only) |
 | `bun run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
@@ -337,7 +342,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 `bun run bundle` builds, packs to `.mcpb`, then runs `scripts/clean-mcpb.ts` to strip dev-dir agent files from the bundle. MCPB is stdio-only — HTTP deployments are unaffected.
 
-**Adding an env var requires both files:** `server.json` (registry discovery, `environmentVariables[]`) and `manifest.json` (bundle install UX, `mcp_config.env` + `user_config`). `lint:packaging` (run by `devcheck`) verifies the env var names match.
+**Adding an env var requires both files:** `server.json` (registry discovery, `environmentVariables[]`) and `manifest.json` (bundle install UX, `mcp_config.env` + `user_config`). `lint:packaging` (run by `devcheck`) verifies the env var names match and every `user_config` option is wired as `${user_config.<option>}`. Optional string options use `default: ""`; `parseEnvConfig` treats empty and whole-value `${…}` placeholders as unset.
 
 **README install badges.** Drop these into the project README to give users one-click install paths. Fill in `<OWNER>` / `<REPO>` / `<PACKAGE_NAME>` and encode the per-server config:
 
@@ -354,6 +359,12 @@ echo -n '{"command":"npx -y <PACKAGE_NAME>"}' | base64
 # VS Code: URL-encoded JSON
 node -p 'encodeURIComponent(JSON.stringify({name:"<PACKAGE_NAME>",command:"npx",args:["-y","<PACKAGE_NAME>"]}))'
 ```
+
+---
+
+## Changelog
+
+Author `changelog/<major.minor>.x/<version>.md` with a concrete version and date; regenerate the navigation index with `bun run changelog:build`. Keep `changelog/template.md` pristine. Section order: Added, Changed, Deprecated, Removed, Fixed, Security, Dependencies; omit empty sections. Tag format belongs to `release-and-publish`.
 
 ---
 
@@ -401,7 +412,7 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 - [ ] NWS API wrap: tests include at least one sparse payload case with omitted upstream fields
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
-- [ ] `.codex-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; `interface.displayName` = package name; `interface.shortDescription` from `package.json` description
-- [ ] `.codex-plugin/mcp.json` updated — server name key matches `package.json` name; env vars added for any required API keys
-- [ ] `.claude-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; inline `mcpServers` entry with server name key, env vars for any required API keys
+- [ ] `.codex-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; `interface.displayName` = the unscoped repo name; `interface.shortDescription` from `package.json` description
+- [ ] `.codex-plugin/mcp.json` updated — server name key is the unscoped repo name; user-supplied variables are listed in `env_vars`, never assigned empty `env` values
+- [ ] `.claude-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; inline `mcpServers` entry keyed by the unscoped repo name; user-supplied variables declared in `userConfig` and referenced as `${user_config.<option>}`
 - [ ] `bun run devcheck` passes

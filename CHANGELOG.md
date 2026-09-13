@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.3](changelog/0.9.x/0.9.3.md) — 2026-09-13
+
+Invalid tool arguments now come back as a structured InvalidParams envelope on both response surfaces, a blank NWS_USER_AGENT from a plugin host falls through to the default instead of the literal placeholder, and the development skill tree moved out of the directory plugin hosts auto-load. mcp-ts-core moves ^0.12.5 to ^0.13.0.
+
 ## [0.9.2](changelog/0.9.x/0.9.2.md) — 2026-09-04 · 🛡️ Security
 
 A 501 from NWS now fails fast instead of retrying, a caller disconnect classifies as RequestCancelled instead of Timeout, server identity no longer depends on the caller's working directory, and new dependency overrides clear 6 transitive fast-uri and qs advisories. mcp-ts-core moves ^0.12.3 to ^0.12.5.

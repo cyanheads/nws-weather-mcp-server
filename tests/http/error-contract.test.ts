@@ -85,8 +85,9 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 
 async function postJsonRpc(
   port: number,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown> & { params?: { name?: string; [key: string]: unknown } },
   sessionId?: string,
+  protocolVersion = PROTOCOL_VERSION,
 ): Promise<RpcHttpResponse> {
   const body = JSON.stringify(payload);
 
@@ -101,7 +102,9 @@ async function postJsonRpc(
           Accept: 'application/json, text/event-stream',
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body).toString(),
-          'MCP-Protocol-Version': PROTOCOL_VERSION,
+          'MCP-Protocol-Version': protocolVersion,
+          'Mcp-Method': String(payload.method),
+          ...(payload.params?.name ? { 'Mcp-Name': payload.params.name } : {}),
           ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
         },
       },
@@ -741,6 +744,98 @@ describe('HTTP JSON-RPC error contracts', () => {
       await server.close();
     }
   });
+
+  it.each(['2025-11-25', '2026-07-28'])(
+    'returns InvalidParams on both surfaces for schema rejections under %s',
+    async (protocolVersion) => {
+      const mockFetch = vi.fn<typeof fetch>();
+      const server = await startHttpTestServer(mockFetch);
+
+      try {
+        let sessionId: string | undefined;
+        if (protocolVersion !== '2026-07-28') {
+          const initialized = await postJsonRpc(
+            server.port,
+            {
+              jsonrpc: '2.0',
+              id: 'initialize',
+              method: 'initialize',
+              params: {
+                protocolVersion,
+                capabilities: {},
+                clientInfo: { name: 'vitest', version: '1.0.0' },
+              },
+            },
+            undefined,
+            protocolVersion,
+          );
+          expect(initialized.statusCode).toBe(200);
+          expect(initialized.body).toMatchObject({ result: { protocolVersion } });
+          sessionId = headerValue(initialized.headers['mcp-session-id']);
+          await postJsonRpc(
+            server.port,
+            {
+              jsonrpc: '2.0',
+              method: 'notifications/initialized',
+              params: {},
+            },
+            sessionId,
+            protocolVersion,
+          );
+        }
+
+        const cases = [
+          { args: { latitude: 47.6, longitude: -122.3, radius_km: 50 }, field: 'radius_km' },
+          { args: { latitude: '47.6', longitude: -122.3 }, field: 'latitude' },
+          { args: { longitude: -122.3 }, field: 'latitude' },
+          { args: { latitude: 91, longitude: -122.3 }, field: 'latitude' },
+        ];
+        for (const { args, field } of cases) {
+          const response = await postJsonRpc(
+            server.port,
+            {
+              jsonrpc: '2.0',
+              id: `invalid-${field}`,
+              method: 'tools/call',
+              params: {
+                name: 'nws_find_stations',
+                arguments: args,
+                ...(protocolVersion === '2026-07-28'
+                  ? {
+                      _meta: {
+                        'io.modelcontextprotocol/protocolVersion': protocolVersion,
+                        'io.modelcontextprotocol/clientInfo': { name: 'vitest', version: '1.0.0' },
+                        'io.modelcontextprotocol/clientCapabilities': {},
+                      },
+                    }
+                  : {}),
+              },
+            },
+            sessionId,
+            protocolVersion,
+          );
+          expect(response.statusCode, JSON.stringify(response.body)).toBe(200);
+          expect(response.body).toMatchObject({
+            result: {
+              isError: true,
+              structuredContent: {
+                error: {
+                  code: JsonRpcErrorCode.InvalidParams,
+                  message: expect.stringContaining(field),
+                },
+              },
+              content: expect.arrayContaining([
+                expect.objectContaining({ type: 'text', text: expect.stringContaining(field) }),
+              ]),
+            },
+          });
+        }
+        expect(mockFetch).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    },
+  );
 
   it('advertises strict inputs and the error envelope on tools/list', async () => {
     const mockFetch = vi.fn<typeof fetch>();

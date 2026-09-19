@@ -26,6 +26,9 @@ export const findStationsTool = tool('nws_find_stations', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Coordinates fall outside US National Weather Service coverage',
       recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
+      // Raised by the NWS service layer's /points resolution, which resolves the
+      // hint through `ctx.recoveryFor` — not by a `ctx.fail` in this handler.
+      thrownBy: 'service',
     },
   ],
 
@@ -146,7 +149,7 @@ export const findStationsTool = tool('nws_find_stations', {
       return [
         {
           type: 'text',
-          text: 'No stations found near this location. See the enrichment block above for details.',
+          text: 'No stations found near this location. See the enrichment block below for details.',
         },
       ];
     }

@@ -570,7 +570,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       return [
         {
           type: 'text',
-          text: 'No active alerts matched. See the enrichment block above for filters and recovery guidance.',
+          text: 'No active alerts matched. See the enrichment block below for filters and recovery guidance.',
         },
       ];
     }

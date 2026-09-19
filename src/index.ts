@@ -30,6 +30,12 @@ await createApp({
     getZoneForecastTool,
   ],
   resources: [alertTypesResource],
+  // No tool gates on `ctx.requestInput`, so nothing here needs a session to
+  // round-trip through. Declared in source rather than left to the schema
+  // default (`auto`, which resolves to stateful); `MCP_SESSION_MODE` still
+  // wins when it carries a value, and `.env.example`, the Dockerfile, and the
+  // README environment table all name the same value.
+  sessionMode: 'stateless',
   instructions:
     'Use the nws_* tools for real-time US weather data from the National Weather Service: forecasts, active alerts, current observations, station discovery, forecast office discussions, and zone-level text forecasts. Coverage is the 50 states, US territories, and adjacent marine areas; the API does not geocode, so resolve place names to latitude/longitude before calling. Typical chain: nws_get_forecast → office code for nws_get_office_discussion (AFD for forecaster reasoning), forecastZone for nws_get_zone_forecast (zone text periods), or affectedZones from nws_search_alerts for nws_get_zone_forecast.',
   // Public catalog — serve the full landing page inventory regardless of auth mode.

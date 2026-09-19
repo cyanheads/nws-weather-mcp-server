@@ -18,6 +18,9 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
       when: 'Zone code is not a valid public forecast zone or has no forecast available',
       recovery:
         'Use an affectedZones entry from nws_search_alerts whose type is "forecast" (entries typed "county" or "fire" have no forecast product), the "forecastZone" field from nws_get_forecast, or the "forecastZone" column from nws_find_stations. Zone codes follow the pattern XXZ### (e.g., "WAZ315").',
+      // Raised by the NWS service layer, which resolves the hint through
+      // `ctx.recoveryFor` — not by a `ctx.fail` in this handler.
+      thrownBy: 'service',
     },
   ],
 

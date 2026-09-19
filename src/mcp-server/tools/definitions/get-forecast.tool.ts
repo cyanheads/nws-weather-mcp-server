@@ -46,6 +46,9 @@ export const getForecastTool = tool('nws_get_forecast', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Coordinates fall outside US National Weather Service coverage',
       recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
+      // Raised by the NWS service layer's /points resolution, which resolves the
+      // hint through `ctx.recoveryFor` — not by a `ctx.fail` in this handler.
+      thrownBy: 'service',
     },
   ],
 

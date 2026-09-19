@@ -18,6 +18,9 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
       when: 'Office code is unknown, or a valid office has no current product of the requested type (episodic types like SPS and HWO are commonly empty)',
       recovery:
         'If the office code is valid, retry with product_type "AFD" (near-always available); episodic types are issued only when conditions warrant. If the code may be wrong, find the WFO code in the "office" field of nws_get_forecast output.',
+      // Raised by the NWS service layer, which branches the hint on whether the
+      // office probe resolves — not by a `ctx.fail` in this handler.
+      thrownBy: 'service',
     },
   ],
 

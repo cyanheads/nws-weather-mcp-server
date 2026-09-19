@@ -93,29 +93,41 @@ export const getObservationsTool = tool('nws_get_observations', {
       recovery:
         'Omit station_id to resolve the nearest station from coordinates, or provide a real station ID (e.g., "KSEA"). Use nws_find_stations to discover station IDs.',
     },
+    /**
+     * The four reasons below are raised by the NWS service layer, which resolves
+     * each one's hint through `ctx.recoveryFor`. `thrownBy: 'service'` is
+     * lint-only metadata telling `error-contract-unthrown` to stop looking for a
+     * literal `ctx.fail` in this handler — the two handler-local reasons above
+     * keep being checked. Typing, advertisement, and the wire envelope are
+     * identical either way.
+     */
     {
       reason: 'station_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'Station ID does not exist in the NWS network',
       recovery: 'Use nws_find_stations to discover valid station IDs near a coordinate.',
+      thrownBy: 'service',
     },
     {
       reason: 'no_observations',
       code: JsonRpcErrorCode.NotFound,
       when: 'Station has no recent observations available',
       recovery: 'Try a different station — use nws_find_stations to find alternatives nearby.',
+      thrownBy: 'service',
     },
     {
       reason: 'no_stations_nearby',
       code: JsonRpcErrorCode.NotFound,
       when: 'No observation stations exist near the requested coordinates',
       recovery: 'Try a different location or broaden the search by moving inland.',
+      thrownBy: 'service',
     },
     {
       reason: 'out_of_scope',
       code: JsonRpcErrorCode.ValidationError,
       when: 'Coordinates fall outside US National Weather Service coverage',
       recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
+      thrownBy: 'service',
     },
   ],
 

@@ -6,7 +6,6 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import {
-  JsonRpcErrorCode,
   McpError,
   notFound,
   requestCancelled,
@@ -16,6 +15,7 @@ import {
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import {
+  defaultIsTransient,
   httpErrorFromResponse,
   requestContextService,
   withRetry,
@@ -122,23 +122,23 @@ function parseNwsErrorDetail(text: string): string | null {
   return null;
 }
 
+/**
+ * Narrows the framework's default retry predicate by one case, and defers to it
+ * for everything else.
+ *
+ * `defaultIsTransient` treats any non-`McpError` throw as transient. Every NWS
+ * failure path in this module raises an `McpError`, so a throw that is not one
+ * is a programmer error here and fails fast rather than burning the retry
+ * budget. `TypeError` is the exception: `fetch` raises it for a network-level
+ * failure, which is exactly what a retry is for.
+ *
+ * Composing rather than re-implementing keeps the transient code set and the
+ * `data.retryable: false` opt-out (how a 501 arrives) on the framework's side,
+ * where they cannot drift out of step with it.
+ */
 function isRetryableNwsError(error: unknown): boolean {
-  if (error instanceof TypeError) return true;
-  if (error instanceof McpError) {
-    /**
-     * A 501 arrives as ServiceUnavailable carrying `data.retryable: false` — the
-     * framework's in-band opt-out for a method the upstream will never implement.
-     * Honor it the way `withRetry`'s default predicate does, so replacing that
-     * predicate here does not silently re-enable retries the framework disabled.
-     */
-    if (error.data?.retryable === false) return false;
-    return [
-      JsonRpcErrorCode.ServiceUnavailable,
-      JsonRpcErrorCode.Timeout,
-      JsonRpcErrorCode.RateLimited,
-    ].includes(error.code);
-  }
-  return false;
+  if (!(error instanceof McpError)) return error instanceof TypeError;
+  return defaultIsTransient(error);
 }
 
 async function fetchNwsResponse(url: string, ctx: Context): Promise<Response> {

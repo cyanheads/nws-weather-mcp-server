@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.4](changelog/0.9.x/0.9.4.md) — 2026-09-19
+
+Tool error text now closes with a (reason …) term, argument rejections carry a synthesized recovery hint and tolerate client-added or case-style keys, sessionMode is declared explicitly as stateless, and service-thrown error-contract entries are marked thrownBy: 'service'. mcp-ts-core moves ^0.13.0 to ^0.13.6.
+
 ## [0.9.3](changelog/0.9.x/0.9.3.md) — 2026-09-13
 
 Invalid tool arguments now come back as a structured InvalidParams envelope on both response surfaces, a blank NWS_USER_AGENT from a plugin host falls through to the default instead of the literal placeholder, and the development skill tree moved out of the directory plugin hosts auto-load. mcp-ts-core moves ^0.12.5 to ^0.13.0.

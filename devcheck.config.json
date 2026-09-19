@@ -12,6 +12,7 @@
     ],
     "ignorePatterns": []
   },
+  "lint": {},
   "packaging": {
     "pluginManifests": true
   }

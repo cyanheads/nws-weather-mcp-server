@@ -174,6 +174,19 @@ export function getServerConfig() {
 }
 ```
 
+### Session posture and shutdown
+
+```ts
+await createApp({
+  sessionMode: 'stateless',
+  setup() { initNwsService(); },
+});
+```
+
+`sessionMode` declares the HTTP session posture in `src/` rather than leaving it to a deployment's `MCP_SESSION_MODE`, which still wins whenever it carries a meaningful value (an empty string and an unsubstituted `${…}` placeholder read as unset and fall through to the option). `stateless` is correct here because no tool asks the caller for input mid-handler — add `require: 'stateful'` only if one ever gains a `ctx.requestInput`, so startup fails with a `ConfigurationError` instead of serving a mode a 2025-era client can never answer. Keep `.env.example`, the `Dockerfile`, and the README environment table on the same value.
+
+`teardown(core)` is the `setup()` counterpart — release a watcher, socket, or non-`unref()`'d timer there, after the transport stops and before the logger closes. Unused here: the NWS service holds only an in-process `Map` of cached `/points` metadata, which needs no release.
+
 ---
 
 ## Context
@@ -291,9 +304,9 @@ Available skills:
 | `tool-defs-analysis` | Read-only audit of MCP definition language across the surface — voice, leaks, defaults, recovery hints, output descriptions |
 | `techniques` | Catalog of response/data-shaping techniques — overflow handling, payload shaping, retrieval patterns |
 | `code-simplifier` | Post-session cleanup against `git diff` — modernize syntax, consolidate duplication, align with the codebase |
-| `git-wrapup` | Land working-tree changes as a commit stack — version bump, changelog, verify; opens a release PR only when the project declares release PR mode. No tag. |
-| `release-pr-review` | Review and fix an open release PR; release PR mode only. |
-| `release-and-publish` | Tag + push + npm + MCP Registry + GH Release + Docker. Picks up from `git-wrapup`. |
+| `git-wrapup` | Land working-tree changes as a commit stack — version bump, changelog, verify, commit by concern, release commit on top. No tag, no push to main; opens the release PR when the project declares release PR mode |
+| `release-pr-review` | Review pass on an open release PR — simplifier + correctness review, fixes as ordinary commits on top of the stack, PR body kept in sync. Release PR mode only |
+| `release-and-publish` | Fast-forward merge (release PR mode) + tag + push + npm + MCP Registry + GH Release + Docker. Picks up from `git-wrapup` |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
 | `api-canvas` | DataCanvas: register tabular data, run SQL, export, plus the `spillover()` helper for big result sets — Tier 3 opt-in |
 | `api-config` | AppConfig, parseConfig, env vars |
@@ -369,6 +382,8 @@ Author `changelog/<major.minor>.x/<version>.md` with a concrete version and date
 ---
 
 ## Publishing
+
+**Every release goes through a release PR, straight-through** — `git-wrapup`'s "Release PR mode", mode `straight-through`. One run: `git-wrapup` lands the commit stack on `release/<version>`, pushes it, and opens the PR (title = the release commit subject, body = the changelog entry plus a gates section); `release-and-publish` then fast-forwards `main` locally with `git merge --ff-only`, creates the tag on `main`'s tip, pushes `main` and the tag, deletes the branch, and publishes. A caller's brief may run a given release as `gated` instead — a `release-pr-review` pass on the open PR before `release-and-publish`. **Never merge through the GitHub UI or `gh pr merge`**: squash and rebase-merge are disabled in the repo settings because both rewrite the stack (rebase-merge also strips the SSH signatures), and a merge commit breaks the linear history.
 
 After a version bump and final commit, publish to both npm and GHCR:
 

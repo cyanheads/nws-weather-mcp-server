@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.5](changelog/0.9.x/0.9.5.md) — 2026-09-24
+
+Marine coordinates and zones fail with a declared marine_forecast_unsupported reason, valid zones with no text forecast get zone_forecast_unavailable instead of zone_not_found, and caller-supplied zone, station, and office IDs must be alphanumeric before they reach a request path.
+
 ## [0.9.4](changelog/0.9.x/0.9.4.md) — 2026-09-19
 
 Tool error text now closes with a (reason …) term, argument rejections carry a synthesized recovery hint and tolerate client-added or case-style keys, sessionMode is declared explicitly as stateless, and service-thrown error-contract entries are marked thrownBy: 'service'. mcp-ts-core moves ^0.13.0 to ^0.13.6.

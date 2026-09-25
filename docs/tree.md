@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-09-19 18:41:07
+Generated on: 2026-09-25 04:15:15
 
 ```text
 nws-weather-mcp-server/
@@ -188,6 +188,7 @@ nws-weather-mcp-server/
 │       ├── search-alerts-extended.test.ts
 │       ├── search-alerts.tool.test.ts
 │       ├── security.test.ts
+│       ├── upstream-availability-contract.test.ts
 │       └── zone-forecast-extended.test.ts
 ├── .dockerignore
 ├── .env.example

@@ -50,7 +50,8 @@ Retrieves the weather forecast for a US location. Provide coordinates and get ba
 **Returns:** Location context (city, state, WFO office, time zone, forecast zone, county zone) plus array of forecast periods: `name`, `startTime`, `endTime`, `temperature`, `temperatureUnit`, `windSpeed`, `windDirection`, `shortForecast`, `detailedForecast`, `probabilityOfPrecipitation`. Hourly adds `dewpoint`, `relativeHumidity`.
 
 **Error modes:**
-- Coordinates outside US coverage -> "NWS only covers the US. Provide coordinates within US states, territories, or adjacent marine areas."
+- Coordinates outside US coverage -> `out_of_scope`: "NWS only covers the US. Provide coordinates within US states or territories."
+- Marine coordinates -> `marine_forecast_unsupported` (NotFound). Two upstream shapes: a gridded marine cell whose gridpoint forecast answers 404 with problem type `MarineForecastNotSupported`, and an offshore point beyond the grid whose `/points` answers 200 with `type: "marine"` and every grid URL null — the latter fails without a gridpoint call. `nws_find_stations` returns an empty list and `nws_get_observations` raises `no_stations_nearby` for that gridless shape; a gridded marine cell still serves both.
 - API returns 500 for grid endpoint -> Transient. Retry. The NWS backend occasionally fails on grid lookups.
 
 ---
@@ -167,7 +168,17 @@ Fetches the text-based forecast for a public NWS forecast zone. Returns named pe
 
 **API endpoint:** `GET /zones/forecast/{zone_id}/forecast`
 
-A 404 means an invalid or unsupported zone (county codes `XXC###` are not supported — use the forecast zone code `XXZ###`).
+Failure modes, keyed on the 404 problem-document `type`:
+
+- `InvalidZone`, or no body -> `zone_not_found` (county codes `XXC###` land here — use the forecast zone code `XXZ###`).
+- `MarineForecastNotSupported` -> `marine_forecast_unsupported`. Marine forecast zones (`PZZ`, `ANZ`, `GMZ`, `LMZ`, …) have zone records and appear in marine alerts' `affectedZones` typed `forecast`, but NWS serves no text forecast for them.
+- `NotFound` -> ambiguous: NWS answers this way both for a valid zone with no text product (all `PRZ`/`VIZ` zones, many Alaska zones) and for a made-up zone with an unknown state prefix (`XXZ123`). A single no-retry probe of `GET /zones/forecast/{zone_id}` settles it: 200 -> `zone_forecast_unavailable`, 404 -> `zone_not_found`.
+- A 500 that outlives the retry budget (some Alaska, Guam, and Northern Mariana zones answer 500 `UnexpectedProblem` on every attempt) takes the same probe. A 501, a gateway status (502–504), and every other failure surface unchanged.
+- A probe that fails with anything but 200 or 404 answers nothing about the zone: after a 500 the original ServiceUnavailable stands, after a `NotFound` 404 the probe's own failure surfaces (ServiceUnavailable, RateLimited, Timeout), and a caller disconnect is always RequestCancelled. An outage never reads as a missing zone or a missing product.
+
+A `zone_id` that is not a plain alphanumeric token fails as `zone_not_found` without a request. The same guard covers `station_id` on `nws_get_observations` (`station_not_found`) and `office` on `nws_get_office_discussion` (`no_products`): every NWS zone, station, and office ID is alphanumeric, a `.` or `..` segment resolves onto the parent path even when percent-encoded, and an encoded traversal is refused by the upstream edge.
+
+`zone_forecast_unavailable` (NotFound) names the upstream status and points to `nws_get_forecast` with coordinates inside the zone — point forecasts work where the zone text product is missing. The tool does not substitute one.
 
 **Returns:** `zoneId`, `updated`, `periods` (number, name, detailedForecast).
 
@@ -193,7 +204,7 @@ Static list of all valid NWS alert event type names (111 types). Useful referenc
 | **Auth** | None. User-Agent header required (returns 403 without it). Format: `(app-name, contact@example.com)`. |
 | **Rate limits** | Undisclosed. "Generous for typical use." Retry after ~5s on 503. |
 | **Response format** | GeoJSON (default, via `Accept: application/geo+json`) or JSON-LD. |
-| **Coverage** | US states, territories, and adjacent marine areas only. |
+| **Coverage** | US states, territories, and adjacent marine areas only. Point and zone text forecasts are land-only: marine areas get alerts, and nearshore gridded cells also stations and observations. |
 | **Observation lag** | Station data lags ~20 minutes due to upstream QC (MADIS). |
 | **Grid caching** | `/points` responses (grid cell mapping) change infrequently. Cache for hours. |
 

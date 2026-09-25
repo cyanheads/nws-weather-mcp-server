@@ -45,9 +45,18 @@ export const getForecastTool = tool('nws_get_forecast', {
       reason: 'out_of_scope',
       code: JsonRpcErrorCode.ValidationError,
       when: 'Coordinates fall outside US National Weather Service coverage',
-      recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
+      recovery:
+        'Provide coordinates on land within US states or territories — NWS point forecasts do not cover marine areas.',
       // Raised by the NWS service layer's /points resolution, which resolves the
       // hint through `ctx.recoveryFor` — not by a `ctx.fail` in this handler.
+      thrownBy: 'service',
+    },
+    {
+      reason: 'marine_forecast_unsupported',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Coordinates fall in a marine area, where NWS publishes no point forecast',
+      recovery:
+        'Retry nws_get_forecast with coordinates on nearby land, or use nws_search_alerts (by point, or by the marine zone code in the message) for marine hazards at this location.',
       thrownBy: 'service',
     },
   ],

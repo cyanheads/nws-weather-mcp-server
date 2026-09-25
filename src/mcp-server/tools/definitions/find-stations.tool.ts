@@ -129,7 +129,7 @@ export const findStationsTool = tool('nws_find_stations', {
     });
     if (totalCount === 0) {
       ctx.enrich.notice(
-        `No observation stations found near (${input.latitude}, ${input.longitude}). Try coordinates closer to the US mainland, territories, or adjacent marine areas.`,
+        `No observation stations found near (${input.latitude}, ${input.longitude}). Open waters beyond the NWS forecast grid have no assigned stations — try coordinates on or near the coast of a US state or territory.`,
       );
     } else if (page.nextCursor) {
       ctx.enrich.notice(

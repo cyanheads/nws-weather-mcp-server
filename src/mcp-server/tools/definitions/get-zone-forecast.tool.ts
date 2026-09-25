@@ -9,17 +9,33 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 
 export const getZoneForecastTool = tool('nws_get_zone_forecast', {
   description:
-    'Get the text forecast for a public NWS forecast zone. Returns named forecast periods (e.g., "Today", "Tonight", "Monday") with detailed narrative text — the human-readable, zone-level forecast written by local forecasters. Completes the alert-to-forecast chain: nws_search_alerts returns each affected zone in "affectedZones" as a code plus a type, and nws_find_stations returns codes in the "forecastZone" column. Only affectedZones entries with type "forecast" work here; entries typed "county" or "fire" have no text forecast upstream and will not resolve. Zone codes follow the pattern XXZ### (e.g., "WAZ315" for Western Washington lowlands).',
+    'Get the text forecast for a public NWS forecast zone. Returns named forecast periods (e.g., "Today", "Tonight", "Monday") with detailed narrative text — the human-readable, zone-level forecast written by local forecasters. Completes the alert-to-forecast chain: nws_search_alerts returns each affected zone in "affectedZones" as a code plus a type, and nws_find_stations returns codes in the "forecastZone" column. Only affectedZones entries with type "forecast" work here; entries typed "county" or "fire" have no text forecast upstream and will not resolve, and neither do marine forecast zones (e.g., "PZZ251", "GMZ056"). Zone codes follow the pattern XXZ### (e.g., "WAZ315" for Western Washington lowlands).',
   annotations: { readOnlyHint: true },
+  // Every reason below is raised by the NWS service layer, which resolves the
+  // hint through `ctx.recoveryFor` — not by a `ctx.fail` in this handler.
   errors: [
     {
       reason: 'zone_not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'Zone code is not a valid public forecast zone or has no forecast available',
+      when: 'Zone code is not a valid public forecast zone',
       recovery:
         'Use an affectedZones entry from nws_search_alerts whose type is "forecast" (entries typed "county" or "fire" have no forecast product), the "forecastZone" field from nws_get_forecast, or the "forecastZone" column from nws_find_stations. Zone codes follow the pattern XXZ### (e.g., "WAZ315").',
-      // Raised by the NWS service layer, which resolves the hint through
-      // `ctx.recoveryFor` — not by a `ctx.fail` in this handler.
+      thrownBy: 'service',
+    },
+    {
+      reason: 'zone_forecast_unavailable',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Zone is a valid public forecast zone, but NWS has no text forecast for it',
+      recovery:
+        'Call nws_get_forecast with coordinates inside this zone for its point forecast; NWS serves point forecasts for zones that have no zone text product.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'marine_forecast_unsupported',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Zone is a marine forecast zone, for which NWS publishes no text forecast',
+      recovery:
+        'Use nws_search_alerts with this zone code for marine hazards, or nws_get_forecast with coordinates on nearby land for a land forecast.',
       thrownBy: 'service',
     },
   ],

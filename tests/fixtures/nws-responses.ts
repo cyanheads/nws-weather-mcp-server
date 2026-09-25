@@ -392,3 +392,139 @@ export const stationsResponse = {
     },
   ],
 };
+
+/**
+ * Mock /points for a gridded marine cell (46.2,-124.1, Columbia River bar). NWS
+ * tags the cell `type: "marine"` yet still hands back grid URLs; the gridpoint
+ * forecast then answers 404 `MarineForecastNotSupported`, while stations and
+ * observations keep working.
+ */
+export const griddedMarinePointsResponse = {
+  properties: {
+    type: 'marine',
+    gridId: 'PQR',
+    gridX: 74,
+    gridY: 145,
+    forecast: 'https://api.weather.gov/gridpoints/PQR/74,145/forecast',
+    forecastHourly: 'https://api.weather.gov/gridpoints/PQR/74,145/forecast/hourly',
+    observationStations: 'https://api.weather.gov/gridpoints/PQR/74,145/stations',
+    relativeLocation: {
+      properties: {
+        city: 'Warrenton',
+        state: 'OR',
+      },
+    },
+    timeZone: 'America/Los_Angeles',
+    forecastZone: 'https://api.weather.gov/zones/forecast/PZZ251',
+    county: null,
+  },
+};
+
+/**
+ * Mock /points for an offshore marine point beyond the forecast grid (28,-90, Gulf).
+ * HTTP 200 with every grid field null — there is no gridpoint URL to call.
+ */
+export const gridlessMarinePointsResponse = {
+  properties: {
+    cwa: 'NH2',
+    type: 'marine',
+    gridId: null,
+    gridX: null,
+    gridY: null,
+    forecast: null,
+    forecastHourly: null,
+    forecastGridData: null,
+    observationStations: null,
+    relativeLocation: {
+      properties: {
+        city: 'Grand Isle',
+        state: 'LA',
+      },
+    },
+    forecastZone: 'https://api.weather.gov/zones/forecast/GMZ056',
+    timeZone: 'America/Chicago',
+  },
+};
+
+/** Build an NWS RFC 7807 problem document with the given `type` suffix and status. */
+export function nwsProblem(type: string, status: number, detail: string) {
+  return {
+    type: `https://api.weather.gov/problems/${type}`,
+    title: type,
+    status,
+    detail,
+    instance: 'https://api.weather.gov/requests/0000abcd',
+    correlationId: '0000abcd',
+  };
+}
+
+/** 404 NWS returns for a marine gridpoint or marine zone forecast. */
+export const marineForecastNotSupportedProblem = nwsProblem(
+  'MarineForecastNotSupported',
+  404,
+  'Forecasts for marine areas are not yet supported by this API.',
+);
+
+/** 404 for a zone code with a known state prefix that does not exist (e.g. WAZ999). */
+export const invalidZoneProblem = nwsProblem(
+  'InvalidZone',
+  404,
+  'forecast zone WAZ999 does not exist',
+);
+
+/**
+ * 404 typed `NotFound`. NWS answers both a valid zone with no text product
+ * (PRZ001) and a made-up zone with an unknown prefix (XXZ123) this way, so the
+ * type alone cannot tell them apart.
+ */
+export const notFoundProblem = nwsProblem('NotFound', 404, 'Not Found');
+
+/** 404 for a gridpoint outside the office grid (e.g. PQR/999,999). */
+export const invalidGridpointProblem = nwsProblem(
+  'InvalidGridpoint',
+  404,
+  'Requested gridpoint PQR:999,999 does not exist',
+);
+
+/** 404 /points returns for coordinates outside NWS coverage. */
+export const invalidPointProblem = nwsProblem(
+  'InvalidPoint',
+  404,
+  'Unable to provide data for requested point 51.5,-0.1',
+);
+
+/** 500 NWS returns on every attempt for some valid zones' forecast (e.g. AKZ829). */
+export const unexpectedProblem = nwsProblem(
+  'UnexpectedProblem',
+  500,
+  'An unexpected problem has occurred.',
+);
+
+/** Mock /zones/forecast/{id} zone record — the existence probe's 200 body. */
+export const zoneRecordResponse = {
+  properties: {
+    id: 'AKZ829',
+    type: 'public',
+    name: 'Middle Yukon Valley',
+    state: 'AK',
+  },
+};
+
+/** Mock /zones/forecast/{id}/forecast response. */
+export const zoneForecastResponse = {
+  properties: {
+    updated: '2026-09-24T14:36:00-07:00',
+    periods: [
+      {
+        number: 1,
+        name: 'Today',
+        detailedForecast: 'Mostly cloudy. Highs in the lower 60s.',
+      },
+      {
+        number: 2,
+        name: 'Tonight',
+        detailedForecast: 'Rain likely. Lows in the upper 40s.',
+      },
+    ],
+  },
+};

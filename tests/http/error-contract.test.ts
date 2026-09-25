@@ -9,6 +9,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   duplicateAlertsResponse,
   emptyAlertsResponse,
+  griddedMarinePointsResponse,
+  gridlessMarinePointsResponse,
+  marineForecastNotSupportedProblem,
+  notFoundProblem,
   pointsResponse,
   stationInfoResponse,
 } from '../fixtures/nws-responses.js';
@@ -256,6 +260,7 @@ async function startHttpTestServer(mockFetch: typeof fetch): Promise<TestServer>
     findStationsTool,
     getForecastTool,
     getObservationsTool,
+    getZoneForecastTool,
     listAlertTypesTool,
     searchAlertsTool,
   } = await import('@/mcp-server/tools/definitions/index.js');
@@ -268,6 +273,7 @@ async function startHttpTestServer(mockFetch: typeof fetch): Promise<TestServer>
       getObservationsTool,
       findStationsTool,
       listAlertTypesTool,
+      getZoneForecastTool,
     ],
     resources: [alertTypesResource],
     setup() {
@@ -704,6 +710,155 @@ describe('HTTP JSON-RPC error contracts', () => {
         'Alerts search completed',
       );
       expect(logFrames.every((frame) => frame.params.level === 'info')).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  /** Text of every `content[]` text block, joined — what a format()-only client reads. */
+  function contentText(result: { content: { type: string; text?: string }[] }): string {
+    return result.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text ?? '')
+      .join('\n');
+  }
+
+  it('returns marine_forecast_unsupported on both surfaces for a marine gridpoint over HTTP (issue #38)', async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === 'https://api.weather.gov/points/46.2,-124.1') {
+        return jsonResponse(griddedMarinePointsResponse);
+      }
+      if (url === griddedMarinePointsResponse.properties.forecast) {
+        return jsonResponse(marineForecastNotSupportedProblem, 404);
+      }
+      throw new Error(`Unexpected upstream URL: ${url}`);
+    });
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        {
+          jsonrpc: '2.0',
+          id: 'forecast-marine',
+          method: 'tools/call',
+          params: { name: 'nws_get_forecast', arguments: { latitude: 46.2, longitude: -124.1 } },
+        },
+        sessionId,
+      );
+
+      const result = (response.body as { result: Parameters<typeof contentText>[0] }).result;
+      expect(response.statusCode).toBe(200);
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          error: {
+            code: JsonRpcErrorCode.NotFound,
+            data: {
+              reason: 'marine_forecast_unsupported',
+              recovery: { hint: expect.stringContaining('nws_search_alerts') },
+            },
+          },
+        },
+      });
+      const text = contentText(result);
+      expect(text).toContain('Recovery:');
+      expect(text).toContain('reason marine_forecast_unsupported');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns an empty station list with a notice for a gridless marine point over HTTP (issue #38)', async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === 'https://api.weather.gov/points/28,-90') {
+        return jsonResponse(gridlessMarinePointsResponse);
+      }
+      throw new Error(`Unexpected upstream URL: ${url}`);
+    });
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        {
+          jsonrpc: '2.0',
+          id: 'stations-gridless-marine',
+          method: 'tools/call',
+          params: { name: 'nws_find_stations', arguments: { latitude: 28, longitude: -90 } },
+        },
+        sessionId,
+      );
+
+      const result = (
+        response.body as {
+          result: Parameters<typeof contentText>[0] & {
+            isError?: boolean;
+            structuredContent: { notice: string; stations: unknown[]; totalCount: number };
+          };
+        }
+      ).result;
+      expect(response.statusCode).toBe(200);
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent.stations).toEqual([]);
+      expect(result.structuredContent.totalCount).toBe(0);
+      expect(contentText(result)).toContain(result.structuredContent.notice);
+      expect(mockFetch).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns zone_forecast_unavailable for a valid zone with no text product over HTTP (issue #40)', async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === 'https://api.weather.gov/zones/forecast/PRZ001/forecast') {
+        return jsonResponse(notFoundProblem, 404);
+      }
+      if (url === 'https://api.weather.gov/zones/forecast/PRZ001') {
+        return jsonResponse({ properties: { id: 'PRZ001', name: 'San Juan and Vicinity' } });
+      }
+      throw new Error(`Unexpected upstream URL: ${url}`);
+    });
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        {
+          jsonrpc: '2.0',
+          id: 'zone-forecast-unavailable',
+          method: 'tools/call',
+          params: { name: 'nws_get_zone_forecast', arguments: { zone_id: 'PRZ001' } },
+        },
+        sessionId,
+      );
+
+      const result = (response.body as { result: Parameters<typeof contentText>[0] }).result;
+      expect(response.statusCode).toBe(200);
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          error: {
+            code: JsonRpcErrorCode.NotFound,
+            message: expect.stringContaining('HTTP 404'),
+            data: {
+              reason: 'zone_forecast_unavailable',
+              recovery: { hint: expect.stringContaining('nws_get_forecast') },
+            },
+          },
+        },
+      });
+      const text = contentText(result);
+      expect(text).toContain('Recovery:');
+      expect(text).toContain('reason zone_forecast_unavailable');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     } finally {
       await server.close();
     }

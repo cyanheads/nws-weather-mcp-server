@@ -78,10 +78,54 @@ function pointsCacheKey(lat: number, lon: number): string {
 
 const DEFAULT_NOT_FOUND = 'Requested NWS resource not found.';
 const POINTS_NOT_FOUND =
-  'NWS only covers the US. Provide coordinates within US states, territories, or adjacent marine areas.';
+  'NWS only covers the US. Provide coordinates within US states or territories.';
 const CANCELLED_MESSAGE = 'NWS API request cancelled — the caller disconnected.';
 
-type NotFoundFactory = (message: string) => Error;
+/** Problem type NWS returns (HTTP 404) for any marine gridpoint or marine zone forecast. */
+const MARINE_FORECAST_NOT_SUPPORTED = 'MarineForecastNotSupported';
+
+/**
+ * Every NWS zone, station, and office ID is a plain alphanumeric token. A caller ID
+ * that is not one fails as the tool's not-found reason without a request: a "/" or
+ * "%" would reach another endpoint or be refused by the upstream edge, and a "." or
+ * ".." segment resolves onto the parent path even when percent-encoded.
+ */
+const PATH_ID_PATTERN = /^[A-Za-z0-9]+$/;
+
+/**
+ * Builds the error for a 404. `problemType` is the last segment of the NWS
+ * problem document's `type` URI (e.g. `InvalidZone`), or undefined when the body
+ * carries none — the call site decides which types it can tell apart.
+ */
+type NotFoundFactory = (message: string, problemType: string | undefined) => Error;
+
+/**
+ * The `marine_forecast_unsupported` failure `nws_get_forecast` and
+ * `nws_get_zone_forecast` both declare: NWS serves no point or zone text forecast
+ * for marine areas. The recovery hint comes from the calling tool's contract.
+ */
+function marineForecastUnsupported(
+  message: string,
+  data: Record<string, unknown>,
+  ctx: Context,
+): McpError {
+  return notFound(message, {
+    ...data,
+    reason: 'marine_forecast_unsupported',
+    ...ctx.recoveryFor('marine_forecast_unsupported'),
+  });
+}
+
+/** Last path segment of an NWS problem document's `type` URI, when the body has one. */
+function parseProblemType(text: string): string | undefined {
+  try {
+    const type = (JSON.parse(text) as { type?: unknown } | null)?.type;
+    if (typeof type !== 'string') return;
+    return type.slice(type.lastIndexOf('/') + 1) || undefined;
+  } catch {
+    return;
+  }
+}
 
 /** Return a cleaned message when an NWS field contains useful text. */
 function normalizeNwsMessage(value: unknown): string | null {
@@ -232,7 +276,7 @@ function nwsFetch<T>(
       }
 
       if (response.status === 404) {
-        throw notFoundFactory(notFoundMessage);
+        throw notFoundFactory(notFoundMessage, parseProblemType(text));
       }
 
       // 400 carries an upstream parameter-validation message we want to surface
@@ -321,6 +365,14 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
   const forecastUrl = props.forecast as string | undefined;
   const forecastHourlyUrl = props.forecastHourly as string | undefined;
   const observationStationsUrl = props.observationStations as string | undefined;
+  const forecastZone = extractZoneCode((props.forecastZone as string) ?? '');
+
+  // Offshore waters beyond the grid: a real answer, not a malformed response.
+  if (props.type === 'marine' && !forecastUrl && !forecastHourlyUrl && !observationStationsUrl) {
+    const metadata: PointsMetadata = { kind: 'gridless_marine', forecastZone };
+    pointsCache.set(key, { data: metadata, expires: Date.now() + POINTS_CACHE_TTL_MS });
+    return metadata;
+  }
 
   if (!forecastUrl || !forecastHourlyUrl || !observationStationsUrl) {
     throw serviceUnavailable('NWS /points response missing required URLs', {
@@ -333,6 +385,7 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
   }
 
   const metadata: PointsMetadata = {
+    kind: 'gridded',
     office: props.gridId as string,
     gridX: props.gridX as number,
     gridY: props.gridY as number,
@@ -342,7 +395,7 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
     city: relativeLocation?.city ?? '',
     state: relativeLocation?.state ?? '',
     timeZone: props.timeZone as string,
-    forecastZone: extractZoneCode((props.forecastZone as string) ?? ''),
+    forecastZone,
     county: extractZoneCode((props.county as string) ?? ''),
   };
 
@@ -588,10 +641,24 @@ export class NwsService {
     ctx: Context,
   ): Promise<ForecastResult> {
     const points = await resolvePoints(lat, lon, ctx);
-    const url = hourly ? points.forecastHourlyUrl : points.forecastUrl;
+    const marineUnsupported = () =>
+      marineForecastUnsupported(
+        `Coordinates (${truncateCoord(lat)}, ${truncateCoord(lon)}) are in marine zone ${points.forecastZone}; NWS publishes no point forecast for marine areas.`,
+        { latitude: lat, longitude: lon, forecastZone: points.forecastZone },
+        ctx,
+      );
+    if (points.kind === 'gridless_marine') throw marineUnsupported();
 
+    const url = hourly ? points.forecastHourlyUrl : points.forecastUrl;
     ctx.log.info('Fetching forecast', { url, hourly });
-    const data = await nwsFetch<Record<string, unknown>>(url, ctx);
+    const data = await nwsFetch<Record<string, unknown>>(
+      url,
+      ctx,
+      MAX_RETRIES,
+      DEFAULT_NOT_FOUND,
+      (message, problemType) =>
+        problemType === MARINE_FORECAST_NOT_SUPPORTED ? marineUnsupported() : notFound(message),
+    );
 
     return {
       location: {
@@ -695,17 +762,14 @@ export class NwsService {
           ...ctx.recoveryFor('no_observations'),
         });
 
+      if (!PATH_ID_PATTERN.test(stationId)) throw stationNotFoundFactory(notFoundMsg, undefined);
+      const stationPath = `${BASE_URL}/stations/${stationId}`;
+
       ctx.log.info('Fetching station metadata and latest observation', { stationId });
       const [stationResult, obsResult] = await Promise.allSettled([
+        nwsFetch<Record<string, unknown>>(stationPath, ctx, 0, notFoundMsg, stationNotFoundFactory),
         nwsFetch<Record<string, unknown>>(
-          `${BASE_URL}/stations/${stationId}`,
-          ctx,
-          0,
-          notFoundMsg,
-          stationNotFoundFactory,
-        ),
-        nwsFetch<Record<string, unknown>>(
-          `${BASE_URL}/stations/${stationId}/observations/latest`,
+          `${stationPath}/observations/latest`,
           ctx,
           MAX_RETRIES,
           `Station '${stationId}' has no recent observations.`,
@@ -743,13 +807,12 @@ export class NwsService {
     const lat = params.latitude as number;
     const lon = params.longitude as number;
     const points = await resolvePoints(lat, lon, ctx);
-    ctx.log.info('Resolving nearest station', { url: points.observationStationsUrl });
-    const stationsData = await nwsFetch<Record<string, unknown>>(
-      points.observationStationsUrl,
-      ctx,
-      MAX_RETRIES,
-    );
-    const nearestStation = parseStations(stationsData)
+    // A point beyond the grid has no station list to follow — no stations nearby.
+    const stations =
+      points.kind === 'gridless_marine'
+        ? []
+        : await this.fetchStations(points.observationStationsUrl, ctx);
+    const nearestStation = stations
       .map((station) => ({
         station,
         distance: haversine(lat, lon, station.coordinates[1], station.coordinates[0]),
@@ -795,15 +858,11 @@ export class NwsService {
   /** Find every observation station near coordinates, sorted by proximity. */
   async findStations(lat: number, lon: number, ctx: Context): Promise<FindStationsResult> {
     const points = await resolvePoints(lat, lon, ctx);
+    // A point beyond the grid has no station list to follow: an empty result, not an error.
+    if (points.kind === 'gridless_marine') return { stations: [] };
 
-    ctx.log.info('Fetching stations', { url: points.observationStationsUrl });
-    const data = await nwsFetch<Record<string, unknown>>(
-      points.observationStationsUrl,
-      ctx,
-      MAX_RETRIES,
-    );
-
-    const stations = parseStations(data).map((s) => {
+    const found = await this.fetchStations(points.observationStationsUrl, ctx);
+    const stations = found.map((s) => {
       const dist = haversine(lat, lon, s.coordinates[1], s.coordinates[0]);
       const bear = bearing(lat, lon, s.coordinates[1], s.coordinates[0]);
       return {
@@ -821,6 +880,12 @@ export class NwsService {
     stations.sort((a, b) => a.distance - b.distance);
 
     return { stations };
+  }
+
+  /** Fetch and parse a grid cell's observation-station list. */
+  private async fetchStations(url: string, ctx: Context): Promise<Station[]> {
+    ctx.log.info('Fetching stations', { url });
+    return parseStations(await nwsFetch<Record<string, unknown>>(url, ctx, MAX_RETRIES));
   }
 
   /** List all valid alert event type names. */
@@ -847,6 +912,21 @@ export class NwsService {
     productType: string,
     ctx: Context,
   ): Promise<OfficeDiscussionResult> {
+    const unknownOffice = () =>
+      notFound(
+        `No ${productType} products found for office "${office}". Verify the 3-letter WFO code (e.g., "SEW" for Seattle). The office code is the "office" or "cwa" field returned by nws_get_forecast.`,
+        {
+          office,
+          productType,
+          reason: 'no_products',
+          recovery: {
+            hint: `Use nws_get_forecast with coordinates to find the office code (the "office" field in the location object), then retry with that value.`,
+          },
+        },
+      );
+    // `productType` is already constrained to an enum by the tool schema.
+    if (!PATH_ID_PATTERN.test(office)) throw unknownOffice();
+
     const listUrl = `${BASE_URL}/products/types/${productType}/locations/${office}`;
     ctx.log.info('Fetching product list', { office, productType });
 
@@ -854,30 +934,18 @@ export class NwsService {
     const graph = (listData['@graph'] as ProductListEntry[] | undefined) ?? [];
 
     if (graph.length === 0) {
-      const officeExists = await this.officeExists(office, ctx);
-      throw officeExists
-        ? notFound(
-            `No ${productType} products are currently available for office "${office}". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
-            {
-              office,
-              productType,
-              reason: 'no_products',
-              recovery: {
-                hint: `${productType} products are issued only when conditions warrant. Retry with product_type "AFD" for the always-available forecast discussion.`,
-              },
-            },
-          )
-        : notFound(
-            `No ${productType} products found for office "${office}". Verify the 3-letter WFO code (e.g., "SEW" for Seattle). The office code is the "office" or "cwa" field returned by nws_get_forecast.`,
-            {
-              office,
-              productType,
-              reason: 'no_products',
-              recovery: {
-                hint: `Use nws_get_forecast with coordinates to find the office code (the "office" field in the location object), then retry with that value.`,
-              },
-            },
-          );
+      if (!(await this.recordExists(`${BASE_URL}/offices/${office}`, ctx))) throw unknownOffice();
+      throw notFound(
+        `No ${productType} products are currently available for office "${office}". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
+        {
+          office,
+          productType,
+          reason: 'no_products',
+          recovery: {
+            hint: `${productType} products are issued only when conditions warrant. Retry with product_type "AFD" for the always-available forecast discussion.`,
+          },
+        },
+      );
     }
 
     // graph.length > 0 is checked above; the first item is always present here.
@@ -898,24 +966,20 @@ export class NwsService {
   }
 
   /**
-   * Probe /offices/{officeId} to disambiguate an empty product list: HTTP 200
-   * means the office is valid (just has no current product), 404 means the code
-   * is unknown. Fires only on the empty-@graph error path, so no caching needed.
-   * A non-404 failure (transient outage) re-throws — it must not be misread as
-   * an unknown office.
+   * Probe an NWS record (`/offices/{id}`, `/zones/forecast/{id}`) on an error path
+   * where the failed request cannot tell a valid ID with nothing to serve from an
+   * unknown one: true on HTTP 200, false on 404. A single request with no retries
+   * and no caching. Any other failure re-throws — an outage is not an answer about
+   * the ID.
    */
-  private async officeExists(office: string, ctx: Context): Promise<boolean> {
+  private async recordExists(url: string, ctx: Context): Promise<boolean> {
     try {
-      await nwsFetch<Record<string, unknown>>(
-        `${BASE_URL}/offices/${office}`,
-        ctx,
-        0,
-        DEFAULT_NOT_FOUND,
-        (message) => notFound(message, { probe: 'office-not-found' }),
+      await nwsFetch<Record<string, unknown>>(url, ctx, 0, DEFAULT_NOT_FOUND, (message) =>
+        notFound(message, { probe: 'record-not-found' }),
       );
       return true;
     } catch (error) {
-      if (error instanceof McpError && error.data?.probe === 'office-not-found') {
+      if (error instanceof McpError && error.data?.probe === 'record-not-found') {
         return false;
       }
       throw error;
@@ -924,23 +988,68 @@ export class NwsService {
 
   /** Get the text forecast for a public forecast zone. */
   async getZoneForecast(zoneId: string, ctx: Context): Promise<ZoneForecastResult> {
-    const url = `${BASE_URL}/zones/forecast/${zoneId}/forecast`;
+    // The tool's contract owns every recovery text below; resolving it here keeps
+    // one copy rather than a second that drifts from the first.
+    const zoneNotFound = () =>
+      notFound(
+        `Zone "${zoneId}" is not a public forecast zone. Provide a public forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county and fire zones have no text forecast product.`,
+        { zoneId, reason: 'zone_not_found', ...ctx.recoveryFor('zone_not_found') },
+      );
+    if (!PATH_ID_PATTERN.test(zoneId)) throw zoneNotFound();
+
+    const zonePath = `${BASE_URL}/zones/forecast/${zoneId}`;
     ctx.log.info('Fetching zone forecast', { zoneId });
 
+    /**
+     * NWS types a 404 `NotFound` both for a valid zone with no text product and
+     * for a made-up zone with an unknown prefix, so that answer — like a 500 that
+     * outlives the retry budget, which some valid zones return on every attempt —
+     * is settled by probing the zone record.
+     */
+    let notFoundIsAmbiguous = false;
+
     const data = await nwsFetch<Record<string, unknown>>(
-      url,
+      `${zonePath}/forecast`,
       ctx,
       MAX_RETRIES,
-      `Zone "${zoneId}" not found or has no forecast. Provide a public forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county and fire zones have no text forecast product.`,
-      (message) =>
-        // The tool's zone_not_found contract owns the recovery text; resolving it
-        // here keeps one copy rather than a second that drifts from the first.
-        notFound(message, {
+      DEFAULT_NOT_FOUND,
+      (_message, problemType) => {
+        if (problemType === MARINE_FORECAST_NOT_SUPPORTED) {
+          return marineForecastUnsupported(
+            `Zone "${zoneId}" is a marine zone; NWS publishes no text forecast for marine zones.`,
+            { zoneId },
+            ctx,
+          );
+        }
+        notFoundIsAmbiguous = problemType === 'NotFound';
+        return zoneNotFound();
+      },
+    ).catch(async (error: unknown) => {
+      // Gateway statuses (502-504), 501, and every other failure say nothing about
+      // this zone's product and surface unchanged.
+      let status: 404 | 500;
+      if (notFoundIsAmbiguous) status = 404;
+      else if (error instanceof McpError && error.data?.status === 500) status = 500;
+      else throw error;
+
+      const exists = await this.recordExists(zonePath, ctx).catch((probeError: unknown) => {
+        // An unanswered probe leaves the zone question open: a 500 keeps its own
+        // failure, while a NotFound 404, which claims nothing alone, yields the
+        // probe's. A caller that went away is always a cancellation.
+        throw notFoundIsAmbiguous || ctx.signal.aborted ? probeError : error;
+      });
+      if (!exists) throw zoneNotFound();
+      throw notFound(
+        `Zone "${zoneId}" exists, but NWS has no text forecast for it — the forecast request returned HTTP ${status}.`,
+        {
           zoneId,
-          reason: 'zone_not_found',
-          ...ctx.recoveryFor('zone_not_found'),
-        }),
-    );
+          upstreamStatus: status,
+          reason: 'zone_forecast_unavailable',
+          ...ctx.recoveryFor('zone_forecast_unavailable'),
+        },
+        { cause: error },
+      );
+    });
 
     const props = data.properties as Record<string, unknown>;
     const rawPeriods = (props.periods as Record<string, unknown>[]) ?? [];

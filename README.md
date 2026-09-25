@@ -13,7 +13,7 @@
 
 <div align="center">
 
-[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/nws-weather-mcp-server/releases/latest/download/nws-weather-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=nws-weather-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvbndzLXdlYXRoZXItbWNwLXNlcnZlciJdfQ==) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22nws-weather-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads/nws-weather-mcp-server%22%5D%7D)
+[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/nws-weather-mcp-server/releases/latest/download/nws-weather-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=nws-weather-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvbndzLXdlYXRoZXItbWNwLXNlcnZlciJdfQ==) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22nws-weather-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads%2Fnws-weather-mcp-server%22%5D%7D)
 
 [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-67E8F9?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
@@ -29,7 +29,7 @@
 
 ## Overview
 
-US weather data from the National Weather Service API (`api.weather.gov`). Get forecasts, active alerts, current observations, forecast-office narrative products, and zone-level text forecasts for any coordinate in the 50 states, US territories, and adjacent marine areas. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+US weather data from the National Weather Service API (`api.weather.gov`). Get forecasts, active alerts, current observations, forecast-office narrative products, and zone-level text forecasts for any coordinate in the 50 states and US territories. Adjacent marine areas are covered by alerts, plus stations and observations near the coast; NWS publishes no point or zone text forecast for them. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
@@ -61,6 +61,7 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 - Coordinates resolve to NWS grid internally via `/points`
 - Formatted timestamps use the resolved local time zone
 - Returns forecast zone and county zone codes for chaining into `nws_search_alerts`
+- Marine coordinates fail with a typed `marine_forecast_unsupported` error — NWS publishes no point forecast for marine areas — pointing to a nearby land point or `nws_search_alerts`
 
 ---
 
@@ -115,6 +116,7 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 - Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters
 - Completes the alert-to-forecast chain: look up alert zones, then retrieve zone forecasts
 - County (`XXC###`) and fire zone codes are not supported here — NWS publishes no text forecast for them, though they remain valid values for the `zone` filter on `nws_search_alerts`; an unsupported or unknown zone fails with a typed `zone_not_found` error
+- Marine forecast zones (e.g., `PZZ251`) fail with `marine_forecast_unsupported`; a valid zone NWS publishes no text forecast for fails with `zone_forecast_unavailable`, which points to `nws_get_forecast` for the zone's point forecast
 
 ---
 

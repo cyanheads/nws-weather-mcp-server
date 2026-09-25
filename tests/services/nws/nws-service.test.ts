@@ -12,6 +12,7 @@ import {
   duplicateAlertsResponse,
   emptyAlertsResponse,
   forecastResponse,
+  gridlessMarinePointsResponse,
   observationResponse,
   pointsResponse,
   stationInfoResponse,
@@ -38,6 +39,10 @@ describe('NwsService', () => {
   beforeEach(async () => {
     vi.resetModules();
     mockFetch.mockReset();
+    // A request no test queued a response for fails loudly instead of reaching live NWS.
+    mockFetch.mockImplementation(async (input) => {
+      throw new Error(`Unmocked fetch: ${String(input)}`);
+    });
 
     delete process.env.NWS_USER_AGENT;
     service = await import('@/services/nws/nws-service.js');
@@ -630,6 +635,19 @@ describe('NwsService', () => {
       expect(result.stations).toHaveLength(stationsResponse.features.length);
       const distances = result.stations.map((s) => s.distance);
       expect(distances).toEqual([...distances].sort((a, b) => a - b));
+    });
+
+    it('returns no stations for a gridless marine point, and caches the point (issue #38)', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(gridlessMarinePointsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const first = await service.getNwsService().findStations(28, -90, ctx);
+      const second = await service.getNwsService().findStations(28, -90, ctx);
+
+      expect(first.stations).toEqual([]);
+      expect(second.stations).toEqual([]);
+      // One /points request: no station list to follow, and the answer is cached.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 

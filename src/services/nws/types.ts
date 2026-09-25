@@ -9,8 +9,8 @@ export interface NwsValue {
   readonly value: number | null;
 }
 
-/** Resolved grid point from /points/{lat},{lon}. */
-export interface PointsMetadata {
+/** A /points cell inside the NWS forecast grid, with the URLs that route from it. */
+export interface GriddedPoint {
   readonly city: string;
   readonly county: string;
   readonly forecastHourlyUrl: string;
@@ -18,11 +18,26 @@ export interface PointsMetadata {
   readonly forecastZone: string;
   readonly gridX: number;
   readonly gridY: number;
+  readonly kind: 'gridded';
   readonly observationStationsUrl: string;
   readonly office: string;
   readonly state: string;
   readonly timeZone: string;
 }
+
+/**
+ * An offshore marine point beyond the forecast grid. NWS answers `/points` with
+ * HTTP 200, `type: "marine"`, and every grid field null — there is no forecast
+ * or station URL to follow, only the marine zone the point falls in.
+ */
+export interface GridlessMarinePoint {
+  /** Marine forecast zone code, e.g. `GMZ056`. */
+  readonly forecastZone: string;
+  readonly kind: 'gridless_marine';
+}
+
+/** Resolved /points/{lat},{lon} metadata. */
+export type PointsMetadata = GriddedPoint | GridlessMarinePoint;
 
 /** A single forecast period (shared by standard and hourly). */
 export interface ForecastPeriod {

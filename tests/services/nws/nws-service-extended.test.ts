@@ -69,6 +69,10 @@ describe('NwsService extended', () => {
   beforeEach(async () => {
     vi.resetModules();
     mockFetch.mockReset();
+    // A request no test queued a response for fails loudly instead of reaching live NWS.
+    mockFetch.mockImplementation(async (input) => {
+      throw new Error(`Unmocked fetch: ${String(input)}`);
+    });
 
     origSetTimeout = globalThis.setTimeout;
     vi.stubGlobal('setTimeout', (fn: () => void) => origSetTimeout(fn, 0));

@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-09-25 04:15:15
+Generated on: 2026-09-30 11:16:00
 
 ```text
 nws-weather-mcp-server/
@@ -24,6 +24,7 @@ nws-weather-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
+│   ├── 0.10.x/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
@@ -130,6 +131,7 @@ nws-weather-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
@@ -147,7 +149,9 @@ nws-weather-mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
 │   │       │   ├── find-stations.tool.ts
+│   │       │   ├── get-alert-counts.tool.ts
 │   │       │   ├── get-forecast.tool.ts
+│   │       │   ├── get-observation-history.tool.ts
 │   │       │   ├── get-observations.tool.ts
 │   │       │   ├── get-office-discussion.tool.ts
 │   │       │   ├── get-zone-forecast.tool.ts
@@ -157,6 +161,7 @@ nws-weather-mcp-server/
 │   │       └── format-utils.ts
 │   ├── services/
 │   │   └── nws/
+│   │       ├── interior-point.ts
 │   │       ├── nws-service.ts
 │   │       └── types.ts
 │   └── index.ts
@@ -172,13 +177,16 @@ nws-weather-mcp-server/
 │   │   └── alert-types.resource.test.ts
 │   ├── services/
 │   │   └── nws/
+│   │       ├── interior-point.test.ts
 │   │       ├── nws-service-extended.test.ts
 │   │       └── nws-service.test.ts
 │   └── tools/
 │       ├── count-vocabulary.test.ts
 │       ├── find-stations.tool.test.ts
 │       ├── format-utils.test.ts
+│       ├── get-alert-counts.tool.test.ts
 │       ├── get-forecast.tool.test.ts
+│       ├── get-observation-history.tool.test.ts
 │       ├── get-observations.tool.test.ts
 │       ├── get-office-discussion.tool.test.ts
 │       ├── get-zone-forecast.tool.test.ts

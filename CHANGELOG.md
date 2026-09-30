@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-09-30
+
+Adds nws_get_alert_counts and nws_get_observation_history, treats blank optional inputs as unset, and gives gridless land points and open-ocean point failures actionable answers. mcp-ts-core moves ^0.13.6 to ^0.13.10.
+
 ## [0.9.5](changelog/0.9.x/0.9.5.md) — 2026-09-24
 
 Marine coordinates and zones fail with a declared marine_forecast_unsupported reason, valid zones with no text forecast get zone_forecast_unavailable instead of zone_not_found, and caller-supplied zone, station, and office IDs must be alphanumeric before they reach a request path.

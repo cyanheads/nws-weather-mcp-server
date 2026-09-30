@@ -6,7 +6,7 @@
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AlertSearchResult } from '@/services/nws/nws-service.js';
@@ -231,18 +231,19 @@ describe('nws_search_alerts extended', () => {
     it('rejects a malformed zone before the upstream call', async () => {
       // "not-a-zone" used to reach /alerts/active and return NWS's raw parameter
       // regex to the caller with no server-owned reason or recovery hint.
-      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
-      const input = searchAlertsTool.input.parse({ zone: 'not-a-zone' });
-      const result = searchAlertsTool.handler(input, ctx);
+      const result = await runToolContract(searchAlertsTool, { zone: 'not-a-zone' });
 
-      await expect(result).rejects.toMatchObject({
-        code: JsonRpcErrorCode.ValidationError,
-        data: {
-          reason: 'invalid_zone',
-          recovery: { hint: expect.stringContaining('WAZ558') },
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message: expect.stringContaining('Invalid zone'),
+          data: {
+            reason: 'invalid_zone',
+            recovery: { hint: expect.stringContaining('WAZ558') },
+          },
         },
       });
-      await expect(result).rejects.toThrow('Invalid zone');
       expect(mockSearchAlerts).not.toHaveBeenCalled();
     });
 
@@ -314,59 +315,97 @@ describe('nws_search_alerts extended', () => {
     });
   });
 
-  describe('provided-but-empty filters (issue #30)', () => {
+  describe('blank optional filters (issues #30, #46)', () => {
+    /** Text of every content block — what a format()-only client reads. */
+    const textOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content.map((block) => ('text' in block ? block.text : '')).join('\n');
+
     it.each([
       ['area', { area: '   ' }],
       ['point', { point: '' }],
       ['zone', { zone: '   ' }],
-    ] as const)('rejects a blank %s rather than running a national search', async (field, args) => {
-      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
-      const input = searchAlertsTool.input.parse(args);
-      const result = searchAlertsTool.handler(input, ctx);
+    ] as const)('treats a blank %s as unset, running the national search', async (field, args) => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      await expect(result).rejects.toMatchObject({
-        code: JsonRpcErrorCode.ValidationError,
-        data: {
-          reason: 'blank_location_filter',
-          recovery: { hint: expect.stringContaining('Omit') },
-        },
-      });
-      await expect(result).rejects.toThrow(field);
-      expect(mockSearchAlerts).not.toHaveBeenCalled();
+      const result = await runToolContract(searchAlertsTool, args);
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({ appliedFilters: 'national (no filters)' });
+      expect(textOf(result)).toContain('**Filters:** national (no filters)');
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ [field]: undefined }),
+        expect.anything(),
+      );
     });
 
-    it.each(['event', 'severity', 'urgency', 'certainty'] as const)(
-      'rejects an explicitly empty %s array',
+    it.each(['event', 'severity', 'urgency', 'certainty', 'region'] as const)(
+      'treats an explicitly empty %s array as unset',
       async (field) => {
-        const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
-        const input = searchAlertsTool.input.parse({ [field]: [] });
-        const result = searchAlertsTool.handler(input, ctx);
+        mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-        await expect(result).rejects.toMatchObject({
-          code: JsonRpcErrorCode.ValidationError,
-          data: {
-            reason: 'empty_filter_array',
-            recovery: { hint: expect.stringContaining('Omit') },
-          },
-        });
-        await expect(result).rejects.toThrow(field);
-        expect(mockSearchAlerts).not.toHaveBeenCalled();
+        const result = await runToolContract(searchAlertsTool, { [field]: [] });
+
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent).toMatchObject({ appliedFilters: 'national (no filters)' });
+        expect(textOf(result)).toContain('**Filters:** national (no filters)');
+        expect(mockSearchAlerts).toHaveBeenCalledWith(
+          expect.objectContaining({ [field]: undefined }),
+          expect.anything(),
+        );
       },
     );
 
-    it('rejects an event array whose only entry is blank', async () => {
-      // ["   "] used to survive the non-empty check, so appliedFilters echoed
-      // `event=   ` for a term the service then discarded, matching every event.
-      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
-      const input = searchAlertsTool.input.parse({ event: ['   '] });
-      const result = searchAlertsTool.handler(input, ctx);
+    it('treats an event array whose entries are all blank as unset', async () => {
+      // A blank term filters nothing, so the array carries no filter at all and
+      // the echo never shows `event=` for a term that was not applied.
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
 
-      await expect(result).rejects.toMatchObject({
-        code: JsonRpcErrorCode.ValidationError,
-        data: { reason: 'empty_filter_array' },
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({ event: ['   ', ''] });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ event: undefined }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toBe('national (no filters)');
+    });
+
+    it('drops every blank at once, keeping the real filters beside them', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
+      const input = searchAlertsTool.input.parse({
+        area: 'wa',
+        point: ' ',
+        zone: '',
+        region_type: '',
+        region: [],
+        event: [''],
+        severity: ['Severe'],
+        urgency: [],
+        certainty: [],
+        status: '',
       });
-      await expect(result).rejects.toThrow('blank');
-      expect(mockSearchAlerts).not.toHaveBeenCalled();
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        {
+          area: 'WA',
+          point: undefined,
+          zone: undefined,
+          region_type: undefined,
+          region: undefined,
+          event: undefined,
+          severity: ['Severe'],
+          urgency: undefined,
+          certainty: undefined,
+          status: 'Actual',
+          limit: 25,
+        },
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toBe('area=WA, severity=Severe');
     });
 
     it('keeps an event array with at least one real entry, dropping the blank terms from the echo', async () => {
@@ -418,12 +457,17 @@ describe('nws_search_alerts extended', () => {
       expect(mockSearchAlerts).toHaveBeenCalledWith(expect.objectContaining({ area: 'WA' }), ctx);
     });
 
-    it('reports a blank point as a blank filter, not a malformed point', async () => {
+    it('treats a whitespace-only point as unset, not as a malformed point', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
       const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ point: '   ' });
-      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
-        data: { reason: 'blank_location_filter' },
-      });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ point: undefined }),
+        ctx,
+      );
     });
 
     it('still reports a malformed non-blank point as invalid_point', async () => {
@@ -434,20 +478,44 @@ describe('nws_search_alerts extended', () => {
       });
     });
 
-    it('reports a blank zone as a blank filter, not an invalid zone shape', async () => {
+    it('treats a blank zone as unset, not as an invalid zone shape', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
       const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ zone: '' });
-      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
-        data: { reason: 'blank_location_filter' },
-      });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ zone: undefined }),
+        ctx,
+      );
     });
 
-    it('reports a blank area as a blank filter, not an invalid area code', async () => {
+    it('treats a blank area as unset, not as an invalid area code', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
       const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ area: '' });
-      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
-        data: { reason: 'blank_location_filter' },
-      });
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ area: undefined }),
+        ctx,
+      );
+    });
+
+    it('still rejects a real non-blank value that fails its check', async () => {
+      const cases = [
+        [{ area: 'ZZ' }, 'invalid_area_code'],
+        [{ point: '47.6,' }, 'invalid_point'],
+        [{ zone: 'WAX123' }, 'invalid_zone'],
+        [{ area: 'WA', zone: 'WAZ558', point: '' }, 'mutually_exclusive_filters'],
+      ] as const;
+      for (const [args, reason] of cases) {
+        const result = await runToolContract(searchAlertsTool, args);
+        expect(result.structuredContent, reason).toMatchObject({ error: { data: { reason } } });
+      }
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
     });
   });
 
@@ -502,46 +570,55 @@ describe('nws_search_alerts extended', () => {
       expect(mockSearchAlerts).not.toHaveBeenCalled();
     });
 
-    it('rejects an explicitly empty region array before the upstream call', async () => {
-      // `?region=` returns NWS's raw enumeration error; the empty array must be
-      // caught locally under the declared reason instead.
+    it('keeps an explicitly empty region array off the service call', async () => {
+      // `?region=` returns NWS's raw enumeration error, so the empty array is
+      // reduced to unset rather than forwarded.
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
       const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ region: [] });
-      const result = searchAlertsTool.handler(input, ctx);
+      await searchAlertsTool.handler(input, ctx);
 
-      await expect(result).rejects.toMatchObject({
-        code: JsonRpcErrorCode.ValidationError,
-        data: {
-          reason: 'empty_filter_array',
-          recovery: { hint: expect.stringContaining('Omit') },
-        },
-      });
-      await expect(result).rejects.toThrow('region');
-      expect(mockSearchAlerts).not.toHaveBeenCalled();
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ region: undefined }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toBe('national (no filters)');
     });
 
-    it('reports an empty region as its own problem rather than as a mutex conflict', async () => {
-      // Ordering pinned by issue #30: the empty-array check runs ahead of the
-      // mutual-exclusion check, so the caller learns which filter is unusable.
+    it('lets an empty region sit beside area without a mutex conflict', async () => {
+      // The empty region is unset, so area is the only location filter applied.
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
       const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
       const input = searchAlertsTool.input.parse({ region: [], area: 'WA' });
-      await expect(searchAlertsTool.handler(input, ctx)).rejects.toMatchObject({
-        data: { reason: 'empty_filter_array' },
-      });
-      expect(mockSearchAlerts).not.toHaveBeenCalled();
+      await searchAlertsTool.handler(input, ctx);
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ area: 'WA', region: undefined }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).appliedFilters).toBe('area=WA');
     });
 
     it('rejects an unknown region_type at the schema, keeping semantic reasons for the handler', () => {
       // A closed set is a type constraint: bad literals fail as -32602 at the
       // transport, the same way a bad severity literal already does.
       expect(() => searchAlertsTool.input.parse({ region_type: 'land' })).toThrow();
-      expect(() => searchAlertsTool.input.parse({ region_type: '' })).toThrow();
       expect(() => searchAlertsTool.input.parse({ region: ['ZZ'] })).toThrow();
+      expect(() => searchAlertsTool.input.parse({ status: 'actual' })).toThrow();
     });
 
-    it('advertises region without a minimum item count so the handler owns the empty case', () => {
+    it('maps a blank region_type to unset and a blank status to its default at the schema', () => {
+      const input = searchAlertsTool.input.parse({ region_type: '', status: '' });
+
+      expect(input.region_type).toBeUndefined();
+      expect(input.status).toBe('Actual');
+    });
+
+    it('advertises region without a minimum item count so an empty array stays unset', () => {
       // A schema-level .min(1) would reject `region: []` at the transport as a
-      // generic -32602, making the declared reason and hint unreachable.
+      // generic -32602 instead of treating it as omitted.
       const schema = z.toJSONSchema(searchAlertsTool.input, { io: 'input' }) as {
         properties: Record<string, Record<string, unknown>>;
       };

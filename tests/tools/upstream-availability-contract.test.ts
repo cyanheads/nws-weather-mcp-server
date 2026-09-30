@@ -1,9 +1,11 @@
 /**
  * @fileoverview Wire-contract tests for how upstream availability failures reach
- * callers: marine forecast refusals (issue #38) and valid zones with no text
- * forecast (issue #40). Each case runs the real tool definition and the real NWS
- * service through `runToolContract` over a strict fetch fake, so the 404
- * problem-type read, the retry loop, the zone-record probe, and the error
+ * callers: marine forecast refusals (issue #38), valid zones with no text forecast
+ * and the point inside them (issues #40, #42), open-ocean points that 500 on every
+ * request (issue #45), gridless land points (issue #47), and a nearest station with
+ * no current observation (issue #48). Each case runs the real tool definition and
+ * the real NWS service through `runToolContract` over a strict fetch fake, so the
+ * 404 problem-type read, the retry loop, the zone-record probe, and the error
  * envelope are all exercised — nothing below the tool is mocked.
  * @module tests/tools/upstream-availability-contract
  */
@@ -18,14 +20,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   forecastResponse,
   griddedMarinePointsResponse,
+  gridlessLandPointsResponse,
   gridlessMarinePointsResponse,
   invalidGridpointProblem,
   invalidPointProblem,
   invalidZoneProblem,
   marineForecastNotSupportedProblem,
+  multiPolygonZoneRecordResponse,
   notFoundProblem,
+  nullGeometryZoneRecordResponse,
   observationResponse,
   pointsResponse,
+  polygonZoneRecordResponse,
   stationInfoResponse,
   stationsResponse,
   unexpectedProblem,
@@ -307,6 +313,131 @@ describe('upstream availability contract', () => {
       });
       expect(observations.structuredContent).toMatchObject({ stationId: 'KSEA' });
       expect(textOf(observations)).toContain('KSEA');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #47 — land points NWS serves no forecast grid for
+  // -------------------------------------------------------------------------
+
+  describe('gridless land points', () => {
+    const PAGAN = `${API}/points/18.1072,145.7669`;
+
+    it.each([{ hourly: false }, { hourly: true }])(
+      'fails nws_get_forecast (hourly=$hourly) with no_forecast_grid after one upstream call',
+      async ({ hourly }) => {
+        http.route(route(PAGAN, gridlessLandPointsResponse));
+
+        const { error, text } = errorOf(
+          await runToolContract(tools.getForecastTool, {
+            latitude: 18.1072,
+            longitude: 145.7669,
+            hourly,
+          }),
+        );
+        const hint = contractRecovery(tools.getForecastTool, 'no_forecast_grid');
+
+        expect(error.code).toBe(JsonRpcErrorCode.NotFound);
+        expect(error.data?.reason).toBe('no_forecast_grid');
+        expect(hint).toBeDefined();
+        expect(error.data?.recovery?.hint).toBe(hint);
+        expect(error.data).toMatchObject({
+          latitude: 18.1072,
+          longitude: 145.7669,
+          forecastZone: 'MPZ006',
+        });
+        expect(error.message).toContain('(18.1072, 145.7669)');
+        expect(error.message).toContain('MPZ006');
+        expect(text).toContain(`Recovery: ${hint}`);
+        expect(text).toContain('reason no_forecast_grid');
+        expect(http.calls).toHaveLength(1);
+      },
+    );
+
+    it('declares no_forecast_grid as a service-thrown NotFound at notice severity, routed to nws_search_alerts', () => {
+      const entry = tools.getForecastTool.errors?.find((e) => e.reason === 'no_forecast_grid');
+
+      expect(entry).toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        severity: 'notice',
+        thrownBy: 'service',
+      });
+      expect(entry?.recovery).toContain('nws_search_alerts');
+      expect(entry?.recovery).toMatch(/zone/);
+    });
+
+    it('caches the gridless land point, so a repeat call makes no request', async () => {
+      http.route(route(PAGAN, gridlessLandPointsResponse));
+
+      await runToolContract(tools.getForecastTool, { latitude: 18.1072, longitude: 145.7669 });
+      const { error } = errorOf(
+        await runToolContract(tools.getForecastTool, { latitude: 18.1072, longitude: 145.7669 }),
+      );
+
+      expect(error.data?.reason).toBe('no_forecast_grid');
+      expect(http.calls).toHaveLength(1);
+    });
+
+    it('gives nws_find_stations the gridless empty list and no-stations notice', async () => {
+      http.route(route(PAGAN, gridlessLandPointsResponse));
+
+      const result = await runToolContract(tools.findStationsTool, {
+        latitude: 18.1072,
+        longitude: 145.7669,
+      });
+      const structured = result.structuredContent as {
+        notice?: string;
+        shown: number;
+        stations: unknown[];
+        totalCount: number;
+      };
+
+      expect(structured.stations).toEqual([]);
+      expect(structured.totalCount).toBe(0);
+      expect(structured.shown).toBe(0);
+      expect(structured.notice).toContain('No observation stations found');
+      expect(textOf(result)).toContain(structured.notice!);
+      expect(http.calls).toHaveLength(1);
+    });
+
+    it('gives nws_get_observations no_stations_nearby', async () => {
+      http.route(route(PAGAN, gridlessLandPointsResponse));
+
+      const { error, text } = errorOf(
+        await runToolContract(tools.getObservationsTool, {
+          latitude: 18.1072,
+          longitude: 145.7669,
+        }),
+      );
+
+      expect(error.code).toBe(JsonRpcErrorCode.NotFound);
+      expect(error.data?.reason).toBe('no_stations_nearby');
+      expect(error.data?.recovery?.hint).toBe(
+        contractRecovery(tools.getObservationsTool, 'no_stations_nearby'),
+      );
+      expect(text).toContain('Recovery:');
+      expect(http.calls).toHaveLength(1);
+    });
+
+    it.each([
+      { label: 'forecast', missing: { forecast: null } },
+      { label: 'forecastHourly', missing: { forecastHourly: null } },
+      { label: 'observationStations', missing: { observationStations: null } },
+      { label: 'forecast and forecastHourly', missing: { forecast: null, forecastHourly: null } },
+    ])('keeps ServiceUnavailable for a land /points missing only $label', async ({ missing }) => {
+      http.route(
+        route(`${API}/points/47.6,-122.3`, {
+          properties: { ...pointsResponse.properties, type: 'land', ...missing },
+        }),
+      );
+
+      const { error } = errorOf(
+        await runToolContract(tools.getForecastTool, { latitude: 47.6, longitude: -122.3 }),
+      );
+
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error.message).toContain('missing required URLs');
+      expect(error.data?.reason).toBeUndefined();
     });
   });
 
@@ -652,6 +783,102 @@ describe('upstream availability contract', () => {
       const entry = tools.getZoneForecastTool.errors?.find((e) => e.reason === 'zone_not_found');
       expect(entry?.when).not.toMatch(/no forecast/i);
     });
+
+    // #42 — a point inside the zone, from the probed record's geometry
+
+    it('carries a point inside the zone from the record’s Polygon after an exhausted 500 (AKZ829)', async () => {
+      http.route(
+        route(forecastUrl('AKZ829'), unexpectedProblem, 500),
+        route(recordUrl('AKZ829'), polygonZoneRecordResponse),
+      );
+
+      const { error, text } = errorOf(
+        await runToolContract(tools.getZoneForecastTool, { zone_id: 'akz829' }),
+      );
+      const hint = error.data?.recovery?.hint;
+
+      expect(error.code).toBe(JsonRpcErrorCode.NotFound);
+      expect(error.data?.reason).toBe('zone_forecast_unavailable');
+      expect(error.data).toMatchObject({
+        zoneId: 'AKZ829',
+        upstreamStatus: 500,
+        latitude: 64.514,
+        longitude: -157.1651,
+      });
+      expect(error.message).toContain('HTTP 500');
+      expect(error.message).toContain('(64.514, -157.1651)');
+      expect(hint).toContain('nws_get_forecast');
+      expect(hint).toContain('latitude 64.514');
+      expect(hint).toContain('longitude -157.1651');
+      expect(hint).not.toBe(
+        contractRecovery(tools.getZoneForecastTool, 'zone_forecast_unavailable'),
+      );
+      expect(text).toContain(`Recovery: ${hint}`);
+      expect(text).toContain('reason zone_forecast_unavailable');
+      // Request count unchanged: three forecast attempts, then the one probe.
+      expect(http.calls.map((c) => c.request.url)).toEqual([
+        forecastUrl('AKZ829'),
+        forecastUrl('AKZ829'),
+        forecastUrl('AKZ829'),
+        recordUrl('AKZ829'),
+      ]);
+    });
+
+    it('carries a point inside a MultiPolygon zone whose centroid lies outside it (PRZ001 404)', async () => {
+      http.route(
+        route(forecastUrl('PRZ001'), notFoundProblem, 404),
+        route(recordUrl('PRZ001'), multiPolygonZoneRecordResponse),
+      );
+
+      const { error, text } = errorOf(
+        await runToolContract(tools.getZoneForecastTool, { zone_id: 'PRZ001' }),
+      );
+
+      expect(error.data?.reason).toBe('zone_forecast_unavailable');
+      expect(error.data).toMatchObject({ upstreamStatus: 404, latitude: 66, longitude: -159 });
+      expect(error.message).toContain('(66, -159)');
+      expect(error.data?.recovery?.hint).toContain('latitude 66 and longitude -159');
+      expect(text).toContain(`Recovery: ${error.data?.recovery?.hint}`);
+      expect(http.calls.map((c) => c.request.url)).toEqual([
+        forecastUrl('PRZ001'),
+        recordUrl('PRZ001'),
+      ]);
+    });
+
+    it.each([
+      { label: 'geometry: null', record: nullGeometryZoneRecordResponse },
+      { label: 'no geometry field', record: zoneRecordResponse },
+      {
+        label: 'an unusable geometry',
+        record: { ...zoneRecordResponse, geometry: { type: 'Point', coordinates: [-150, 64] } },
+      },
+    ])(
+      'omits the point and keeps the contract recovery for a record with $label',
+      async ({ record }) => {
+        http.route(
+          route(forecastUrl('AKZ829'), unexpectedProblem, 500),
+          route(recordUrl('AKZ829'), record),
+        );
+
+        const { error, text } = errorOf(
+          await runToolContract(tools.getZoneForecastTool, { zone_id: 'AKZ829' }),
+        );
+        const hint = contractRecovery(tools.getZoneForecastTool, 'zone_forecast_unavailable');
+
+        expect(error.data?.reason).toBe('zone_forecast_unavailable');
+        expect(error.data).not.toHaveProperty('latitude');
+        expect(error.data).not.toHaveProperty('longitude');
+        expect(error.data?.recovery?.hint).toBe(hint);
+        expect(text).toContain(`Recovery: ${hint}`);
+      },
+    );
+
+    it('says a point forecast is usually, not always, available', () => {
+      const recovery = contractRecovery(tools.getZoneForecastTool, 'zone_forecast_unavailable');
+
+      expect(recovery).toMatch(/usually/);
+      expect(recovery).not.toMatch(/NWS serves point forecasts for zones/);
+    });
   });
 
   describe('exhausted 5xx on other tools stays the baseline ServiceUnavailable', () => {
@@ -683,20 +910,227 @@ describe('upstream availability contract', () => {
         run: (t: Tools) => runToolContract(t.searchAlertsTool, { area: 'WA' }),
         routes: [
           {
-            match: (request: Request) => request.url.startsWith(`${API}/alerts/active`),
+            match: (request: Request) => {
+              const url = new URL(request.url);
+              return url.origin === API && url.pathname.startsWith('/alerts/active');
+            },
             respond: () => json(unexpectedProblem, 500),
           },
+        ],
+      },
+      {
+        name: 'nws_search_alerts (no filter)',
+        run: (t: Tools) => runToolContract(t.searchAlertsTool, {}),
+        routes: [
+          {
+            match: (request: Request) => new URL(request.url).pathname === '/alerts/active',
+            respond: () => json(unexpectedProblem, 500),
+          },
+        ],
+      },
+      {
+        name: 'nws_find_stations (station list)',
+        run: (t: Tools) =>
+          runToolContract(t.findStationsTool, { latitude: 47.6, longitude: -122.3 }),
+        routes: [
+          route(`${API}/points/47.6,-122.3`, pointsResponse),
+          route(pointsResponse.properties.observationStations, unexpectedProblem, 500),
+        ],
+      },
+      {
+        name: 'nws_get_observations (coordinates, observation URL)',
+        run: (t: Tools) =>
+          runToolContract(t.getObservationsTool, { latitude: 47.6, longitude: -122.3 }),
+        routes: [
+          route(`${API}/points/47.6,-122.3`, pointsResponse),
+          route(pointsResponse.properties.observationStations, stationsResponse),
+          route(`${API}/stations/KBFI/observations/latest`, unexpectedProblem, 500),
         ],
       },
     ])('$name', async ({ run, routes }) => {
       http.route(...routes);
 
-      const { error } = errorOf(await run(tools));
+      const { error, text } = errorOf(await run(tools));
 
       expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
       expect(error.data?.reason).toBeUndefined();
-      expect(error.message).toContain('failed after 3 attempts');
+      expect(error.data?.recovery).toBeUndefined();
+      expect(error.data?.status).toBe(500);
+      expect(error.data?.retryAttempts).toBe(3);
+      expect(error.message).toBe('NWS returned HTTP 500. (failed after 3 attempts)');
+      expect(text).not.toContain('Recovery:');
       expect(backoffDelays).toEqual([2000, 4000]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #45 — /points 5xx outcomes other than an exhausted 500
+  // -------------------------------------------------------------------------
+
+  describe('/points 5xx other than an exhausted 500', () => {
+    const pointsUrl = `${API}/points/47.6,-122.3`;
+
+    it('returns the forecast when a /points 500 is followed by a 200', async () => {
+      http.route(
+        { match: pointsUrl, once: true, respond: () => json(unexpectedProblem, 500) },
+        route(pointsUrl, pointsResponse),
+        route(pointsResponse.properties.forecast, forecastResponse),
+      );
+
+      const result = await runToolContract(tools.getForecastTool, {
+        latitude: 47.6,
+        longitude: -122.3,
+      });
+
+      expect(result.structuredContent).toMatchObject({ location: { city: 'Seattle' } });
+      expect(textOf(result)).toContain('Forecast for Seattle, WA');
+      expect(http.calls.map((c) => c.request.url)).toEqual([
+        pointsUrl,
+        pointsUrl,
+        pointsResponse.properties.forecast,
+      ]);
+      expect(backoffDelays).toEqual([2000]);
+    });
+
+    const exhausted = ' (failed after 3 attempts)';
+    it.each([
+      { status: 501, attempts: 1, suffix: '', code: JsonRpcErrorCode.ServiceUnavailable },
+      { status: 502, attempts: 3, suffix: exhausted, code: JsonRpcErrorCode.ServiceUnavailable },
+      { status: 503, attempts: 3, suffix: exhausted, code: JsonRpcErrorCode.ServiceUnavailable },
+      { status: 504, attempts: 3, suffix: exhausted, code: JsonRpcErrorCode.Timeout },
+    ])('surfaces a /points $status unchanged', async ({ status, attempts, suffix, code }) => {
+      http.route({ match: pointsUrl, respond: () => new Response('', { status }) });
+
+      const { error, text } = errorOf(
+        await runToolContract(tools.getForecastTool, { latitude: 47.6, longitude: -122.3 }),
+      );
+
+      expect(error.code).toBe(code);
+      expect(error.data?.status).toBe(status);
+      expect(error.data?.reason).toBeUndefined();
+      expect(error.data?.recovery).toBeUndefined();
+      expect(error.message).toBe(`NWS returned HTTP ${status}.${suffix}`);
+      expect(text).not.toContain('Recovery:');
+      expect(http.calls.map((c) => c.request.url)).toEqual(Array(attempts).fill(pointsUrl));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #45 — a 500 on every request at some open-ocean points
+  // -------------------------------------------------------------------------
+
+  describe('an exhausted 500 on a point-keyed request', () => {
+    it.each([
+      {
+        name: 'nws_get_forecast',
+        run: (t: Tools, latitude: number, longitude: number) =>
+          runToolContract(t.getForecastTool, { latitude, longitude }),
+      },
+      {
+        name: 'nws_find_stations',
+        run: (t: Tools, latitude: number, longitude: number) =>
+          runToolContract(t.findStationsTool, { latitude, longitude }),
+      },
+      {
+        name: 'nws_get_observations',
+        run: (t: Tools, latitude: number, longitude: number) =>
+          runToolContract(t.getObservationsTool, { latitude, longitude }),
+      },
+    ])('$name names the /points coordinates and gives both readings', async ({ run }) => {
+      const pointsUrl = `${API}/points/25,-70`;
+      http.route(route(pointsUrl, unexpectedProblem, 500));
+
+      const { error, text } = errorOf(await run(tools, 25, -70));
+      const hint = error.data?.recovery?.hint;
+
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error.data?.reason).toBeUndefined();
+      expect(error.data).toMatchObject({ status: 500, url: pointsUrl, retryAttempts: 3 });
+      expect(error.message).toContain('(25, -70)');
+      expect(error.message).toContain('failed after 3 attempts');
+      expect(hint).toMatch(/open-ocean points/);
+      expect(hint).toMatch(/move it toward the US coast/);
+      expect(hint).toMatch(/on land.*later retry may succeed/);
+      expect(text).toContain(`Recovery: ${hint}`);
+      // Same budget as any 500: three attempts, 2 s then 4 s, and nothing extra.
+      expect(http.calls.map((c) => c.request.url)).toEqual(Array(3).fill(pointsUrl));
+      expect(backoffDelays).toEqual([2000, 4000]);
+    });
+
+    it('names the truncated coordinates it requested', async () => {
+      const pointsUrl = `${API}/points/25.1234,-70.9876`;
+      http.route(route(pointsUrl, unexpectedProblem, 500));
+
+      const { error } = errorOf(
+        await runToolContract(tools.getForecastTool, {
+          latitude: 25.123456,
+          longitude: -70.987654,
+        }),
+      );
+
+      expect(error.message).toContain('(25.1234, -70.9876)');
+      expect(error.data?.url).toBe(pointsUrl);
+    });
+
+    it('nws_search_alerts names the point and routes a point at sea to a marine filter', async () => {
+      http.route({
+        match: (request: Request) => {
+          const url = new URL(request.url);
+          return url.pathname === '/alerts/active' && url.searchParams.get('point') === '25,-70';
+        },
+        respond: () => json(unexpectedProblem, 500),
+      });
+
+      const { error, text } = errorOf(
+        await runToolContract(tools.searchAlertsTool, { point: '25,-70' }),
+      );
+      const hint = error.data?.recovery?.hint;
+
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error.data?.reason).toBeUndefined();
+      expect(error.data).toMatchObject({ status: 500, retryAttempts: 3 });
+      expect(error.data?.url).toContain('point=25%2C-70');
+      expect(error.message).toContain('"25,-70"');
+      expect(error.message).toContain('failed after 3 attempts');
+      expect(hint).toMatch(/open-ocean points/);
+      expect(hint).toMatch(/region "AT"/);
+      expect(hint).toMatch(/marine area or zone/);
+      expect(hint).toMatch(/on land.*later retry may succeed/);
+      expect(text).toContain(`Recovery: ${hint}`);
+      expect(http.calls).toHaveLength(3);
+      expect(backoffDelays).toEqual([2000, 4000]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #48 — no current observation at a coordinate's nearest station
+  // -------------------------------------------------------------------------
+
+  describe('nws_get_observations with no current observation at the nearest station', () => {
+    it('reads a 404 on observations/latest as no_observations on both paths', async () => {
+      http.route(
+        route(`${API}/points/47.6,-122.3`, pointsResponse),
+        route(pointsResponse.properties.observationStations, stationsResponse),
+        route(`${API}/stations/KBFI`, stationInfoResponse),
+        route(`${API}/stations/KBFI/observations/latest`, notFoundProblem, 404),
+      );
+      const hint = contractRecovery(tools.getObservationsTool, 'no_observations');
+
+      const byCoordinates = errorOf(
+        await runToolContract(tools.getObservationsTool, { latitude: 47.6, longitude: -122.3 }),
+      );
+      const byStation = errorOf(
+        await runToolContract(tools.getObservationsTool, { station_id: 'KBFI' }),
+      );
+
+      for (const { error, text } of [byCoordinates, byStation]) {
+        expect(error.code).toBe(JsonRpcErrorCode.NotFound);
+        expect(error.data?.reason).toBe('no_observations');
+        expect(error.data?.stationId).toBe('KBFI');
+        expect(error.message).toBe("Station 'KBFI' has no recent observations.");
+        expect(error.data?.recovery?.hint).toBe(hint);
+        expect(text).toContain(`Recovery: ${hint}`);
+      }
     });
   });
 

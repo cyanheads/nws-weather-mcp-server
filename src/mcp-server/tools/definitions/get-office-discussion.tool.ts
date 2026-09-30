@@ -18,6 +18,8 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
       when: 'Office code is unknown, or a valid office has no current product of the requested type (episodic types like SPS and HWO are commonly empty)',
       recovery:
         'If the office code is valid, retry with product_type "AFD" (near-always available); episodic types are issued only when conditions warrant. If the code may be wrong, find the WFO code in the "office" field of nws_get_forecast output.',
+      // An unknown office or no current product is an answer, not a fault.
+      severity: 'notice',
       // Raised by the NWS service layer, which branches the hint on whether the
       // office probe resolves — not by a `ctx.fail` in this handler.
       thrownBy: 'service',
@@ -32,9 +34,13 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
       .describe(
         'Three-letter Weather Forecast Office (WFO) code (e.g., "SEW" for Seattle, "LOX" for Los Angeles). Returned as the "office" field in nws_get_forecast output.',
       ),
+    // A form client's blank "" takes the AFD default instead of failing the enum
+    // (issue #46); the advertised schema is the inner enum's.
     product_type: z
-      .enum(['AFD', 'HWO', 'ZFP', 'SPS'])
-      .default('AFD')
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.enum(['AFD', 'HWO', 'ZFP', 'SPS']).default('AFD'),
+      )
       .describe(
         'Product type code. AFD (Area Forecast Discussion) — meteorological reasoning, model analysis, forecaster confidence. HWO (Hazardous Weather Outlook) — 1-7 day outlook for severe weather, flooding, winter weather. ZFP (Zone Forecast Product) — detailed zone-by-zone text forecast. SPS (Special Weather Statement) — short-fuse advisory for notable non-warning weather.',
       ),

@@ -6,106 +6,54 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
-import { cToF, formatTimestamp } from '../format-utils.js';
+import {
+  formatCloudLayers,
+  formatPressure,
+  formatTemp,
+  formatTimestamp,
+  formatVisibility,
+  formatWind,
+  roundValue,
+} from '../format-utils.js';
 
 /**
- * Round a nullable measurement to the integer precision format() renders, so
- * structuredContent and content[] agree. Upstream ships long floats (e.g.
- * relativeHumidity 23.358035108353); format() shows every metric value via
- * Math.round, so the structured channel matches by rounding here too.
- */
-function roundValue(value: number | null): number | null {
-  return value != null ? Math.round(value) : null;
-}
-
-/** Convert km/h to mph. */
-function kmhToMph(kmh: number): number {
-  return Math.round(kmh * 0.621371);
-}
-
-/** Convert Pascals to inHg. */
-function paToInHg(pa: number): number {
-  return Math.round(pa * 0.0002953 * 100) / 100;
-}
-
-/** Convert meters to miles. */
-function mToMi(m: number): number {
-  return Math.round(m * 0.000621371 * 10) / 10;
-}
-
-/** Convert meters to km. */
-function mToKm(m: number): number {
-  return Math.round(m / 100) / 10;
-}
-
-/** Convert meters to feet. */
-function mToFt(m: number): number {
-  return Math.round(m * 3.28084);
-}
-
-/** Format temperature with both F and C. */
-function formatTemp(value: number | null): string | null {
-  if (value == null) return null;
-  const c = Math.round(value);
-  return `${cToF(value)}°F (${c}°C)`;
-}
-
-/** Format wind speed with both mph and km/h. */
-function formatWind(speed: number | null, direction: number | null, gust: number | null): string {
-  if (speed == null) return 'Not available';
-  if (Math.round(speed) === 0 && gust == null) return 'Calm';
-  const mph = kmhToMph(speed);
-  const kmh = Math.round(speed);
-  const dir = direction != null ? `${Math.round(direction)}°` : '';
-  let result = `${dir} ${mph} mph (${kmh} km/h)`.trim();
-  if (gust != null) {
-    result += `, gusts ${kmhToMph(gust)} mph (${Math.round(gust)} km/h)`;
-  }
-  return result;
-}
-
-/**
- * Trim optional station IDs and reduce blank values to undefined. Presence is read
- * from the raw input before this runs — once collapsed, `undefined` means both
- * "omitted" and "explicitly blank" (issue #34).
+ * Trim an optional station ID. Form-based clients send every optional field they
+ * display, empty ones as "", so a blank or whitespace-only station_id is unset
+ * and the coordinates, when given, resolve the nearest station (issue #46).
  */
 function normalizeStationId(stationId: string | undefined): string | undefined {
-  if (stationId == null) return;
-  const normalized = stationId.trim();
-  return normalized.length > 0 ? normalized : undefined;
+  const normalized = stationId?.trim();
+  return normalized ? normalized : undefined;
 }
 
 export const getObservationsTool = tool('nws_get_observations', {
   description:
     'Get current weather observations (actual measured conditions). Accepts coordinates (resolves nearest station automatically) or a station ID directly (e.g., "KSEA").',
   annotations: { readOnlyHint: true },
+  // Every reason is caller input, an unknown ID, or no current data to serve: a
+  // modeled outcome, not a fault, so each logs at notice rather than error.
   errors: [
     {
       reason: 'missing_input',
       code: JsonRpcErrorCode.ValidationError,
       when: 'Neither station_id nor a (latitude, longitude) pair was provided',
       recovery: 'Provide either station_id or both latitude and longitude.',
-    },
-    {
-      reason: 'blank_station_id',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'station_id was provided with a blank value',
-      recovery:
-        'Omit station_id to resolve the nearest station from coordinates, or provide a real station ID (e.g., "KSEA"). Use nws_find_stations to discover station IDs.',
+      severity: 'notice',
     },
     /**
-     * The four reasons below are raised by the NWS service layer, which resolves
-     * each one's hint through `ctx.recoveryFor`. `thrownBy: 'service'` is
-     * lint-only metadata telling `error-contract-unthrown` to stop looking for a
-     * literal `ctx.fail` in this handler — the two handler-local reasons above
-     * keep being checked. Typing, advertisement, and the wire envelope are
-     * identical either way.
+     * The four reasons below are raised by the NWS service layer, which throws
+     * each one carrying only its reason; the framework fills the entry's hint.
+     * `thrownBy: 'service'` is lint-only metadata telling `error-contract-unthrown`
+     * to stop looking for a literal `ctx.fail` in this handler — the handler-local
+     * reason above keeps being checked. Typing, advertisement, and the wire
+     * envelope are identical either way.
      */
     {
       reason: 'station_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'Station ID does not exist in the NWS network',
       recovery: 'Use nws_find_stations to discover valid station IDs near a coordinate.',
+      severity: 'notice',
       thrownBy: 'service',
     },
     {
@@ -113,6 +61,7 @@ export const getObservationsTool = tool('nws_get_observations', {
       code: JsonRpcErrorCode.NotFound,
       when: 'Station has no recent observations available',
       recovery: 'Try a different station — use nws_find_stations to find alternatives nearby.',
+      severity: 'notice',
       thrownBy: 'service',
     },
     {
@@ -120,6 +69,7 @@ export const getObservationsTool = tool('nws_get_observations', {
       code: JsonRpcErrorCode.NotFound,
       when: 'No observation stations exist near the requested coordinates',
       recovery: 'Try a different location or broaden the search by moving inland.',
+      severity: 'notice',
       thrownBy: 'service',
     },
     {
@@ -127,6 +77,7 @@ export const getObservationsTool = tool('nws_get_observations', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Coordinates fall outside US National Weather Service coverage',
       recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
+      severity: 'notice',
       thrownBy: 'service',
     },
   ],
@@ -205,21 +156,8 @@ export const getObservationsTool = tool('nws_get_observations', {
   async handler(input, ctx) {
     const normalizedStationId = normalizeStationId(input.station_id);
 
-    // Presence comes from the raw input, and this runs before the missing_input
-    // guard: a blank station_id used to clear both, so coordinates silently
-    // resolved a station the caller never asked for (issue #34).
-    if (input.station_id !== undefined && normalizedStationId === undefined) {
-      throw ctx.fail(
-        'blank_station_id',
-        'Blank station_id. A provided station_id must carry a value.',
-        { ...ctx.recoveryFor('blank_station_id') },
-      );
-    }
-
     if (!normalizedStationId && (input.latitude == null || input.longitude == null)) {
-      throw ctx.fail('missing_input', undefined, {
-        ...ctx.recoveryFor('missing_input'),
-      });
+      throw ctx.fail('missing_input');
     }
 
     const result = await getNwsService().getObservation(
@@ -301,16 +239,11 @@ export const getObservationsTool = tool('nws_get_observations', {
     );
 
     if (result.barometricPressurePa != null) {
-      const pa = Math.round(result.barometricPressurePa);
-      const pressure = `${paToInHg(result.barometricPressurePa)} inHg (${Math.round(result.barometricPressurePa / 100)} hPa, ${pa} Pa)`;
-      lines.push(`**Pressure:** ${pressure}`);
+      lines.push(`**Pressure:** ${formatPressure(result.barometricPressurePa)}`);
     }
 
     if (result.visibilityM != null) {
-      const m = Math.round(result.visibilityM);
-      lines.push(
-        `**Visibility:** ${mToMi(result.visibilityM)} mi (${mToKm(result.visibilityM)} km, ${m} m)`,
-      );
+      lines.push(`**Visibility:** ${formatVisibility(result.visibilityM)}`);
     }
 
     const heat = formatTemp(result.heatIndexC);
@@ -320,13 +253,7 @@ export const getObservationsTool = tool('nws_get_observations', {
     if (chill) lines.push(`**Wind Chill:** ${chill}`);
 
     if (result.cloudLayers.length > 0) {
-      const clouds = result.cloudLayers
-        .map((l) => {
-          const base = l.baseM != null ? ` at ${Math.round(l.baseM)}m (${mToFt(l.baseM)} ft)` : '';
-          return `${l.amount}${base}`;
-        })
-        .join(', ');
-      lines.push(`**Clouds:** ${clouds}`);
+      lines.push(`**Clouds:** ${formatCloudLayers(result.cloudLayers)}`);
     }
 
     // Flag when most measurements are missing

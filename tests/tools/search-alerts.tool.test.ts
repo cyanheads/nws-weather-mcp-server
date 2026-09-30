@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AlertSearchResult } from '@/services/nws/nws-service.js';
 
@@ -136,21 +136,26 @@ describe('nws_search_alerts', () => {
     await expect(result).rejects.toThrow('Invalid area code');
   });
 
-  it('rejects explicitly blank location filters instead of widening to a national search', async () => {
-    // A provided-but-blank filter used to collapse to undefined and run the
-    // unfiltered national query, answering a different question than was asked.
-    const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
-    const input = searchAlertsTool.input.parse({ area: '', point: '', zone: '' });
-    const result = searchAlertsTool.handler(input, ctx);
+  it('treats blank location filters as unset, running the national search (issue #46)', async () => {
+    // Form clients send every displayed optional field, blank ones as "". A blank
+    // is omitted, and the filter echo names only what was applied, so the
+    // national scope stays visible on both surfaces.
+    mockSearchAlerts.mockResolvedValueOnce(alertResult);
 
-    await expect(result).rejects.toMatchObject({
-      code: JsonRpcErrorCode.ValidationError,
-      data: {
-        reason: 'blank_location_filter',
-        recovery: { hint: expect.stringContaining('Omit') },
-      },
+    const result = await runToolContract(searchAlertsTool, { area: '', point: '', zone: '' });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      appliedFilters: 'national (no filters)',
+      totalCount: 1,
     });
-    expect(mockSearchAlerts).not.toHaveBeenCalled();
+    const text = result.content.map((block) => ('text' in block ? block.text : '')).join('\n');
+    expect(text).toContain('**Filters:** national (no filters)');
+    expect(text).toContain('Wind Advisory');
+    expect(mockSearchAlerts).toHaveBeenCalledWith(
+      expect.objectContaining({ area: undefined, point: undefined, zone: undefined }),
+      expect.anything(),
+    );
   });
 
   it('rejects mutually exclusive area and point filters before calling the service', async () => {
@@ -168,19 +173,20 @@ describe('nws_search_alerts', () => {
     expect(mockSearchAlerts).not.toHaveBeenCalled();
   });
 
-  it('rejects a whitespace-only location filter even when another real filter is present', async () => {
-    // The blank zone used to be dropped silently, narrowing the search to area
-    // alone with no signal that a requested filter was discarded.
+  it('searches the real location filter when a whitespace-only one sits beside it', async () => {
+    // The blank zone is unset, so it neither trips the mutual-exclusion check
+    // nor reaches the service; the echo names the one filter applied.
+    mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
     const ctx = createMockContext({ tenantId: 'test', errors: searchAlertsTool.errors });
     const input = searchAlertsTool.input.parse({ area: 'TX', zone: '   ' });
-    const result = searchAlertsTool.handler(input, ctx);
+    await searchAlertsTool.handler(input, ctx);
 
-    await expect(result).rejects.toMatchObject({
-      code: JsonRpcErrorCode.ValidationError,
-      data: { reason: 'blank_location_filter' },
-    });
-    await expect(result).rejects.toThrow('zone');
-    expect(mockSearchAlerts).not.toHaveBeenCalled();
+    expect(mockSearchAlerts).toHaveBeenCalledWith(
+      expect.objectContaining({ area: 'TX', zone: undefined }),
+      ctx,
+    );
+    expect(getEnrichment(ctx).appliedFilters).toBe('area=TX');
   });
 
   it('passes all filter params to service', async () => {

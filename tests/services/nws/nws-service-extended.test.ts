@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   alertTypesResponse,
@@ -269,7 +269,9 @@ describe('NwsService extended', () => {
     it('puts the tool contract recovery on the wire, naming the forecast zone type (issue #31)', async () => {
       // The throw lives here but the recovery text belongs to the tool's
       // zone_not_found contract. A second hardcoded copy in this file is what
-      // kept pointing callers at untyped affectedZones after the tool was fixed.
+      // kept pointing callers at untyped affectedZones after the tool was fixed,
+      // so the service throw carries only the reason and the tool boundary
+      // fills the hint — runToolContract applies that fill as production does.
       const { getZoneForecastTool } = await import(
         '@/mcp-server/tools/definitions/get-zone-forecast.tool.js'
       );
@@ -282,15 +284,14 @@ describe('NwsService extended', () => {
         .mockResolvedValueOnce(jsonResponse({}, 404))
         .mockResolvedValueOnce(jsonResponse({}, 404));
 
-      const ctx = createMockContext({ tenantId: 'test', errors: getZoneForecastTool.errors });
-      const error = (await service
-        .getNwsService()
-        .getZoneForecast('WAC033', ctx)
-        .catch((e: unknown) => e)) as {
-        data?: { reason?: string; recovery?: { hint?: string } };
-        message?: string;
-      };
+      const result = await runToolContract(getZoneForecastTool, { zone_id: 'WAC033' });
+      const error = (
+        result.structuredContent as {
+          error: { data?: { reason?: string; recovery?: { hint?: string } }; message: string };
+        }
+      ).error;
 
+      expect(result.isError).toBe(true);
       expect(error.data?.reason).toBe('zone_not_found');
       expect(error.data?.recovery?.hint).toBe(contractRecovery);
       expect(error.data?.recovery?.hint).toMatch(/type.*forecast/i);

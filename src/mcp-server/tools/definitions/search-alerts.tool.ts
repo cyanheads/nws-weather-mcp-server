@@ -25,12 +25,6 @@ const MAX_ALERTS = 25;
  */
 const LOCATION_FILTER_FIELDS = ['area', 'point', 'zone', 'region_type', 'region'] as const;
 
-/** Free-text location filters that must be rejected when provided blank (issue #30). */
-const STRING_FILTER_FIELDS = ['area', 'point', 'zone'] as const;
-
-/** Array filters that must be rejected when provided with no usable entries (issue #30). */
-const ARRAY_FILTER_FIELDS = ['event', 'severity', 'urgency', 'certainty', 'region'] as const;
-
 /** NWS marine region groups from the upstream MarineRegionCode enumeration. */
 const MARINE_REGIONS = ['AL', 'AT', 'GL', 'GM', 'PA', 'PI'] as const;
 
@@ -135,53 +129,54 @@ const VALID_AREA_CODES = new Set([
   'SL',
 ]);
 
-/** Build a human-readable summary of the applied search filters. */
-function describeFilters(input: Record<string, unknown>): string {
+/**
+ * Build a human-readable summary of the applied search filters from the
+ * normalized input, where a blank string or empty array is already unset.
+ */
+function describeFilters(input: SearchAlertsInput): string {
   const parts: string[] = [];
   if (input.area) parts.push(`area=${input.area}`);
   if (input.point) parts.push(`point=${input.point}`);
   if (input.zone) parts.push(`zone=${input.zone}`);
   if (input.region_type) parts.push(`region_type=${input.region_type}`);
-  if (Array.isArray(input.region) && input.region.length)
-    parts.push(`region=${input.region.join(', ')}`);
-  if (Array.isArray(input.event) && input.event.length)
-    parts.push(`event=${input.event.join(', ')}`);
-  if (Array.isArray(input.severity) && input.severity.length)
-    parts.push(`severity=${input.severity.join(', ')}`);
-  if (Array.isArray(input.urgency) && input.urgency.length)
-    parts.push(`urgency=${input.urgency.join(', ')}`);
-  if (Array.isArray(input.certainty) && input.certainty.length)
-    parts.push(`certainty=${input.certainty.join(', ')}`);
+  if (input.region) parts.push(`region=${input.region.join(', ')}`);
+  if (input.event) parts.push(`event=${input.event.join(', ')}`);
+  if (input.severity) parts.push(`severity=${input.severity.join(', ')}`);
+  if (input.urgency) parts.push(`urgency=${input.urgency.join(', ')}`);
+  if (input.certainty) parts.push(`certainty=${input.certainty.join(', ')}`);
   if (input.status && input.status !== 'Actual') parts.push(`status=${input.status}`);
   return parts.length > 0 ? parts.join(', ') : 'national (no filters)';
 }
 
 /**
- * Trim optional string filters and reduce blank values to undefined. Presence is
- * read from the raw input before this runs — once collapsed, `undefined` means
- * both "omitted" and "explicitly blank" (issue #30).
+ * Trim an optional string filter. Form-based clients send every optional field
+ * they display, empty ones as "", so a blank or whitespace-only value is unset:
+ * left off the upstream request and out of `appliedFilters` (issue #46).
  */
 function normalizeOptionalFilter(value: string | undefined): string | undefined {
-  if (value == null) return;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+/** An empty array filters nothing, so it is unset like an omitted one (issue #46). */
+function nonEmpty<T>(values: T[] | undefined): T[] | undefined {
+  return values?.length ? values : undefined;
 }
 
 /**
  * Trim free-text event terms and drop blanks, so the terms the service filters on
- * are exactly the terms `describeFilters()` echoes back (issue #30). The enum-typed
- * arrays need no equivalent — Zod constrains them to exact literals.
+ * are exactly the terms `describeFilters()` echoes back (issue #30). An array of
+ * nothing but blanks is unset.
  */
 function normalizeEventFilter(events: string[] | undefined): string[] | undefined {
-  if (events == null) return;
-  return events.map((event) => event.trim()).filter((event) => event.length > 0);
+  return nonEmpty(events?.map((event) => event.trim()).filter((event) => event.length > 0));
 }
 
 /**
- * Trim and normalize optional filters; presence and mutex enforcement happen in the
- * handler. `point` also drops internal whitespace so "47.6, -122.3" salvages to
- * the NWS-accepted "47.6,-122.3"; `zone` is upper-cased like `area` and the
- * sibling zone tools so "waz315" doesn't trip the upstream zone-code regex (issue #20).
+ * Reduce blank filters to unset and normalize the rest; mutex and shape checks
+ * happen in the handler. `point` also drops internal whitespace so "47.6, -122.3"
+ * salvages to the NWS-accepted "47.6,-122.3"; `zone` is upper-cased like `area` and
+ * the sibling zone tools so "waz315" doesn't trip the upstream zone-code regex (issue #20).
  */
 function normalizeSearchAlertsInput(input: SearchAlertsInput): SearchAlertsInput {
   return {
@@ -189,9 +184,21 @@ function normalizeSearchAlertsInput(input: SearchAlertsInput): SearchAlertsInput
     area: normalizeOptionalFilter(input.area)?.toUpperCase(),
     point: normalizeOptionalFilter(input.point)?.replace(/\s+/g, ''),
     zone: normalizeOptionalFilter(input.zone)?.toUpperCase(),
+    region: nonEmpty(input.region),
     event: normalizeEventFilter(input.event),
+    severity: nonEmpty(input.severity),
+    urgency: nonEmpty(input.urgency),
+    certainty: nonEmpty(input.certainty),
   };
 }
+
+/**
+ * A blank enum from a form client is unset, never a value to validate: `""` maps
+ * to undefined before the enum runs, so an optional enum drops out and a defaulted
+ * one takes its default. The advertised schema is the inner enum's.
+ */
+const blankAsUnset = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => (value === '' ? undefined : value), schema);
 
 const searchAlertsInputSchema = z.object({
   area: z
@@ -212,12 +219,9 @@ const searchAlertsInputSchema = z.object({
     .describe(
       'NWS forecast zone (e.g., "WAZ558") or county zone (e.g., "WAC033"). Mutually exclusive with area and point.',
     ),
-  region_type: z
-    .enum(['Land', 'Marine'])
-    .optional()
-    .describe(
-      'Restrict to land-based or marine alerts. Mutually exclusive with area, point, zone, and region.',
-    ),
+  region_type: blankAsUnset(z.enum(['Land', 'Marine']).optional()).describe(
+    'Restrict to land-based or marine alerts. Mutually exclusive with area, point, zone, and region.',
+  ),
   region: z
     .array(z.enum(MARINE_REGIONS))
     .optional()
@@ -242,12 +246,11 @@ const searchAlertsInputSchema = z.object({
     .array(z.enum(['Observed', 'Likely', 'Possible', 'Unlikely', 'Unknown']))
     .optional()
     .describe('Filter by certainty level.'),
-  status: z
-    .enum(['Actual', 'Exercise', 'System', 'Test', 'Draft'])
-    .default('Actual')
-    .describe(
-      'Alert status filter. Default "Actual". Use a different value only when you specifically need non-live alerts.',
-    ),
+  status: blankAsUnset(
+    z.enum(['Actual', 'Exercise', 'System', 'Test', 'Draft']).default('Actual'),
+  ).describe(
+    'Alert status filter. Default "Actual". Use a different value only when you specifically need non-live alerts.',
+  ),
   limit: z
     .number()
     .int()
@@ -271,6 +274,8 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   description:
     'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, land/marine region, event type, severity, urgency, or certainty. area, point, zone, region_type, and region are mutually exclusive — provide at most one. Omit all filters for a national search.',
   annotations: { readOnlyHint: true },
+  // Every reason is caller input rejected before any request, so each logs at
+  // notice rather than error.
   errors: [
     {
       reason: 'mutually_exclusive_filters',
@@ -278,6 +283,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       when: 'More than one of area, point, zone, region_type, or region provided',
       recovery:
         'Provide at most one of area, point, zone, region_type, or region — they are mutually exclusive filters.',
+      severity: 'notice',
     },
     {
       reason: 'invalid_area_code',
@@ -285,6 +291,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       when: 'Area code is not a recognized US state, territory, or marine area',
       recovery:
         'Provide a 2-letter US state/territory code (e.g., "WA") or marine area code (e.g., "GM").',
+      severity: 'notice',
     },
     {
       reason: 'invalid_point',
@@ -292,6 +299,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       when: 'Point coordinates are malformed or outside valid bounds',
       recovery:
         'Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").',
+      severity: 'notice',
     },
     {
       reason: 'invalid_zone',
@@ -299,20 +307,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       when: 'Zone code does not match the NWS zone-code shape',
       recovery:
         'Provide a 2-letter state/territory or marine code, then C for a county zone or Z for a forecast zone, then 3 digits (e.g., "WAZ558", "WAC033"). Zone codes come from affectedZones in nws_search_alerts, forecastZone in nws_get_forecast, or forecastZone in nws_find_stations.',
-    },
-    {
-      reason: 'blank_location_filter',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'An area, point, or zone filter was provided with a blank value',
-      recovery:
-        'Omit the filter entirely to search nationally, or provide a real area, point, or zone value.',
-    },
-    {
-      reason: 'empty_filter_array',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'An event, severity, urgency, certainty, or region filter was provided with no usable entries',
-      recovery:
-        'Omit the filter entirely to leave it unset, or provide at least one non-blank entry.',
+      severity: 'notice',
     },
   ],
 
@@ -439,48 +434,17 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   },
 
   async handler(input, ctx) {
+    // Blanks are unset from here on, so only filters that carry a value count
+    // toward mutual exclusion and reach the shape checks below (issue #46).
     const normalizedInput = normalizeSearchAlertsInput(input);
 
-    // Presence comes from the raw input: normalization reduces a blank value to
-    // undefined, which is also what an omitted filter looks like. Reading presence
-    // after that step is what let a blank filter widen into a national search (issue #30).
-    const blankLocationFilters = STRING_FILTER_FIELDS.filter(
-      (fieldName) => input[fieldName] !== undefined && normalizedInput[fieldName] === undefined,
+    const activeLocationFilters = LOCATION_FILTER_FIELDS.filter(
+      (fieldName) => normalizedInput[fieldName] !== undefined,
     );
-    if (blankLocationFilters.length > 0) {
-      throw ctx.fail(
-        'blank_location_filter',
-        `Blank location filter${blankLocationFilters.length === 1 ? '' : 's'}: ${blankLocationFilters.map((fieldName) => `"${fieldName}"`).join(', ')}. A provided area, point, or zone must carry a value.`,
-        { ...ctx.recoveryFor('blank_location_filter') },
-      );
-    }
-
-    const emptyArrayFilters = ARRAY_FILTER_FIELDS.filter(
-      (fieldName) => input[fieldName] !== undefined && !normalizedInput[fieldName]?.length,
-    );
-    if (emptyArrayFilters.length > 0) {
-      const detail = emptyArrayFilters
-        .map(
-          (fieldName) =>
-            `"${fieldName}" (${input[fieldName]?.length ? 'only blank entries' : 'empty array'})`,
-        )
-        .join(', ');
-      throw ctx.fail(
-        'empty_filter_array',
-        `Filter${emptyArrayFilters.length === 1 ? '' : 's'} with no usable entries: ${detail}. Each one filters nothing.`,
-        { ...ctx.recoveryFor('empty_filter_array') },
-      );
-    }
-
-    const activeLocationFilters = LOCATION_FILTER_FIELDS.filter((fieldName) => {
-      const value = normalizedInput[fieldName];
-      return Array.isArray(value) ? value.length > 0 : Boolean(value);
-    });
     if (activeLocationFilters.length > 1) {
       throw ctx.fail(
         'mutually_exclusive_filters',
         `Provided ${activeLocationFilters.join(', ')}; only one of area, point, zone, region_type, or region is allowed.`,
-        { ...ctx.recoveryFor('mutually_exclusive_filters') },
       );
     }
 
@@ -488,7 +452,6 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       throw ctx.fail(
         'invalid_area_code',
         `Invalid area code "${normalizedInput.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
-        { ...ctx.recoveryFor('invalid_area_code') },
       );
     }
 
@@ -500,7 +463,6 @@ export const searchAlertsTool = tool('nws_search_alerts', {
         throw ctx.fail(
           'invalid_point',
           `Invalid point "${normalizedInput.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
-          { ...ctx.recoveryFor('invalid_point') },
         );
       }
     }
@@ -511,7 +473,6 @@ export const searchAlertsTool = tool('nws_search_alerts', {
         throw ctx.fail(
           'invalid_zone',
           `Invalid zone "${normalizedInput.zone}". Provide a 2-letter state/territory or marine code, then C or Z, then 3 digits (e.g., "WAZ558", "WAC033").`,
-          { ...ctx.recoveryFor('invalid_zone') },
         );
       }
     }

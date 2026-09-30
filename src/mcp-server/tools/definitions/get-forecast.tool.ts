@@ -47,8 +47,10 @@ export const getForecastTool = tool('nws_get_forecast', {
       when: 'Coordinates fall outside US National Weather Service coverage',
       recovery:
         'Provide coordinates on land within US states or territories — NWS point forecasts do not cover marine areas.',
-      // Raised by the NWS service layer's /points resolution, which resolves the
-      // hint through `ctx.recoveryFor` — not by a `ctx.fail` in this handler.
+      // Caller coordinates outside coverage: a modeled outcome, logged at notice.
+      severity: 'notice',
+      // Raised by the NWS service layer's /points resolution with this reason,
+      // not by a `ctx.fail` in this handler; the framework fills the hint.
       thrownBy: 'service',
     },
     {
@@ -57,6 +59,16 @@ export const getForecastTool = tool('nws_get_forecast', {
       when: 'Coordinates fall in a marine area, where NWS publishes no point forecast',
       recovery:
         'Retry nws_get_forecast with coordinates on nearby land, or use nws_search_alerts (by point, or by the marine zone code in the message) for marine hazards at this location.',
+      severity: 'notice',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'no_forecast_grid',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Coordinates are on land in a forecast zone NWS serves no forecast grid for (e.g., interior Northern Mariana Islands)',
+      recovery:
+        'Use nws_search_alerts with zone set to the forecast zone code in the message for active hazards at this location; NWS publishes no point forecast here.',
+      severity: 'notice',
       thrownBy: 'service',
     },
   ],

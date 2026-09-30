@@ -7,12 +7,15 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  alertCountsResponse,
   alertsResponse,
   alertTypesResponse,
   duplicateAlertsResponse,
   emptyAlertsResponse,
   forecastResponse,
   gridlessMarinePointsResponse,
+  landOnlyAlertCountsResponse,
+  observationFeature,
   observationResponse,
   pointsResponse,
   stationInfoResponse,
@@ -661,6 +664,117 @@ describe('NwsService', () => {
       expect(types).toContain('Tornado Warning');
       expect(types).toContain('Wind Advisory');
       expect(types.length).toBe(6);
+    });
+  });
+
+  describe('getAlertCounts', () => {
+    it('requests the count endpoint with no query string and drops the zones map', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(alertCountsResponse));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const counts = await service.getNwsService().getAlertCounts(ctx);
+
+      expect(String(mockFetch.mock.calls[0]![0])).toBe(
+        'https://api.weather.gov/alerts/active/count',
+      );
+      expect(counts).toEqual({
+        total: 224,
+        land: 124,
+        marine: 100,
+        areas: alertCountsResponse.areas,
+        regions: alertCountsResponse.regions,
+      });
+      expect(counts).not.toHaveProperty('zones');
+    });
+
+    it.each([
+      ['an empty object', {}],
+      ['a bare array', []],
+      ['absent', undefined],
+    ])('reads a regions map sent as %s as empty', async (_label, regions) => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ...landOnlyAlertCountsResponse, regions }));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const counts = await service.getNwsService().getAlertCounts(ctx);
+
+      expect(counts.regions).toEqual({});
+      expect(counts.areas).toEqual({ OK: 2, KS: 1 });
+    });
+  });
+
+  describe('getObservationHistory', () => {
+    const stationUrl = 'https://api.weather.gov/stations/KSEA';
+
+    it('fetches the station record and the observation list, mapping each feature', async () => {
+      mockFetch.mockImplementation(async (input) =>
+        String(input) === stationUrl
+          ? jsonResponse(stationInfoResponse)
+          : jsonResponse({
+              features: [
+                observationFeature('2026-09-30T10:20:00+00:00'),
+                observationFeature('2026-09-30T10:15:00+00:00', { temperature: undefined }),
+              ],
+            }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service
+        .getNwsService()
+        .getObservationHistory({ stationId: 'ksea', limit: 2 }, ctx);
+
+      expect(result.stationId).toBe('KSEA');
+      expect(result.stationName).toBe('Seattle, Seattle-Tacoma International Airport');
+      expect(result.timeZone).toBe('America/Los_Angeles');
+      expect(result.observations.map((o) => o.timestamp)).toEqual([
+        '2026-09-30T10:20:00+00:00',
+        '2026-09-30T10:15:00+00:00',
+      ]);
+      expect(result.observations[0]!.stationId).toBe('KSEA');
+      // An omitted measurement stays null, never 0.
+      expect(result.observations[1]!.temperature.value).toBeNull();
+    });
+
+    it('sends limit, start, and end upstream, encoding the offset sign', async () => {
+      mockFetch.mockImplementation(async (input) =>
+        String(input) === stationUrl
+          ? jsonResponse(stationInfoResponse)
+          : jsonResponse({ features: [] }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      await service.getNwsService().getObservationHistory(
+        {
+          stationId: 'KSEA',
+          limit: 5,
+          start: '2026-09-29T17:00:00-07:00',
+          end: '2026-09-30T12:00:00+00:00',
+        },
+        ctx,
+      );
+
+      const listUrl = new URL(
+        mockFetch.mock.calls.map(([input]) => String(input)).find((u) => u !== stationUrl)!,
+      );
+      expect(listUrl.pathname).toBe('/stations/KSEA/observations');
+      expect(Object.fromEntries(listUrl.searchParams)).toEqual({
+        limit: '5',
+        start: '2026-09-29T17:00:00-07:00',
+        end: '2026-09-30T12:00:00+00:00',
+      });
+      expect(listUrl.search).toContain('end=2026-09-30T12%3A00%3A00%2B00%3A00');
+    });
+
+    it('rejects a non-alphanumeric station ID as station_not_found without a request', async () => {
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service
+        .getNwsService()
+        .getObservationHistory({ stationId: '../KSEA', limit: 5 }, ctx);
+
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason: 'station_not_found', stationId: '../KSEA' },
+      });
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 

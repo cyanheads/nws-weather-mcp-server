@@ -325,6 +325,31 @@ export const alertTypesResponse = {
   ],
 };
 
+/**
+ * Mock /alerts/active/count response, shaped like the live one: a multi-area
+ * alert counts in each area (areas sum past `total`), `land + marine = total`,
+ * and region "AL" (Alaska waters) sits beside area "AL" (Alabama). `zones` is
+ * the map the tool drops.
+ */
+export const alertCountsResponse = {
+  total: 224,
+  land: 124,
+  marine: 100,
+  regions: { AL: 73, GL: 10, GM: 2, PA: 13, PI: 2 },
+  areas: { AK: 40, AL: 3, TX: 17, WA: 5, PZ: 13, LS: 10, GU: 2 },
+  zones: { WAZ558: 2, WAC033: 1, AKZ101: 4 },
+};
+
+/** A land-only /alerts/active/count response: no marine alert, so `regions` is empty. */
+export const landOnlyAlertCountsResponse = {
+  total: 3,
+  land: 3,
+  marine: 0,
+  regions: {},
+  areas: { OK: 2, KS: 1 },
+  zones: { OKZ025: 2, KSZ099: 1 },
+};
+
 /** Mock /stations/{id}/observations/latest response */
 export const observationResponse = {
   properties: {
@@ -343,6 +368,17 @@ export const observationResponse = {
     cloudLayers: [{ base: { value: 1524, unitCode: 'wmoUnit:m' }, amount: 'BKN' }],
   },
 };
+
+/**
+ * One feature of a /stations/{id}/observations collection. NWS addresses each
+ * observation by station and timestamp, so the timestamp is the collection key.
+ */
+export function observationFeature(timestamp: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id: `https://api.weather.gov/stations/KSEA/observations/${timestamp}`,
+    properties: { ...observationResponse.properties, timestamp, ...overrides },
+  };
+}
 
 /** Mock /stations/{id} response (single station info) */
 export const stationInfoResponse = {
@@ -446,6 +482,33 @@ export const gridlessMarinePointsResponse = {
   },
 };
 
+/**
+ * Mock /points for a land point NWS serves no forecast grid for (18.1072,145.7669,
+ * Pagan, Northern Mariana Islands). HTTP 200, `type: "land"`, every grid field
+ * null, and a real forecast zone.
+ */
+export const gridlessLandPointsResponse = {
+  properties: {
+    type: 'land',
+    gridId: null,
+    gridX: null,
+    gridY: null,
+    forecast: null,
+    forecastHourly: null,
+    forecastGridData: null,
+    observationStations: null,
+    relativeLocation: {
+      properties: {
+        city: 'Pagan',
+        state: 'MP',
+      },
+    },
+    forecastZone: 'https://api.weather.gov/zones/forecast/MPZ006',
+    county: 'https://api.weather.gov/zones/county/MPC085',
+    timeZone: 'Pacific/Saipan',
+  },
+};
+
 /** Build an NWS RFC 7807 problem document with the given `type` suffix and status. */
 export function nwsProblem(type: string, status: number, detail: string) {
   return {
@@ -493,14 +556,17 @@ export const invalidPointProblem = nwsProblem(
   'Unable to provide data for requested point 51.5,-0.1',
 );
 
-/** 500 NWS returns on every attempt for some valid zones' forecast (e.g. AKZ829). */
+/**
+ * 500 NWS returns on every attempt for some valid zones' forecast (e.g. AKZ829),
+ * and for `/points` and `/alerts/active?point=` at some open-ocean points (e.g. 25,-70).
+ */
 export const unexpectedProblem = nwsProblem(
   'UnexpectedProblem',
   500,
   'An unexpected problem has occurred.',
 );
 
-/** Mock /zones/forecast/{id} zone record — the existence probe's 200 body. */
+/** Mock /zones/forecast/{id} zone record — the existence probe's 200 body, no geometry. */
 export const zoneRecordResponse = {
   properties: {
     id: 'AKZ829',
@@ -508,6 +574,84 @@ export const zoneRecordResponse = {
     name: 'Middle Yukon Valley',
     state: 'AK',
   },
+};
+
+/** AKZ829's zone record with its real Polygon geometry (coordinates are [lon, lat]). */
+export const polygonZoneRecordResponse = {
+  type: 'Feature',
+  geometry: {
+    type: 'Polygon',
+    coordinates: [
+      [
+        [-153.507534, 63.847892],
+        [-157.720026, 63.879913],
+        [-159.492733, 63.898375],
+        [-159.737466, 63.90251],
+        [-159.737475, 64.051459],
+        [-159.947288, 64.051459],
+        [-159.947325, 64.397925],
+        [-159.962255, 64.397927],
+        [-159.96229, 64.744377],
+        [-159.774897, 64.744382],
+        [-159.774921, 64.917565],
+        [-159.572173, 64.917597],
+        [-159.480043, 64.926351],
+        [-157.68961, 64.975128],
+        [-155.616212, 65.156961],
+        [-153.727016, 65.396813],
+        [-154.600123, 64.630013],
+        [-154.000117, 64.330109],
+        [-153.61825, 63.963449],
+        [-153.507534, 63.847892],
+      ],
+    ],
+  },
+  properties: zoneRecordResponse.properties,
+};
+
+/**
+ * Synthetic MultiPolygon zone record whose area centroid and bounding-box center
+ * both fall outside the zone, as they do for AKZ801 and AKZ787. The large part is
+ * a U open to the north (arms at lon -160..-158 and -152..-150, base at lat 60..62);
+ * the small part is a square islet to the east.
+ */
+export const multiPolygonZoneRecordResponse = {
+  type: 'Feature',
+  geometry: {
+    type: 'MultiPolygon',
+    coordinates: [
+      [
+        [
+          [-140, 60],
+          [-139, 60],
+          [-139, 61],
+          [-140, 61],
+          [-140, 60],
+        ],
+      ],
+      [
+        [
+          [-160, 60],
+          [-150, 60],
+          [-150, 70],
+          [-152, 70],
+          [-152, 62],
+          [-158, 62],
+          [-158, 70],
+          [-160, 70],
+          [-160, 60],
+        ],
+      ],
+    ],
+  },
+  properties: { id: 'PRZ001', type: 'public', name: 'San Juan and Vicinity', state: 'PR' },
+};
+
+/** Zone record NWS serves with `geometry: null`. */
+export const nullGeometryZoneRecordResponse = {
+  type: 'Feature',
+  geometry: null,
+  properties: zoneRecordResponse.properties,
 };
 
 /** Mock /zones/forecast/{id}/forecast response. */

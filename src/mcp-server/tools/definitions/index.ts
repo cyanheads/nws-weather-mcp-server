@@ -4,7 +4,9 @@
  */
 
 export { findStationsTool } from './find-stations.tool.js';
+export { getAlertCountsTool } from './get-alert-counts.tool.js';
 export { getForecastTool } from './get-forecast.tool.js';
+export { getObservationHistoryTool } from './get-observation-history.tool.js';
 export { getObservationsTool } from './get-observations.tool.js';
 export { getOfficeDiscussionTool } from './get-office-discussion.tool.js';
 export { getZoneForecastTool } from './get-zone-forecast.tool.js';

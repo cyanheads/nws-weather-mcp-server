@@ -36,8 +36,19 @@ export interface GridlessMarinePoint {
   readonly kind: 'gridless_marine';
 }
 
+/**
+ * A land point NWS resolves but serves no forecast grid for (e.g. interior points
+ * of the Northern Mariana Islands zones MPZ005–MPZ007). NWS answers `/points` with
+ * HTTP 200, `type: "land"`, and every grid field null; only the forecast zone is real.
+ */
+export interface GridlessLandPoint {
+  /** Public forecast zone code, e.g. `MPZ006`. */
+  readonly forecastZone: string;
+  readonly kind: 'gridless_land';
+}
+
 /** Resolved /points/{lat},{lon} metadata. */
-export type PointsMetadata = GriddedPoint | GridlessMarinePoint;
+export type PointsMetadata = GriddedPoint | GridlessMarinePoint | GridlessLandPoint;
 
 /** A single forecast period (shared by standard and hourly). */
 export interface ForecastPeriod {
@@ -110,6 +121,21 @@ export interface Alert {
   readonly severity: string;
   readonly status: string;
   readonly urgency: string;
+}
+
+/**
+ * Active alert counts from /alerts/active/count, across every CAP status. Counts
+ * key on each alert's UGC codes, so an alert covering several areas counts once
+ * per area. The upstream `zones` map is not carried.
+ */
+export interface AlertCounts {
+  /** Counts per state/territory or marine area code; only codes with an active alert appear. */
+  readonly areas: Readonly<Record<string, number>>;
+  readonly land: number;
+  readonly marine: number;
+  /** Counts per marine region (AL, AT, GL, GM, PA, PI); only regions with an active alert appear. */
+  readonly regions: Readonly<Record<string, number>>;
+  readonly total: number;
 }
 
 /** Latest observation from /stations/{id}/observations/latest. */

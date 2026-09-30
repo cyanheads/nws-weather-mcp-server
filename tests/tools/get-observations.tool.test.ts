@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ObservationResult } from '@/services/nws/nws-service.js';
 
@@ -131,58 +131,63 @@ describe('nws_get_observations', () => {
     );
   });
 
-  it('rejects a blank station_id instead of resolving a different station from coordinates', async () => {
-    // The blank station_id used to be dropped, so the coordinate branch answered
-    // with the nearest station — a station the caller never asked for.
-    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
-    const input = getObservationsTool.input.parse({
+  it('treats a blank station_id as unset, resolving the nearest station from coordinates (issue #46)', async () => {
+    // Form clients send the blank field alongside the coordinates they filled.
+    // The response names the station it served, so the resolution stays visible.
+    mockGetObservation.mockResolvedValueOnce(observationResult);
+
+    const result = await runToolContract(getObservationsTool, {
       station_id: '   ',
       latitude: 47.6062,
       longitude: -122.3321,
     });
-    const result = getObservationsTool.handler(input, ctx);
 
-    await expect(result).rejects.toMatchObject({
-      code: JsonRpcErrorCode.ValidationError,
-      data: {
-        reason: 'blank_station_id',
-        recovery: { hint: expect.stringContaining('Omit station_id') },
-      },
-    });
-    await expect(result).rejects.toThrow('station_id');
-    expect(mockGetObservation).not.toHaveBeenCalled();
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({ stationId: 'KSEA', station: 'KSEA' });
+    const text = result.content.map((block) => ('text' in block ? block.text : '')).join('\n');
+    expect(text).toContain('**Station:** KSEA');
+    expect(mockGetObservation).toHaveBeenCalledWith(
+      { latitude: 47.6062, longitude: -122.3321, stationId: undefined },
+      expect.anything(),
+    );
   });
 
   it('throws when neither station_id nor coordinates provided', async () => {
-    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
-    const input = getObservationsTool.input.parse({});
-    const result = getObservationsTool.handler(input, ctx);
+    const result = await runToolContract(getObservationsTool, {});
 
-    await expect(result).rejects.toMatchObject({
-      code: JsonRpcErrorCode.ValidationError,
-      data: {
-        reason: 'missing_input',
-        recovery: { hint: expect.stringContaining('station_id or both latitude and longitude') },
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ValidationError,
+        data: {
+          reason: 'missing_input',
+          recovery: { hint: expect.stringContaining('station_id or both latitude and longitude') },
+        },
       },
     });
   });
 
-  it('names the blank station_id, not missing_input, when coordinates are also absent', async () => {
-    // Both are wrong, but the blank station_id is the caller's actual mistake —
-    // reporting missing_input sends them to supply coordinates they never wanted.
-    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
-    const input = getObservationsTool.input.parse({ station_id: '   ' });
-    const result = getObservationsTool.handler(input, ctx);
+  it.each(['', '   '])(
+    'raises missing_input for a blank station_id %j with no coordinates',
+    async (stationId) => {
+      // The blank is unset, so the call carries neither input.
+      const result = await runToolContract(getObservationsTool, { station_id: stationId });
 
-    await expect(result).rejects.toMatchObject({
-      code: JsonRpcErrorCode.ValidationError,
-      data: {
-        reason: 'blank_station_id',
-        recovery: { hint: expect.stringContaining('Omit station_id') },
-      },
-    });
-    expect(mockGetObservation).not.toHaveBeenCalled();
-  });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          data: {
+            reason: 'missing_input',
+            recovery: {
+              hint: expect.stringContaining('station_id or both latitude and longitude'),
+            },
+          },
+        },
+      });
+      expect(mockGetObservation).not.toHaveBeenCalled();
+    },
+  );
 
   it('resolves the nearest station when station_id is genuinely omitted', async () => {
     mockGetObservation.mockResolvedValueOnce(observationResult);
@@ -217,15 +222,16 @@ describe('nws_get_observations', () => {
   });
 
   it('throws when only latitude provided', async () => {
-    const ctx = createMockContext({ tenantId: 'test', errors: getObservationsTool.errors });
-    const input = getObservationsTool.input.parse({ latitude: 47.6 });
-    const result = getObservationsTool.handler(input, ctx);
+    const result = await runToolContract(getObservationsTool, { latitude: 47.6 });
 
-    await expect(result).rejects.toMatchObject({
-      code: JsonRpcErrorCode.ValidationError,
-      data: {
-        reason: 'missing_input',
-        recovery: { hint: expect.stringContaining('station_id or both latitude and longitude') },
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ValidationError,
+        data: {
+          reason: 'missing_input',
+          recovery: { hint: expect.stringContaining('station_id or both latitude and longitude') },
+        },
       },
     });
   });

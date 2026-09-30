@@ -26,8 +26,10 @@ export const findStationsTool = tool('nws_find_stations', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Coordinates fall outside US National Weather Service coverage',
       recovery: 'Provide coordinates within US states, territories, or adjacent marine areas.',
-      // Raised by the NWS service layer's /points resolution, which resolves the
-      // hint through `ctx.recoveryFor` — not by a `ctx.fail` in this handler.
+      // Caller coordinates outside coverage: a modeled outcome, logged at notice.
+      severity: 'notice',
+      // Raised by the NWS service layer's /points resolution with this reason,
+      // not by a `ctx.fail` in this handler; the framework fills the hint.
       thrownBy: 'service',
     },
   ],
@@ -129,7 +131,7 @@ export const findStationsTool = tool('nws_find_stations', {
     });
     if (totalCount === 0) {
       ctx.enrich.notice(
-        `No observation stations found near (${input.latitude}, ${input.longitude}). Open waters beyond the NWS forecast grid have no assigned stations — try coordinates on or near the coast of a US state or territory.`,
+        `No observation stations found near (${input.latitude}, ${input.longitude}). Points beyond the NWS forecast grid (open waters and some remote islands) have no assigned stations — try coordinates on or near the coast of a US state or territory.`,
       );
     } else if (page.nextCursor) {
       ctx.enrich.notice(

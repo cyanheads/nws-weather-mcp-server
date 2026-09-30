@@ -12,9 +12,12 @@ import {
   griddedMarinePointsResponse,
   gridlessMarinePointsResponse,
   marineForecastNotSupportedProblem,
+  multiPolygonZoneRecordResponse,
   notFoundProblem,
+  observationResponse,
   pointsResponse,
   stationInfoResponse,
+  stationsResponse,
 } from '../fixtures/nws-responses.js';
 
 const PROTOCOL_VERSION = '2025-03-26';
@@ -260,6 +263,7 @@ async function startHttpTestServer(mockFetch: typeof fetch): Promise<TestServer>
     findStationsTool,
     getForecastTool,
     getObservationsTool,
+    getOfficeDiscussionTool,
     getZoneForecastTool,
     listAlertTypesTool,
     searchAlertsTool,
@@ -273,6 +277,7 @@ async function startHttpTestServer(mockFetch: typeof fetch): Promise<TestServer>
       getObservationsTool,
       findStationsTool,
       listAlertTypesTool,
+      getOfficeDiscussionTool,
       getZoneForecastTool,
     ],
     resources: [alertTypesResource],
@@ -296,7 +301,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('HTTP JSON-RPC error contracts', () => {
+// Every test boots a real server; a cold createApp() can run past the 5 s default.
+describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
   it('returns ValidationError for missing nws_get_observations input over HTTP', async () => {
     const mockFetch = vi.fn<typeof fetch>();
     const server = await startHttpTestServer(mockFetch);
@@ -459,7 +465,8 @@ describe('HTTP JSON-RPC error contracts', () => {
     // collapsed set and the distinct-alert counts have to hold on both.
     const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = String(input);
-      if (url.startsWith('https://api.weather.gov/alerts/active')) {
+      const { origin, pathname } = new URL(url);
+      if (origin === 'https://api.weather.gov' && pathname.startsWith('/alerts/active')) {
         return jsonResponse(duplicateAlertsResponse);
       }
       throw new Error(`Unexpected upstream URL: ${url}`);
@@ -544,24 +551,10 @@ describe('HTTP JSON-RPC error contracts', () => {
     }
   });
 
-  it('mirrors every provided-but-empty rejection onto both client surfaces over HTTP', async () => {
+  it('mirrors every local input rejection onto both client surfaces over HTTP', async () => {
     // structuredContent-only clients read error.data.reason; format()-only clients
     // read the content[] text, where the framework mirrors data.recovery.hint.
     const cases = [
-      {
-        id: 'alerts-blank-area',
-        tool: 'nws_search_alerts',
-        args: { area: '   ' },
-        reason: 'blank_location_filter',
-        hint: 'Omit',
-      },
-      {
-        id: 'alerts-empty-severity',
-        tool: 'nws_search_alerts',
-        args: { severity: [] },
-        reason: 'empty_filter_array',
-        hint: 'Omit',
-      },
       {
         id: 'alerts-invalid-zone',
         tool: 'nws_search_alerts',
@@ -570,11 +563,21 @@ describe('HTTP JSON-RPC error contracts', () => {
         hint: 'WAZ558',
       },
       {
-        id: 'observations-blank-station',
+        id: 'alerts-mutually-exclusive',
+        tool: 'nws_search_alerts',
+        // The blank zone is unset, so only area and point conflict.
+        args: { area: 'WA', point: '47.6,-122.3', zone: '' },
+        reason: 'mutually_exclusive_filters',
+        hint: 'at most one',
+      },
+      {
+        // A blank station_id is unset (issue #46); with no coordinates the call
+        // carries no input at all.
+        id: 'observations-blank-station-alone',
         tool: 'nws_get_observations',
-        args: { station_id: '   ', latitude: 47.6062, longitude: -122.3321 },
-        reason: 'blank_station_id',
-        hint: 'Omit station_id',
+        args: { station_id: '   ' },
+        reason: 'missing_input',
+        hint: 'station_id or both latitude and longitude',
       },
     ] as const;
 
@@ -620,6 +623,152 @@ describe('HTTP JSON-RPC error contracts', () => {
 
       // Every rejection is local — nothing reached the NWS API.
       expect(mockFetch).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('treats blank optional inputs as unset end to end over HTTP (issue #46)', async () => {
+    const API = 'https://api.weather.gov';
+    const requested: string[] = [];
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      requested.push(url);
+      const { origin, pathname } = new URL(url);
+      if (origin === API && pathname === '/alerts/active') return jsonResponse(emptyAlertsResponse);
+      if (url === `${API}/points/47.6062,-122.3321`) return jsonResponse(pointsResponse);
+      if (url === pointsResponse.properties.observationStations) {
+        return jsonResponse(stationsResponse);
+      }
+      // KBFI is the fixture station nearest the step-3 coordinates.
+      if (url === `${API}/stations/KBFI/observations/latest`) {
+        return jsonResponse(observationResponse);
+      }
+      if (url === `${API}/products/types/AFD/locations/SEW`) {
+        return jsonResponse({ '@graph': [{ id: 'afd-sew-1' }] });
+      }
+      if (url === `${API}/products/afd-sew-1`) {
+        return jsonResponse({
+          issuanceTime: '2026-09-30T10:33:00+00:00',
+          issuingOffice: 'KSEW',
+          productCode: 'AFD',
+          productName: 'Area Forecast Discussion',
+          productText: 'AFDSEW\n.SYNOPSIS...',
+          wmoCollectiveId: 'FXUS66',
+        });
+      }
+      throw new Error(`Unexpected upstream URL: ${url}`);
+    });
+    const server = await startHttpTestServer(mockFetch);
+
+    type ToolResult = {
+      content: { type: string; text?: string }[];
+      isError?: boolean;
+      structuredContent: Record<string, unknown>;
+    };
+    let sessionId = '';
+    const call = async (id: string, name: string, args: Record<string, unknown>) => {
+      requested.length = 0;
+      const response = await postJsonRpc(
+        server.port,
+        { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } },
+        sessionId,
+      );
+      expect(response.statusCode, id).toBe(200);
+      const result = (response.body as { result: ToolResult }).result;
+      expect(result.isError, `${id}: ${JSON.stringify(result.structuredContent)}`).toBeFalsy();
+      return { result, text: contentText(result), requested: [...requested] };
+    };
+
+    try {
+      sessionId = await initializeSession(server.port);
+
+      // Steps 1, 2, and 4a from the issue, plus the national-search acceptance
+      // cases: each blank is left off the request and out of the filter echo.
+      const alertCases = [
+        {
+          id: 'blank-point-zone',
+          args: { area: 'WA', point: '', zone: '' },
+          query: '?area=WA&status=actual',
+          filters: 'area=WA',
+        },
+        {
+          id: 'empty-arrays',
+          args: { area: 'WA', event: [], severity: [], urgency: [], certainty: [], region: [] },
+          query: '?area=WA&status=actual',
+          filters: 'area=WA',
+        },
+        {
+          id: 'blank-area',
+          args: { area: '' },
+          query: '?status=actual',
+          filters: 'national (no filters)',
+        },
+        {
+          id: 'blank-event-entry',
+          args: { event: [''] },
+          query: '?status=actual',
+          filters: 'national (no filters)',
+        },
+        {
+          id: 'empty-severity',
+          args: { severity: [] },
+          query: '?status=actual',
+          filters: 'national (no filters)',
+        },
+        {
+          id: 'blank-region-type',
+          args: { region_type: '' },
+          query: '?status=actual',
+          filters: 'national (no filters)',
+        },
+        {
+          id: 'blank-status',
+          args: { area: 'WA', status: '' },
+          query: '?area=WA&status=actual',
+          filters: 'area=WA',
+        },
+      ];
+      for (const testCase of alertCases) {
+        const { result, text, requested } = await call(
+          testCase.id,
+          'nws_search_alerts',
+          testCase.args,
+        );
+        expect(requested, testCase.id).toEqual([`${API}/alerts/active${testCase.query}`]);
+        expect(result.structuredContent.appliedFilters, testCase.id).toBe(testCase.filters);
+        expect(text, testCase.id).toContain(`**Filters:** ${testCase.filters}`);
+      }
+
+      // Step 3: the blank station_id is unset, so the coordinates resolve the
+      // nearest station, and the response names the station it served.
+      const observations = await call('blank-station-id', 'nws_get_observations', {
+        station_id: '',
+        latitude: 47.6062,
+        longitude: -122.3321,
+      });
+      expect(observations.requested).toEqual([
+        `${API}/points/47.6062,-122.3321`,
+        pointsResponse.properties.observationStations,
+        `${API}/stations/KBFI/observations/latest`,
+      ]);
+      expect(observations.result.structuredContent).toMatchObject({
+        stationId: 'KBFI',
+        station: 'KBFI',
+      });
+      expect(observations.text).toContain('**Station:** KBFI');
+
+      // Step 4b: a blank product_type falls back to its AFD default.
+      const discussion = await call('blank-product-type', 'nws_get_office_discussion', {
+        office: 'SEW',
+        product_type: '',
+      });
+      expect(discussion.requested).toEqual([
+        `${API}/products/types/AFD/locations/SEW`,
+        `${API}/products/afd-sew-1`,
+      ]);
+      expect(discussion.result.structuredContent).toMatchObject({ productCode: 'AFD' });
+      expect(discussion.text).toContain('Area Forecast Discussion (AFD)');
     } finally {
       await server.close();
     }
@@ -814,14 +963,14 @@ describe('HTTP JSON-RPC error contracts', () => {
     }
   });
 
-  it('returns zone_forecast_unavailable for a valid zone with no text product over HTTP (issue #40)', async () => {
+  it('returns zone_forecast_unavailable with a point inside the zone over HTTP (issues #40, #42)', async () => {
     const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = String(input);
       if (url === 'https://api.weather.gov/zones/forecast/PRZ001/forecast') {
         return jsonResponse(notFoundProblem, 404);
       }
       if (url === 'https://api.weather.gov/zones/forecast/PRZ001') {
-        return jsonResponse({ properties: { id: 'PRZ001', name: 'San Juan and Vicinity' } });
+        return jsonResponse(multiPolygonZoneRecordResponse);
       }
       throw new Error(`Unexpected upstream URL: ${url}`);
     });
@@ -850,15 +999,88 @@ describe('HTTP JSON-RPC error contracts', () => {
             message: expect.stringContaining('HTTP 404'),
             data: {
               reason: 'zone_forecast_unavailable',
-              recovery: { hint: expect.stringContaining('nws_get_forecast') },
+              latitude: 66,
+              longitude: -159,
+              recovery: {
+                hint: expect.stringContaining(
+                  'nws_get_forecast with latitude 66 and longitude -159',
+                ),
+              },
             },
           },
         },
       });
       const text = contentText(result);
-      expect(text).toContain('Recovery:');
+      expect(text).toContain('(66, -159) is a point inside the zone.');
+      expect(text).toContain('Recovery: Call nws_get_forecast with latitude 66 and longitude -159');
       expect(text).toContain('reason zone_forecast_unavailable');
       expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('logs declared caller outcomes at their contract severity and baseline faults at error (issue #43)', async () => {
+    const API = 'https://api.weather.gov';
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `${API}/zones/forecast/PRZ001/forecast`)
+        return jsonResponse(notFoundProblem, 404);
+      if (url === `${API}/zones/forecast/PRZ001`)
+        return jsonResponse(multiPolygonZoneRecordResponse);
+      if (url === `${API}/alerts/active?status=actual`) {
+        return jsonResponse({ title: 'Unexpected Problem', status: 500 }, 500);
+      }
+      throw new Error(`Unexpected upstream URL: ${url}`);
+    });
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      // The same singleton the framework's ErrorHandler writes the
+      // `Error in tool:<name>` record through; spied after boot so every spy
+      // sees the server's calls.
+      const { logger } = await import('@cyanheads/mcp-ts-core/utils');
+      const levels = ['debug', 'info', 'notice', 'warning', 'error'] as const;
+      const spies = levels.map((level) => [level, vi.spyOn(logger, level)] as const);
+
+      /** Levels the call's failure record was written at. */
+      const failureLevels = async (id: string, name: string, args: Record<string, unknown>) => {
+        for (const [, spy] of spies) spy.mockClear();
+        const response = await postJsonRpc(
+          server.port,
+          { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } },
+          sessionId,
+        );
+        expect((response.body as { result: { isError?: boolean } }).result.isError, id).toBe(true);
+        return spies
+          .filter(([, spy]) =>
+            spy.mock.calls.some(([message]) =>
+              String(message).startsWith(`Error in tool:${name}:`),
+            ),
+          )
+          .map(([level]) => level);
+      };
+
+      // Service-thrown, rejected before any request.
+      expect(
+        await failureLevels('zone-bad-id', 'nws_get_zone_forecast', { zone_id: 'X-Y' }),
+      ).toEqual(['notice']);
+      // Handler-thrown via ctx.fail.
+      expect(await failureLevels('alerts-bad-area', 'nws_search_alerts', { area: 'ZZ' })).toEqual([
+        'notice',
+      ]);
+      expect(await failureLevels('observations-empty', 'nws_get_observations', {})).toEqual([
+        'notice',
+      ]);
+      // The zone forecast endpoint failed while the zone record answered.
+      expect(
+        await failureLevels('zone-unavailable', 'nws_get_zone_forecast', { zone_id: 'PRZ001' }),
+      ).toEqual(['warning']);
+      // An exhausted 5xx is a baseline ServiceUnavailable no entry declares.
+      expect(await failureLevels('alerts-exhausted-500', 'nws_search_alerts', {})).toEqual([
+        'error',
+      ]);
     } finally {
       await server.close();
     }
@@ -1031,5 +1253,120 @@ describe('HTTP JSON-RPC error contracts', () => {
     } finally {
       await server.close();
     }
+  });
+
+  it('advertises the optional inputs a form client may blank with unchanged schemas (issue #46)', async () => {
+    const mockFetch = vi.fn<typeof fetch>();
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        { jsonrpc: '2.0', id: 'tools-list-blank-inputs', method: 'tools/list', params: {} },
+        sessionId,
+      );
+
+      type InputSchema = {
+        properties: Record<string, Record<string, unknown>>;
+        required?: string[];
+      };
+      const tools = (
+        response.body as { result: { tools: { inputSchema: InputSchema; name: string }[] } }
+      ).result.tools;
+      const inputOf = (name: string) => tools.find((entry) => entry.name === name)?.inputSchema;
+
+      // A blank is unset at parse time; the advertised contract stays the same.
+      const alerts = inputOf('nws_search_alerts');
+      expect(alerts?.properties.region_type).toEqual({
+        description: expect.any(String),
+        type: 'string',
+        enum: ['Land', 'Marine'],
+      });
+      expect(alerts?.properties.status).toEqual({
+        description: expect.any(String),
+        default: 'Actual',
+        type: 'string',
+        enum: ['Actual', 'Exercise', 'System', 'Test', 'Draft'],
+      });
+      for (const field of ['area', 'point', 'zone']) {
+        expect(alerts?.properties[field], field).toEqual({
+          description: expect.any(String),
+          type: 'string',
+        });
+      }
+      for (const field of ['region', 'event', 'severity', 'urgency', 'certainty']) {
+        expect(alerts?.properties[field], field).toMatchObject({ type: 'array' });
+        expect(alerts?.properties[field], field).not.toHaveProperty('minItems');
+      }
+      expect(alerts?.required ?? []).toEqual([]);
+
+      const discussion = inputOf('nws_get_office_discussion');
+      expect(discussion?.properties.product_type).toEqual({
+        description: expect.any(String),
+        default: 'AFD',
+        type: 'string',
+        enum: ['AFD', 'HWO', 'ZFP', 'SPS'],
+      });
+      expect(discussion?.required).toEqual(['office']);
+
+      const observations = inputOf('nws_get_observations');
+      expect(observations?.properties.station_id).toEqual({
+        description: expect.any(String),
+        type: 'string',
+      });
+      expect(observations?.required ?? []).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('declared error severities (issue #43)', () => {
+  it('logs every modeled caller outcome below error, per tool and reason', async () => {
+    const tools = await import('@/mcp-server/tools/definitions/index.js');
+    const severities = Object.fromEntries(
+      Object.values(tools).map((definition) => [
+        definition.name,
+        Object.fromEntries(
+          (definition.errors ?? []).map((entry) => [entry.reason, entry.severity]),
+        ),
+      ]),
+    );
+
+    expect(severities).toEqual({
+      nws_get_forecast: {
+        out_of_scope: 'notice',
+        marine_forecast_unsupported: 'notice',
+        no_forecast_grid: 'notice',
+      },
+      nws_search_alerts: {
+        mutually_exclusive_filters: 'notice',
+        invalid_area_code: 'notice',
+        invalid_point: 'notice',
+        invalid_zone: 'notice',
+      },
+      nws_get_observations: {
+        missing_input: 'notice',
+        station_not_found: 'notice',
+        no_observations: 'notice',
+        no_stations_nearby: 'notice',
+        out_of_scope: 'notice',
+      },
+      nws_get_observation_history: {
+        station_not_found: 'notice',
+        invalid_time_window: 'notice',
+      },
+      nws_find_stations: { out_of_scope: 'notice' },
+      nws_get_office_discussion: { no_products: 'notice' },
+      nws_get_zone_forecast: {
+        zone_not_found: 'notice',
+        zone_forecast_unavailable: 'warning',
+        marine_forecast_unsupported: 'notice',
+      },
+      // No contract: failures here are baseline faults and keep error.
+      nws_list_alert_types: {},
+      nws_get_alert_counts: {},
+    });
   });
 });

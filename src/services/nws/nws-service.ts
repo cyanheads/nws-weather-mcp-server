@@ -21,9 +21,11 @@ import {
   withRetry,
 } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
+import { interiorPoint } from './interior-point.js';
 import type {
   AffectedZone,
   Alert,
+  AlertCounts,
   ForecastPeriod,
   ForecastResponse,
   NwsValue,
@@ -102,18 +104,11 @@ type NotFoundFactory = (message: string, problemType: string | undefined) => Err
 /**
  * The `marine_forecast_unsupported` failure `nws_get_forecast` and
  * `nws_get_zone_forecast` both declare: NWS serves no point or zone text forecast
- * for marine areas. The recovery hint comes from the calling tool's contract.
+ * for marine areas. The framework fills the recovery hint from the calling
+ * tool's contract entry for this reason.
  */
-function marineForecastUnsupported(
-  message: string,
-  data: Record<string, unknown>,
-  ctx: Context,
-): McpError {
-  return notFound(message, {
-    ...data,
-    reason: 'marine_forecast_unsupported',
-    ...ctx.recoveryFor('marine_forecast_unsupported'),
-  });
+function marineForecastUnsupported(message: string, data: Record<string, unknown>): McpError {
+  return notFound(message, { ...data, reason: 'marine_forecast_unsupported' });
 }
 
 /** Last path segment of an NWS problem document's `type` URI, when the body has one. */
@@ -331,6 +326,30 @@ function nwsFetch<T>(
   });
 }
 
+/**
+ * Sharpens a point-keyed request's exhausted 500. NWS answers some open-ocean points
+ * outside its marine zones with a 500 on every request, in the same generic problem
+ * document as any unexpected failure, so one response cannot tell that apart from an
+ * outage: the message names the point and `data.recovery.hint` gives both readings.
+ * The baseline ServiceUnavailable and its `data` (status, url, retryAttempts) stay;
+ * every other failure passes through.
+ */
+function explainPointServerError(error: unknown, request: string, seaAdvice: string): unknown {
+  if (!(error instanceof McpError) || error.data?.status !== 500) return error;
+  const attempts = error.data.retryAttempts;
+  const tail = typeof attempts === 'number' ? ` (failed after ${attempts} attempts)` : '';
+  return serviceUnavailable(
+    `NWS returned HTTP 500 for ${request}${tail}.`,
+    {
+      ...error.data,
+      recovery: {
+        hint: `NWS answers some open-ocean points outside its marine zones with HTTP 500 on every request. ${seaAdvice} For a point on land, NWS is failing and a later retry may succeed.`,
+      },
+    },
+    { cause: error },
+  );
+}
+
 /** Resolve coordinates to NWS grid metadata, cached in-process. */
 async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<PointsMetadata> {
   const key = pointsCacheKey(lat, lon);
@@ -349,14 +368,14 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
     ctx,
     MAX_RETRIES,
     POINTS_NOT_FOUND,
-    (message) =>
-      validationError(message, {
-        lat: tLat,
-        lon: tLon,
-        reason: 'out_of_scope',
-        ...ctx.recoveryFor('out_of_scope'),
-      }),
-  );
+    (message) => validationError(message, { lat: tLat, lon: tLon, reason: 'out_of_scope' }),
+  ).catch((error: unknown) => {
+    throw explainPointServerError(
+      error,
+      `point (${tLat}, ${tLon})`,
+      'For a point at sea, move it toward the US coast.',
+    );
+  });
 
   const props = data.properties as Record<string, unknown>;
   const relativeLocation = (props.relativeLocation as Record<string, unknown>)
@@ -367,9 +386,16 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
   const observationStationsUrl = props.observationStations as string | undefined;
   const forecastZone = extractZoneCode((props.forecastZone as string) ?? '');
 
-  // Offshore waters beyond the grid: a real answer, not a malformed response.
-  if (props.type === 'marine' && !forecastUrl && !forecastHourlyUrl && !observationStationsUrl) {
-    const metadata: PointsMetadata = { kind: 'gridless_marine', forecastZone };
+  /**
+   * Beyond the forecast grid — offshore waters, and some remote land such as the
+   * interior of the Northern Mariana Islands: a real answer, not a malformed response.
+   */
+  const gridless = !forecastUrl && !forecastHourlyUrl && !observationStationsUrl;
+  if (gridless && (props.type === 'marine' || props.type === 'land')) {
+    const metadata: PointsMetadata = {
+      kind: props.type === 'marine' ? 'gridless_marine' : 'gridless_land',
+      forecastZone,
+    };
     pointsCache.set(key, { data: metadata, expires: Date.now() + POINTS_CACHE_TTL_MS });
     return metadata;
   }
@@ -502,6 +528,16 @@ function parseObservation(
   };
 }
 
+/**
+ * A count map from /alerts/active/count. The spec types `areas` and `regions` as
+ * objects keyed by code, and a map with no active alerts is empty; an empty map is
+ * `{}` here whether it arrives as `{}`, as a bare `[]`, or not at all.
+ */
+function countMap(value: unknown): Readonly<Record<string, number>> {
+  if (value == null || Array.isArray(value)) return {};
+  return value as Record<string, number>;
+}
+
 /** Parse station features from observation stations response. */
 function parseStations(data: Record<string, unknown>): Station[] {
   const features = (data.features ?? data.observationStations) as Record<string, unknown>[];
@@ -596,6 +632,14 @@ export interface ObservationResult {
   readonly observation: Observation;
 }
 
+export interface ObservationHistoryResult {
+  /** Observations in the requested window, newest first, at most `limit` of them. */
+  readonly observations: readonly Observation[];
+  readonly stationId: string;
+  readonly stationName: string;
+  readonly timeZone: string | null;
+}
+
 export interface StationResult {
   readonly bearing: string;
   readonly county: string;
@@ -645,9 +689,19 @@ export class NwsService {
       marineForecastUnsupported(
         `Coordinates (${truncateCoord(lat)}, ${truncateCoord(lon)}) are in marine zone ${points.forecastZone}; NWS publishes no point forecast for marine areas.`,
         { latitude: lat, longitude: lon, forecastZone: points.forecastZone },
-        ctx,
       );
     if (points.kind === 'gridless_marine') throw marineUnsupported();
+    if (points.kind === 'gridless_land') {
+      throw notFound(
+        `Coordinates (${truncateCoord(lat)}, ${truncateCoord(lon)}) are in forecast zone ${points.forecastZone}, but NWS serves no forecast grid there and publishes no point forecast for them.`,
+        {
+          latitude: lat,
+          longitude: lon,
+          forecastZone: points.forecastZone,
+          reason: 'no_forecast_grid',
+        },
+      );
+    }
 
     const url = hourly ? points.forecastHourlyUrl : points.forecastUrl;
     ctx.log.info('Fetching forecast', { url, hourly });
@@ -705,7 +759,16 @@ export class NwsService {
     if (normalizedStatus) url.searchParams.set('status', normalizedStatus);
 
     ctx.log.info('Searching alerts', { url: url.toString() });
-    const data = await nwsFetch<Record<string, unknown>>(url.toString(), ctx);
+    const data = await nwsFetch<Record<string, unknown>>(url.toString(), ctx).catch(
+      (error: unknown) => {
+        if (!params.point) throw error;
+        throw explainPointServerError(
+          error,
+          `the alerts search at point "${params.point}"`,
+          'For a point at sea, search by marine region (e.g., region "AT") or a marine area or zone filter instead.',
+        );
+      },
+    );
 
     const features = (data.features ?? []) as Record<string, unknown>[];
     const eventFilters = params.event
@@ -733,6 +796,23 @@ export class NwsService {
     return { alerts };
   }
 
+  /**
+   * National active-alert counts, per area and per marine region. The endpoint
+   * rejects every query parameter with a 400, so none is sent, and its `zones`
+   * map (nearly all of the response, growing with the active set) is dropped.
+   */
+  async getAlertCounts(ctx: Context): Promise<AlertCounts> {
+    ctx.log.info('Fetching active alert counts');
+    const data = await nwsFetch<Record<string, unknown>>(`${BASE_URL}/alerts/active/count`, ctx);
+    return {
+      total: data.total as number,
+      land: data.land as number,
+      marine: data.marine as number,
+      areas: countMap(data.areas),
+      regions: countMap(data.regions),
+    };
+  }
+
   /** Get latest observation, either by station ID or by resolving nearest station from coordinates. */
   async getObservation(
     params: {
@@ -747,20 +827,12 @@ export class NwsService {
       const stationId = params.stationId.toUpperCase();
       const notFoundMsg = `Station '${stationId}' not found.`;
       const stationNotFoundFactory: NotFoundFactory = (message) =>
-        notFound(message, {
-          stationId,
-          reason: 'station_not_found',
-          ...ctx.recoveryFor('station_not_found'),
-        });
+        notFound(message, { stationId, reason: 'station_not_found' });
 
       // Separate factory for the observations/latest leg: a 404 there means the
       // station exists but has no current data — not a missing station ID.
       const noObservationsFactory: NotFoundFactory = (message) =>
-        notFound(message, {
-          stationId,
-          reason: 'no_observations',
-          ...ctx.recoveryFor('no_observations'),
-        });
+        notFound(message, { stationId, reason: 'no_observations' });
 
       if (!PATH_ID_PATTERN.test(stationId)) throw stationNotFoundFactory(notFoundMsg, undefined);
       const stationPath = `${BASE_URL}/stations/${stationId}`;
@@ -797,7 +869,6 @@ export class NwsService {
         throw notFound(`Station ${stationId} has no recent observations.`, {
           stationId,
           reason: 'no_observations',
-          ...ctx.recoveryFor('no_observations'),
         });
       }
       return { observation };
@@ -809,9 +880,7 @@ export class NwsService {
     const points = await resolvePoints(lat, lon, ctx);
     // A point beyond the grid has no station list to follow — no stations nearby.
     const stations =
-      points.kind === 'gridless_marine'
-        ? []
-        : await this.fetchStations(points.observationStationsUrl, ctx);
+      points.kind === 'gridded' ? await this.fetchStations(points.observationStationsUrl, ctx) : [];
     const nearestStation = stations
       .map((station) => ({
         station,
@@ -824,24 +893,19 @@ export class NwsService {
         latitude: lat,
         longitude: lon,
         reason: 'no_stations_nearby',
-        ...ctx.recoveryFor('no_stations_nearby'),
       });
     }
     const stationId = nearestStation.stationId;
     const stationName = nearestStation.name;
 
     ctx.log.info('Fetching latest observation', { stationId });
+    // NWS just listed this station, so a 404 here means it has no current data.
     const data = await nwsFetch<Record<string, unknown>>(
       `${BASE_URL}/stations/${stationId}/observations/latest`,
       ctx,
       MAX_RETRIES,
-      `Station '${stationId}' not found.`,
-      (message) =>
-        notFound(message, {
-          stationId,
-          reason: 'station_not_found',
-          ...ctx.recoveryFor('station_not_found'),
-        }),
+      `Station '${stationId}' has no recent observations.`,
+      (message) => notFound(message, { stationId, reason: 'no_observations' }),
     );
 
     const observation = parseObservation(data, stationId, stationName, nearestStation.timeZone);
@@ -849,17 +913,76 @@ export class NwsService {
       throw notFound(`Station ${stationId} has no recent observations.`, {
         stationId,
         reason: 'no_observations',
-        ...ctx.recoveryFor('no_observations'),
       });
     }
     return { observation };
+  }
+
+  /**
+   * One page of a station's observation history, newest first. `start` is
+   * inclusive and `end` exclusive, and both must already be validated ISO 8601
+   * date-times with seconds and an offset: NWS answers a date-only value with a
+   * 400 and a calendar-invalid one (e.g. Feb 30) with a 500.
+   *
+   * NWS answers an unknown station's observation list with HTTP 200 and an empty
+   * collection, so only the station record's 404 tells a missing station from an
+   * empty window. Both are fetched in parallel and classified station-first.
+   */
+  async getObservationHistory(
+    params: {
+      end?: string | undefined;
+      limit: number;
+      start?: string | undefined;
+      stationId: string;
+    },
+    ctx: Context,
+  ): Promise<ObservationHistoryResult> {
+    const stationId = params.stationId.toUpperCase();
+    const notFoundMsg = `Station '${stationId}' not found.`;
+    const stationNotFoundFactory: NotFoundFactory = (message) =>
+      notFound(message, { stationId, reason: 'station_not_found' });
+
+    if (!PATH_ID_PATTERN.test(stationId)) throw stationNotFoundFactory(notFoundMsg, undefined);
+    const stationPath = `${BASE_URL}/stations/${stationId}`;
+
+    const observationsUrl = new URL(`${stationPath}/observations`);
+    observationsUrl.searchParams.set('limit', String(params.limit));
+    if (params.start) observationsUrl.searchParams.set('start', params.start);
+    if (params.end) observationsUrl.searchParams.set('end', params.end);
+
+    ctx.log.info('Fetching station metadata and observation history', {
+      stationId,
+      url: observationsUrl.toString(),
+    });
+    const [stationResult, obsResult] = await Promise.allSettled([
+      nwsFetch<Record<string, unknown>>(stationPath, ctx, 0, notFoundMsg, stationNotFoundFactory),
+      nwsFetch<Record<string, unknown>>(observationsUrl.toString(), ctx),
+    ]);
+
+    if (stationResult.status === 'rejected') throw stationResult.reason;
+    if (obsResult.status === 'rejected') throw obsResult.reason;
+
+    const stationProps = stationResult.value.properties as Record<string, unknown>;
+    const stationName = (stationProps?.name as string) ?? stationId;
+    const timeZone =
+      typeof stationProps?.timeZone === 'string' ? (stationProps.timeZone as string) : null;
+    const features = (obsResult.value.features ?? []) as Record<string, unknown>[];
+
+    return {
+      stationId,
+      stationName,
+      timeZone,
+      observations: features.map((feature) =>
+        parseObservation(feature, stationId, stationName, timeZone),
+      ),
+    };
   }
 
   /** Find every observation station near coordinates, sorted by proximity. */
   async findStations(lat: number, lon: number, ctx: Context): Promise<FindStationsResult> {
     const points = await resolvePoints(lat, lon, ctx);
     // A point beyond the grid has no station list to follow: an empty result, not an error.
-    if (points.kind === 'gridless_marine') return { stations: [] };
+    if (points.kind !== 'gridded') return { stations: [] };
 
     const found = await this.fetchStations(points.observationStationsUrl, ctx);
     const stations = found.map((s) => {
@@ -934,7 +1057,7 @@ export class NwsService {
     const graph = (listData['@graph'] as ProductListEntry[] | undefined) ?? [];
 
     if (graph.length === 0) {
-      if (!(await this.recordExists(`${BASE_URL}/offices/${office}`, ctx))) throw unknownOffice();
+      if (!(await this.probeRecord(`${BASE_URL}/offices/${office}`, ctx))) throw unknownOffice();
       throw notFound(
         `No ${productType} products are currently available for office "${office}". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
         {
@@ -968,32 +1091,34 @@ export class NwsService {
   /**
    * Probe an NWS record (`/offices/{id}`, `/zones/forecast/{id}`) on an error path
    * where the failed request cannot tell a valid ID with nothing to serve from an
-   * unknown one: true on HTTP 200, false on 404. A single request with no retries
-   * and no caching. Any other failure re-throws — an outage is not an answer about
-   * the ID.
+   * unknown one: the record body on HTTP 200, undefined on 404. A single request
+   * with no retries and no caching. Any other failure re-throws — an outage is not
+   * an answer about the ID.
    */
-  private async recordExists(url: string, ctx: Context): Promise<boolean> {
+  private async probeRecord(
+    url: string,
+    ctx: Context,
+  ): Promise<Record<string, unknown> | undefined> {
     try {
-      await nwsFetch<Record<string, unknown>>(url, ctx, 0, DEFAULT_NOT_FOUND, (message) =>
+      return await nwsFetch<Record<string, unknown>>(url, ctx, 0, DEFAULT_NOT_FOUND, (message) =>
         notFound(message, { probe: 'record-not-found' }),
       );
-      return true;
     } catch (error) {
-      if (error instanceof McpError && error.data?.probe === 'record-not-found') {
-        return false;
-      }
+      if (error instanceof McpError && error.data?.probe === 'record-not-found') return;
       throw error;
     }
   }
 
   /** Get the text forecast for a public forecast zone. */
   async getZoneForecast(zoneId: string, ctx: Context): Promise<ZoneForecastResult> {
-    // The tool's contract owns every recovery text below; resolving it here keeps
-    // one copy rather than a second that drifts from the first.
+    // The tool's contract owns every recovery text below: each throw carries only
+    // its reason, and the framework fills the matching contract hint, so there is
+    // one copy rather than a second that drifts from the first. The one exception
+    // is zone_forecast_unavailable with a point inside the zone, whose hint names it.
     const zoneNotFound = () =>
       notFound(
         `Zone "${zoneId}" is not a public forecast zone. Provide a public forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county and fire zones have no text forecast product.`,
-        { zoneId, reason: 'zone_not_found', ...ctx.recoveryFor('zone_not_found') },
+        { zoneId, reason: 'zone_not_found' },
       );
     if (!PATH_ID_PATTERN.test(zoneId)) throw zoneNotFound();
 
@@ -1018,7 +1143,6 @@ export class NwsService {
           return marineForecastUnsupported(
             `Zone "${zoneId}" is a marine zone; NWS publishes no text forecast for marine zones.`,
             { zoneId },
-            ctx,
           );
         }
         notFoundIsAmbiguous = problemType === 'NotFound';
@@ -1032,20 +1156,32 @@ export class NwsService {
       else if (error instanceof McpError && error.data?.status === 500) status = 500;
       else throw error;
 
-      const exists = await this.recordExists(zonePath, ctx).catch((probeError: unknown) => {
+      const record = await this.probeRecord(zonePath, ctx).catch((probeError: unknown) => {
         // An unanswered probe leaves the zone question open: a 500 keeps its own
         // failure, while a NotFound 404, which claims nothing alone, yields the
         // probe's. A caller that went away is always a cancellation.
         throw notFoundIsAmbiguous || ctx.signal.aborted ? probeError : error;
       });
-      if (!exists) throw zoneNotFound();
+      if (!record) throw zoneNotFound();
+
+      // The record's geometry yields a point for nws_get_forecast with no extra request;
+      // without one, the contract recovery stands.
+      const point = interiorPoint(record.geometry);
+      const unavailable = `Zone "${zoneId}" exists, but NWS has no text forecast for it — the forecast request returned HTTP ${status}.`;
       throw notFound(
-        `Zone "${zoneId}" exists, but NWS has no text forecast for it — the forecast request returned HTTP ${status}.`,
+        point
+          ? `${unavailable} (${point.latitude}, ${point.longitude}) is a point inside the zone.`
+          : unavailable,
         {
           zoneId,
           upstreamStatus: status,
+          ...(point && {
+            ...point,
+            recovery: {
+              hint: `Call nws_get_forecast with latitude ${point.latitude} and longitude ${point.longitude}, a point inside ${zoneId}, for its point forecast; NWS usually serves one where a zone has no zone text product.`,
+            },
+          }),
           reason: 'zone_forecast_unavailable',
-          ...ctx.recoveryFor('zone_forecast_unavailable'),
         },
         { cause: error },
       );

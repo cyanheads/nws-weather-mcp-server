@@ -3,7 +3,7 @@
  * @module tests/tools/office-discussion-extended
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OfficeDiscussionResult } from '@/services/nws/nws-service.js';
 
@@ -41,6 +41,27 @@ describe('nws_get_office_discussion extended', () => {
       await getOfficeDiscussionTool.handler(input, ctx);
 
       expect(mockGetOfficeDiscussion).toHaveBeenCalledWith('SEW', 'AFD', ctx);
+    });
+
+    it('falls back to the AFD default for a blank product_type (issue #46)', async () => {
+      mockGetOfficeDiscussion.mockResolvedValueOnce(baseResult);
+
+      const result = await runToolContract(getOfficeDiscussionTool, {
+        office: 'SEW',
+        product_type: '',
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({ productCode: 'AFD' });
+      const text = result.content.map((block) => ('text' in block ? block.text : '')).join('\n');
+      expect(text).toContain('Area Forecast Discussion (AFD)');
+      expect(mockGetOfficeDiscussion).toHaveBeenCalledWith('SEW', 'AFD', expect.anything());
+    });
+
+    it('still rejects an unknown product_type at the schema', () => {
+      expect(() =>
+        getOfficeDiscussionTool.input.parse({ office: 'SEW', product_type: 'afd' }),
+      ).toThrow();
     });
 
     it('passes all valid product_type values to service', async () => {

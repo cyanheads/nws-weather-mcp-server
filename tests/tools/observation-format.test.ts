@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { formatTimestamp } from '@/mcp-server/tools/format-utils.js';
 
 vi.mock('@/services/nws/nws-service.js', () => ({
   getNwsService: () => ({}),
@@ -246,5 +247,129 @@ describe('nws_get_observations format() — sparse payloads', () => {
     const t = (blocks[0] as { type: 'text'; text: string }).text;
     expect(t).toContain('KTEST');
     // should render without crashing
+  });
+});
+
+/**
+ * Whole-output pins. The unit converters and dual-unit formatters this tool
+ * renders with are shared with nws_get_observation_history, so the exact text
+ * is fixed here: a change to a shared helper that moves one character of this
+ * tool's output fails these, not just the substring checks above.
+ *
+ * The one exception is the observation time. `formatTimestamp` renders through
+ * `toLocaleString`, whose ICU data differs by runtime (Node writes "Wed, Sep 30,
+ * 5:00 AM", Bun "Wed, Sep 30 at 5:00 AM"), so its output is swapped for a marker
+ * and every other byte is pinned.
+ */
+function pinned(
+  overrides: Partial<Parameters<NonNullable<typeof getObservationsTool.format>>[0]> = {},
+) {
+  const timestamp = overrides.timestamp ?? '2026-04-03T11:53:00+00:00';
+  const timeZone = overrides.timeZone === undefined ? 'America/Los_Angeles' : overrides.timeZone;
+  return text(overrides).replace(formatTimestamp(timestamp, timeZone), '<observed>');
+}
+
+describe('nws_get_observations format() — exact output', () => {
+  it('pins a full report with gusts, heat index, and cloud layers', () => {
+    expect(
+      pinned({
+        temperatureC: 31.6,
+        dewpointC: 21.2,
+        windSpeedKmh: 24.1,
+        windDirectionDeg: 225.4,
+        windGustKmh: 40.7,
+        barometricPressurePa: 101693.25,
+        visibilityM: 16093.44,
+        relativeHumidityPct: 54.4,
+        heatIndexC: 34.8,
+        cloudLayers: [
+          { amount: 'FEW', baseM: 610 },
+          { amount: 'BKN', baseM: 1524.123 },
+          { amount: 'OVC', baseM: null },
+        ],
+      }),
+    ).toMatchInlineSnapshot(`
+      "## Current Conditions — Seattle-Tacoma Intl (KSEA)
+      **Partly Cloudy** | Observed: <observed> (America/Los_Angeles)
+
+      **Temperature:** 89°F (32°C)
+      **Dewpoint:** 70°F (21°C)
+      **Humidity:** 54%
+      **Wind:** 225° 15 mph (24 km/h), gusts 25 mph (41 km/h)
+      **Pressure:** 30.03 inHg (1017 hPa, 101693 Pa)
+      **Visibility:** 10 mi (16.1 km, 16093 m)
+      **Heat Index:** 95°F (35°C)
+      **Clouds:** FEW at 610m (2001 ft), BKN at 1524m (5000 ft), OVC"
+    `);
+  });
+
+  it('pins a calm, cold report with wind chill and an offset-only timestamp', () => {
+    expect(
+      pinned({
+        timeZone: null,
+        timestamp: '2026-01-15T06:53:00-05:00',
+        textDescription: 'Clear',
+        temperatureC: -12.2,
+        dewpointC: -18.3,
+        windSpeedKmh: 0,
+        windDirectionDeg: null,
+        windGustKmh: null,
+        barometricPressurePa: 103050,
+        visibilityM: 402.3,
+        relativeHumidityPct: 60,
+        windChillC: -19.7,
+      }),
+    ).toMatchInlineSnapshot(`
+      "## Current Conditions — Seattle-Tacoma Intl (KSEA)
+      **Clear** | Observed: <observed>
+
+      **Temperature:** 10°F (-12°C)
+      **Dewpoint:** -1°F (-18°C)
+      **Humidity:** 60%
+      **Wind:** Calm
+      **Pressure:** 30.43 inHg (1031 hPa, 103050 Pa)
+      **Visibility:** 0.2 mi (0.4 km, 402 m)
+      **Wind Chill:** -3°F (-20°C)"
+    `);
+  });
+
+  it('pins a sparse report with the limited-data notice', () => {
+    expect(
+      pinned({
+        textDescription: '',
+        temperatureC: 8,
+        dewpointC: null,
+        windSpeedKmh: null,
+        windDirectionDeg: 180,
+        windGustKmh: null,
+        barometricPressurePa: null,
+        visibilityM: null,
+        relativeHumidityPct: null,
+      }),
+    ).toMatchInlineSnapshot(`
+      "## Current Conditions — Seattle-Tacoma Intl (KSEA)
+      Observed: <observed> (America/Los_Angeles)
+
+      **Temperature:** 46°F (8°C)
+      **Wind:** Not available
+
+      _Limited data — most measurements unavailable from this station. Try a different station using nws_find_stations._"
+    `);
+  });
+
+  it('pins a wind report with direction and no gust', () => {
+    expect(
+      pinned({ windSpeedKmh: 11.1, windDirectionDeg: 359.6, windGustKmh: null }),
+    ).toMatchInlineSnapshot(`
+      "## Current Conditions — Seattle-Tacoma Intl (KSEA)
+      **Partly Cloudy** | Observed: <observed> (America/Los_Angeles)
+
+      **Temperature:** 59°F (15°C)
+      **Dewpoint:** 46°F (8°C)
+      **Humidity:** 60%
+      **Wind:** 360° 7 mph (11 km/h)
+      **Pressure:** 29.92 inHg (1013 hPa, 101325 Pa)
+      **Visibility:** 9.9 mi (16 km, 16000 m)"
+    `);
   });
 });

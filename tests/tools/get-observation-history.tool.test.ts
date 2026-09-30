@@ -231,6 +231,11 @@ describe('nws_get_observation_history', () => {
       ['start', '2026-09-30', 'a date with no time'],
       ['start', '2026-09-30T10:00Z', 'a time with no seconds'],
       ['start', '2026-09-30T10:00:00', 'no offset'],
+      [
+        'start',
+        '2026-09-30T10:00:00.1234567Z',
+        'seven fractional-second digits, past the six NWS takes',
+      ],
       ['end', '2026-09-30T10:00:00+24:00', 'offset hour 24'],
       ['end', '2026-09-30T10:00:00+05:60', 'offset minute 60'],
       ['end', 'yesterday', 'free text'],

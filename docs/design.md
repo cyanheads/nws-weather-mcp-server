@@ -157,7 +157,7 @@ Pages back through one station's recent observations, newest first: the trend be
 
 **Error modes:**
 - A `station_id` that is not a plain alphanumeric token, or one NWS has no station record for -> `station_not_found` (NotFound). NWS answers an unknown station's observation list with 200 and an empty collection, so the station record's 404 decides, even when the list came back 200.
-- `start` or `end` not an ISO 8601 date-time with seconds and an offset, a date that does not exist (e.g. `2026-02-30`), or `start` not before `end` -> `invalid_time_window` (ValidationError), before any request. NWS answers a date-only value with a 400 and a calendar-invalid one with a 500.
+- `start` or `end` not an ISO 8601 date-time with seconds (at most six fractional digits) and an offset, a date that does not exist (e.g. `2026-02-30`), or `start` not before `end` -> `invalid_time_window` (ValidationError), before any request. NWS answers a date-only value or a seventh fractional digit with a 400 and a calendar-invalid one with a 500.
 - A malformed cursor, or one whose decoded window fails the same timestamp checks -> `-32602 InvalidParams` (`invalid_cursor`), before any request. As on the other paged tools, not a declared reason.
 - A valid station with no observations in the window is a success: empty `observations` and a notice naming the ~7-day retention.
 

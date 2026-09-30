@@ -21,11 +21,12 @@ const MAX_LIMIT = 100;
 
 /**
  * An ISO 8601 date-time with seconds and an explicit offset. NWS answers a date-only
- * value, or one without seconds, with a 400, and a calendar-invalid one with a 500,
- * so the handler validates before any request goes out.
+ * value, one without seconds, or one with more than six fractional-second digits
+ * with a 400, and a calendar-invalid one with a 500, so the handler validates
+ * before any request goes out.
  */
 const DATE_TIME_RE =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 
 /**
  * Epoch milliseconds of a well-formed, calendar-valid date-time, or undefined.

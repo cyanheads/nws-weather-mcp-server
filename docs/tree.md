@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-09-30 11:16:00
+Generated on: 2026-10-16 15:47:24
 
 ```text
 nws-weather-mcp-server/
@@ -25,6 +25,7 @@ nws-weather-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.10.x/
+│   ├── 0.11.x/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
@@ -135,6 +136,7 @@ nws-weather-mcp-server/
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
@@ -150,6 +152,7 @@ nws-weather-mcp-server/
 │   │       ├── definitions/
 │   │       │   ├── find-stations.tool.ts
 │   │       │   ├── get-alert-counts.tool.ts
+│   │       │   ├── get-alert.tool.ts
 │   │       │   ├── get-forecast.tool.ts
 │   │       │   ├── get-observation-history.tool.ts
 │   │       │   ├── get-observations.tool.ts
@@ -158,17 +161,32 @@ nws-weather-mcp-server/
 │   │       │   ├── index.ts
 │   │       │   ├── list-alert-types.tool.ts
 │   │       │   └── search-alerts.tool.ts
-│   │       └── format-utils.ts
+│   │       ├── alert-output.ts
+│   │       ├── format-utils.ts
+│   │       ├── page-limit.ts
+│   │       └── unset-if-blank.ts
 │   ├── services/
 │   │   └── nws/
 │   │       ├── interior-point.ts
 │   │       ├── nws-service.ts
+│   │       ├── product-sections.ts
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
 │   ├── config/
 │   │   └── server-config.test.ts
 │   ├── fixtures/
+│   │   ├── products/
+│   │   │   ├── afc-afd.json
+│   │   │   ├── akq-zfp.json
+│   │   │   ├── box-afd.json
+│   │   │   ├── key-zfp.json
+│   │   │   ├── lot-hwo.json
+│   │   │   ├── lox-afd.json
+│   │   │   ├── otx-zfp.json
+│   │   │   ├── sew-afd.wire.json
+│   │   │   ├── sew-zfp.json
+│   │   │   └── slc-afd.json
 │   │   └── nws-responses.ts
 │   ├── http/
 │   │   └── error-contract.test.ts
@@ -179,12 +197,14 @@ nws-weather-mcp-server/
 │   │   └── nws/
 │   │       ├── interior-point.test.ts
 │   │       ├── nws-service-extended.test.ts
-│   │       └── nws-service.test.ts
+│   │       ├── nws-service.test.ts
+│   │       └── product-sections.test.ts
 │   └── tools/
 │       ├── count-vocabulary.test.ts
 │       ├── find-stations.tool.test.ts
 │       ├── format-utils.test.ts
 │       ├── get-alert-counts.tool.test.ts
+│       ├── get-alert.tool.test.ts
 │       ├── get-forecast.tool.test.ts
 │       ├── get-observation-history.tool.test.ts
 │       ├── get-observations.tool.test.ts

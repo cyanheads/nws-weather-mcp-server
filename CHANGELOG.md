@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.11.0](changelog/0.11.x/0.11.0.md) — 2026-10-16 · ⚠️ Breaking
+
+Adds nws_get_alert for single alert messages by ID, outlines narrative products over 24,000 bytes with a sections input on nws_get_office_discussion, and serves oversized limits at the page cap. Fixes observation-history truncation, alert reference order, and marine and out-of-coverage errors. mcp-ts-core moves ^0.13.10 to ^0.13.15.
+
 ## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-09-30
 
 Adds nws_get_alert_counts and nws_get_observation_history, treats blank optional inputs as unset, and gives gridless land points and open-ocean point failures actionable answers. mcp-ts-core moves ^0.13.6 to ^0.13.10.

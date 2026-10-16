@@ -18,12 +18,8 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/nws-weather-mcp-server",
-      "runtimeHint": "bun",
+      "runtimeHint": "npx",
       "version": "0.10.0",
-      "packageArguments": [
-        { "type": "positional", "value": "run" },
-        { "type": "positional", "value": "start:stdio" }
-      ],
       "environmentVariables": [
         {
           "name": "NWS_USER_AGENT",
@@ -48,13 +44,15 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/nws-weather-mcp-server",
-      "runtimeHint": "bun",
+      "runtimeHint": "npx",
       "version": "0.10.0",
-      "packageArguments": [
-        { "type": "positional", "value": "run" },
-        { "type": "positional", "value": "start:http" }
-      ],
       "environmentVariables": [
+        {
+          "name": "MCP_TRANSPORT_TYPE",
+          "description": "Selects the HTTP transport.",
+          "format": "string",
+          "value": "http"
+        },
         {
           "name": "NWS_USER_AGENT",
           "description": "User-Agent header for NWS API requests. The API requires this header but a default is provided.",

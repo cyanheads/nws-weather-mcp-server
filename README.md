@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/nws-weather-mcp-server</h1>
   <p><b>Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.</b>
-  <div>9 Tools • 1 Resource</div>
+  <div>10 Tools • 1 Resource</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.10.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.1.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.10.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Overview
 
-US weather data from the National Weather Service API (`api.weather.gov`). Get forecasts, active alerts, current observations, forecast-office narrative products, and zone-level text forecasts for any coordinate in the 50 states and US territories, plus national alert counts and a station's last ~7 days of observations. Adjacent marine areas are covered by alerts, plus stations and observations near the coast; NWS publishes no point or zone text forecast for them. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+US weather data from the National Weather Service API (`api.weather.gov`). Get forecasts, active alerts, current observations, forecast-office narrative products, and zone-level text forecasts for any coordinate in the 50 states and US territories, plus national alert counts and a station's last ~7 days of observations. Adjacent marine areas are covered by alerts, plus stations and observations near the coast; NWS publishes no point forecast for them, and zone text forecasts for marine zones vary by zone. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
@@ -37,13 +37,14 @@ US weather data from the National Weather Service API (`api.weather.gov`). Get f
 |:----------|:------------|
 | `nws_get_forecast` | 7-day or hourly forecast for coordinates. Resolves NWS grid internally. |
 | `nws_search_alerts` | Active weather alerts filtered by area, point, zone, event, severity, urgency, certainty, and status. |
+| `nws_get_alert` | One alert message by ID, current or superseded (~7-day retention). |
 | `nws_get_alert_counts` | Active alert counts nationwide, per state/territory or marine area, and per marine region. |
 | `nws_get_observations` | Current conditions by coordinates (nearest station) or station ID. |
 | `nws_get_observation_history` | A station's recent observations, newest first, paged back through the ~7 days NWS keeps. |
 | `nws_find_stations` | Nearby observation stations sorted by distance with bearing. |
 | `nws_list_alert_types` | All valid alert event type names for filter discovery. |
-| `nws_get_office_discussion` | Latest narrative product (AFD, HWO, ZFP, SPS) from a Weather Forecast Office. |
-| `nws_get_zone_forecast` | Text forecast periods for a public NWS forecast zone. |
+| `nws_get_office_discussion` | Latest narrative product (AFD, HWO, ZFP, SPS) from a Weather Forecast Office; a product too large to inline comes back as a section outline. |
+| `nws_get_zone_forecast` | Text forecast periods for an NWS forecast zone. |
 
 ### Resources
 
@@ -57,15 +58,24 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 ### `nws_get_forecast` <sub>tool</sub>
 
-- `latitude` + `longitude`; returns named 12-hour periods by default (14, ~7 days), or with `hourly: true` one-hour periods with dewpoint and humidity, 48 per page of the ~156 upstream
+- `latitude` + `longitude`; returns named 12-hour periods by default (14, ~7 days), or with `hourly: true` one-hour periods (named by weekday and start time in the location's time zone, e.g. `Fri 6:00 AM`) with dewpoint and humidity, 48 per page of the ~156 upstream
 - Returns the `forecastZone` and `county` zone codes for chaining into `nws_search_alerts`; marine coordinates fail with a typed `marine_forecast_unsupported` error pointing to a nearby land point or `nws_search_alerts`, and land points NWS serves no forecast grid for with `no_forecast_grid`
 
 ---
 
 ### `nws_search_alerts` <sub>tool</sub>
 
-- At most one location filter — `area`, `point`, `zone`, `region_type`, or `region` — or none for a national search; `event` matches case-insensitively and partially; `status` defaults to `Actual` (also `Exercise`, `System`, `Test`, `Draft`); `limit` 1-25 (default 25) per page
-- Each `affectedZones` entry carries its zone `type` (`forecast`/`county`/`fire`), marking which codes chain into `nws_get_zone_forecast`; CAP message-lifecycle fields (`sent`, `effective`, `status`, `messageType`, `references`) are distinct from the hazard's own `onset`/`ends`
+- At most one location filter — `area`, `point`, `zone`, `region_type`, or `region` — or none for a national search; `event` matches case-insensitively and partially; `status` defaults to `Actual` (also `Exercise`, `System`, `Test`, `Draft`); `limit` (default 25) pages at most 25 alerts, and a larger limit is served as 25 and reported through `requestedLimit`/`effectiveLimit`
+- Each `affectedZones` entry carries its zone `type` (`forecast`/`county`/`fire`), marking which codes chain into `nws_get_zone_forecast`; CAP message-lifecycle fields (`sent`, `effective`, `status`, `messageType`, `references`) are distinct from the hazard's own `onset`/`ends`; `references` lists superseded messages newest first by `sent`
+- A `point` outside NWS coverage fails with `invalid_point`
+
+---
+
+### `nws_get_alert` <sub>tool</sub>
+
+- `alert_id`: an alert `id` from `nws_search_alerts`, or a `references[].identifier` from any alert; returns `{ alert }` in the same shape `nws_search_alerts` returns, including superseded messages that an active-alert search no longer lists
+- The message's own `references` run newest first, so the references sharing the newest `sent` are its immediate predecessors (`references[0]` is one; an update can merge several earlier segments) and a revision chain is walked one call per message
+- A malformed ID, an unknown one, and one past NWS's ~7-day retention all fail with a typed `alert_not_found` error
 
 ---
 
@@ -85,15 +95,15 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 ### `nws_get_observation_history` <sub>tool</sub>
 
-- `station_id` (from `nws_find_stations`); optional `start` (inclusive) and `end` (exclusive) as ISO 8601 date-times with seconds and an offset; `limit` 1-100 (default 24) per page, newest first, back through the ~7 days NWS keeps
+- `station_id` (from `nws_find_stations`); optional `start` (inclusive) and `end` (exclusive) as ISO 8601 date-times with seconds and an offset; `limit` (default 24) pages at most 100 observations, and a larger limit is served as 100 and reported through `requestedLimit`/`effectiveLimit`; newest first, back through the ~7 days NWS keeps
 - Each observation carries the `nws_get_observations` measurement fields, `null` where the station reported nothing; an unknown station fails with `station_not_found`, and a malformed window or a `start` not before `end` with `invalid_time_window`
-- `nextCursor` appears only when a page fills `limit`, and pages neither repeat nor skip an observation; no `totalCount`, since NWS reports none for a window
+- `nextCursor` appears only when older observations remain in the window (a window holding exactly `limit` ends with no cursor), and pages neither repeat nor skip an observation; no `totalCount`, since NWS reports none for a window
 
 ---
 
 ### `nws_find_stations` <sub>tool</sub>
 
-- `latitude` + `longitude`; optional `limit` (1-50, default 10) sizes the page
+- `latitude` + `longitude`; optional `limit` (default 10) sizes the page, at most 50 stations; a larger limit is served as 50 and reported through `requestedLimit`/`effectiveLimit`
 - Nearest first; each result carries the station ID for `nws_get_observations`, distance (km), bearing, zone codes, elevation, and time zone
 
 ---
@@ -107,15 +117,16 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 ### `nws_get_office_discussion` <sub>tool</sub>
 
-- `office`: 3-letter WFO code (e.g., "SEW" for Seattle), returned as the `office` field by `nws_get_forecast`; `product_type`: `AFD` (default), `HWO`, `ZFP`, or `SPS`
-- Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`; an unknown office, or a valid office with no current product of the requested type, fails with a typed `no_products` error
+- `office`: product location code of 2–3 letters or digits, usually the 3-letter WFO code (e.g., "SEW" for Seattle) returned as the `office` field by `nws_get_forecast`; Anchorage files its ZFP under `AER` and `ALU` rather than `AFC`, San Juan its ZFP under `PR`, and Guam its SPS under `PQ1`; `product_type`: `AFD` (default), `HWO`, `ZFP`, or `SPS`
+- Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`; an unknown office, or a valid office with no current product of the requested type, fails with a typed `no_products` error (SPS and HWO are episodic; for AFD and ZFP the recovery names the location-code case)
+- A product too large to inline (most ZFPs) returns an `outline` of its sections (name, area label, size) instead of `productText`; optional `sections` (AFD section names, or zone codes for ZFP/HWO/SPS) returns the product header, the matching sections verbatim, and the product's closing lines on a product of any size, and a name the product lacks fails with `unknown_section`. A `notice` names the worked re-call
 
 ---
 
 ### `nws_get_zone_forecast` <sub>tool</sub>
 
 - `zone_id`: forecast zone code (e.g., "WAZ315") — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`)
-- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters; county (`XXC###`), fire, and unknown zone codes fail with a typed `zone_not_found` error, marine forecast zones (e.g., `PZZ251`) with `marine_forecast_unsupported`, and a valid zone NWS publishes no text forecast for with `zone_forecast_unavailable`, which carries a point inside the zone for `nws_get_forecast`
+- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters; county (`XXC###`), fire, and unknown zone codes fail with a typed `zone_not_found` error, marine zones NWS publishes no text forecast for (offshore zones such as `GMZ056`, and some coastal zones such as `LMZ645`) with `marine_forecast_unsupported` (many coastal zones, e.g. `PZZ251`, return periods), and a valid land zone NWS publishes no text forecast for with `zone_forecast_unavailable`, which carries a point inside the zone for `nws_get_forecast`
 
 ---
 

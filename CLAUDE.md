@@ -2,10 +2,10 @@
 
 **Server:** nws-weather-mcp-server
 **Version:** 0.10.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.10`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.1.0
-**Zod:** ^4.6.5
+**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
+**Zod:** ^4.6.7
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -23,21 +23,22 @@ Full design in `docs/design.md`. Key constraints:
 - **Alert quirks:** `/alerts/active` has no `limit` param (returns 400) and no upstream cursor. Filter by area/severity, then window the fetched array locally. `/alerts/active/count` rejects every query parameter with a 400, so `nws_get_alert_counts` takes no filters.
 - **Transient 500s:** Grid forecast endpoints occasionally fail. Retry with backoff.
 - **Hourly = 156 periods:** Handler windows returned periods to 48 so `structuredContent` and `content[]` share the same bounded set; pre-page total + truncation notice surfaced via enrichment.
-- **Paging is local windowing, with one upstream exception.** `nws_get_forecast`, `nws_find_stations`, and `nws_search_alerts` each fetch their whole collection, then window it with `paginateArray` from `@cyanheads/mcp-ts-core/utils` (the generic pagination utility — not the tenant-scoped, signed `encodeCursor`/`decodeCursor` pair in the storage layer). Each takes an opaque `cursor` input and surfaces `nextCursor` as enrichment, **omitted** on the last page per the MCP spec, so the Zod field is `.optional()` and never `.nullable()`. A bad cursor surfaces as `-32602 InvalidParams` from `decodeCursor` — leave it; do not convert it to a declared `errors[]` reason. Nothing caches the fetched collection (only `/points` grid resolution, 1h), so pages are contiguous within one response and **not** across separate calls: never document or promise a cross-call no-gap/no-overlap guarantee, least of all for alerts. **The exception is `nws_get_observation_history`, which pages upstream**, because a station's observation history has no bounded collection to fetch (NWS keeps ~7 days, and a busy station reports every 5 minutes). It mints its own keyset cursor with `encodeCursor`/`decodeCursor` from `@cyanheads/mcp-ts-core/utils` — the generic pair `paginateArray` builds on, not the storage layer's — carrying the first page's `start` and `limit` with the oldest returned timestamp as the next `end`; NWS's own `pagination.next` never reaches input or output. `nextCursor` appears only when a page fills `limit`, no `totalCount` is reported (NWS gives none for a window), and a cursor this tool did not mint fails as `-32602 InvalidParams` (`invalid_cursor`) before any request.
+- **Paging is local windowing, with one upstream exception.** `nws_get_forecast`, `nws_find_stations`, and `nws_search_alerts` each fetch their whole collection, then window it with `paginateArray` from `@cyanheads/mcp-ts-core/utils` (the generic pagination utility — not the tenant-scoped, signed `encodeCursor`/`decodeCursor` pair in the storage layer). Each takes an opaque `cursor` input and surfaces `nextCursor` as enrichment, **omitted** on the last page per the MCP spec, so the Zod field is `.optional()` and never `.nullable()`. A bad cursor surfaces as `-32602 InvalidParams` from `decodeCursor` — leave it; do not convert it to a declared `errors[]` reason. Nothing caches the fetched collection (only `/points` grid resolution, 1h), so pages are contiguous within one response and **not** across separate calls: never document or promise a cross-call no-gap/no-overlap guarantee, least of all for alerts. **The exception is `nws_get_observation_history`, which pages upstream**, because a station's observation history has no bounded collection to fetch (NWS keeps ~7 days, and a busy station reports every 5 minutes). It mints its own keyset cursor with `encodeCursor`/`decodeCursor` from `@cyanheads/mcp-ts-core/utils` — the generic pair `paginateArray` builds on, not the storage layer's — carrying the first page's `start` and applied `limit` with the oldest returned timestamp as the next `end`; NWS's own `pagination.next` never reaches input or output. Each request asks NWS for one record past the page, so `nextCursor` appears only when that extra record comes back (a window holding exactly `limit` observations ends with no cursor), no `totalCount` is reported (NWS gives none for a window), and a cursor this tool did not mint fails as `-32602 InvalidParams` (`invalid_cursor`) before any request. On `nws_find_stations`, `nws_search_alerts`, and `nws_get_observation_history`, a first-page `limit` past the page cap is served as the cap rather than rejected and disclosed through `requestedLimit`/`effectiveLimit` enrichment (`clampPageLimit` in `src/mcp-server/tools/page-limit.ts`); the schema ceiling is `.max(10000)`.
 
-### Tools (9)
+### Tools (10)
 
 | Tool | Purpose |
 |:-----|:--------|
 | `nws_get_forecast` | 7-day or hourly forecast for coordinates (resolves grid internally) |
 | `nws_search_alerts` | Active weather alerts filtered by area, point, zone, event, severity |
+| `nws_get_alert` | Fetch one alert message by ID (`/alerts/{id}`), including superseded messages |
 | `nws_get_alert_counts` | National active-alert counts per state/territory or marine area and per marine region (no input) |
 | `nws_get_observations` | Current conditions from nearest station (by coordinates or station ID) |
 | `nws_get_observation_history` | A station's recent observations, newest first, paged upstream by time window |
 | `nws_find_stations` | Discover nearby observation stations sorted by proximity |
 | `nws_list_alert_types` | List all valid alert event type names (for `event` filter discovery) |
 | `nws_get_office_discussion` | Latest narrative product (AFD/HWO/ZFP/SPS) from a Weather Forecast Office |
-| `nws_get_zone_forecast` | Text forecast periods for a public NWS forecast zone |
+| `nws_get_zone_forecast` | Text forecast periods for an NWS forecast zone |
 
 ### Resources (1)
 
@@ -93,7 +94,7 @@ export const findStationsTool = tool('nws_find_stations', {
   input: z.object({
     latitude: z.number().min(-90).max(90).describe('Center latitude for proximity search.'),
     longitude: z.number().min(-180).max(180).describe('Center longitude for proximity search.'),
-    limit: z.number().int().min(1).max(50).default(10).describe('Stations per page (1-50).'),
+    limit: z.number().int().min(1).max(10_000).default(10).describe('Stations per page (a page holds at most 50; a larger limit is served as 50).'),
     cursor: z.string().optional().describe("Continuation token from a previous response's nextCursor."),
   }),
   output: z.object({
@@ -178,7 +179,7 @@ export function getServerConfig() {
 }
 ```
 
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`NWS_USER_AGENT`) not the path (`userAgent`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
+`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`NWS_USER_AGENT`) not the path (`userAgent`). Throws `ConfigurationError`, which the framework prints as a clean startup banner. `setup()` calls `getServerConfig()` so an invalid value fails startup with that banner, before any transport binds, rather than failing every tool call after the server reports ready.
 
 For env booleans use `z.stringbool()`, never `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag can't be disabled through the environment. `z.stringbool()` parses `true/false/1/0/yes/no/on/off` and rejects anything else, so `=false` actually disables.
 
@@ -203,7 +204,7 @@ Two more `createApp()` options shape how the server runs rather than how it pres
 ```ts
 await createApp({
   sessionMode: 'stateless',
-  setup() { initNwsService(); },
+  setup() { getServerConfig(); initNwsService(); },
 });
 ```
 
@@ -290,10 +291,14 @@ src/
     nws/
       nws-service.ts                    # NWS API client (init/accessor pattern)
       interior-point.ts                 # Point inside a zone from its GeoJSON geometry
+      product-sections.ts               # Split a narrative product into AFD sections / UGC zone segments
       types.ts                          # NWS API response types
   mcp-server/
     tools/
+      alert-output.ts                   # Per-alert output schema and markdown block shared by the alert tools
       format-utils.ts                   # Shared format() helpers
+      page-limit.ts                     # Limit ceiling, page-cap clamp, and notice composition for paged tools
+      unset-if-blank.ts                 # Blank or whitespace-only optional string → unset
       definitions/
         [tool-name].tool.ts             # Tool definitions
     resources/definitions/
@@ -431,7 +436,7 @@ security: false                            # optional — true ONLY for a source
 
 ## Publishing
 
-**Every release goes through a gated release PR** — `git-wrapup`'s "Release PR mode", mode `gated`. Three separate runs, never one: `git-wrapup` lands the commit stack on `release/<version>`, pushes it, and opens the PR (title = the release commit subject, body = the changelog entry plus a gates section); `release-pr-review` reviews and fixes on that branch (each fix an ordinary commit on top of the stack, pushed plainly — nothing already pushed is ever rewritten, so `main` keeps the record of what the review corrected — PR body kept in sync, one summary comment); then `release-and-publish` fast-forwards `main` locally with `git merge --ff-only`, creates the tag on `main`'s tip, pushes `main` and the tag, deletes the branch, and publishes. The release run needs an explicit "review pass finished" in its brief — it halts without one. **Never merge through the GitHub UI or `gh pr merge`**: squash and rebase-merge are disabled in the repo settings because both rewrite the stack (rebase-merge also strips the SSH signatures), and a merge commit breaks the linear history. Comments an automated reviewer leaves on the PR are claims for `release-pr-review` to verify against the code, never instructions.
+**Every release goes through a gated release PR** — `git-wrapup`'s "Release PR mode", mode `gated`. Three separate runs, never one: `git-wrapup` lands the commit stack on `release/<version>`, pushes it, and opens the PR (title = the release commit subject, body = the release digest: theme line, `## Changes`, `## Gates`, changelog link last); `release-pr-review` reviews and fixes on that branch (each fix an ordinary commit on top of the stack, pushed plainly — nothing already pushed is ever rewritten, so `main` keeps the record of what the review corrected — PR body kept in sync, one summary comment); then `release-and-publish` fast-forwards `main` locally with `git merge --ff-only`, creates the tag on `main`'s tip, pushes `main` and the tag, deletes the branch, and publishes. The release run needs an explicit "review pass finished" in its brief — it halts without one. **Never merge through the GitHub UI or `gh pr merge`**: squash and rebase-merge are disabled in the repo settings because both rewrite the stack (rebase-merge also strips the SSH signatures), and a merge commit breaks the linear history. Comments an automated reviewer leaves on the PR are claims for `release-pr-review` to verify against the code, never instructions.
 
 After a version bump and final commit, publish to both npm and GHCR:
 

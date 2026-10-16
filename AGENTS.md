@@ -444,6 +444,7 @@ After a version bump and final commit, publish to both npm and GHCR:
 bun publish --access public
 
 docker buildx build --platform linux/amd64,linux/arm64 \
+  --build-arg APP_VERSION=<version> \
   -t ghcr.io/cyanheads/nws-weather-mcp-server:<version> \
   -t ghcr.io/cyanheads/nws-weather-mcp-server:latest \
   --push .

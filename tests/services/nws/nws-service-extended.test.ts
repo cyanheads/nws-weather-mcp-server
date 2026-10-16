@@ -135,6 +135,71 @@ describe('NwsService extended', () => {
       await expect(result).rejects.toThrow('episodic');
     });
 
+    describe('empty product list for a valid office, per product type (issue #59)', () => {
+      /** Routes the list and office-probe requests by host and path; anything else is unmocked. */
+      const routeEmptyList = (office: string, productType: string) =>
+        mockFetch.mockImplementation(async (input) => {
+          const url = new URL(String(input));
+          if (url.hostname !== 'api.weather.gov') throw new Error(`unmocked fetch: ${url}`);
+          if (url.pathname === `/products/types/${productType}/locations/${office}`) {
+            return jsonResponse({ '@graph': [] });
+          }
+          if (url.pathname === `/offices/${office}`) return jsonResponse({ id: office });
+          throw new Error(`unmocked fetch: ${url}`);
+        });
+
+      it.each(['HWO', 'SPS'])('calls %s episodic', async (productType) => {
+        routeEmptyList('SEW', productType);
+        const ctx = createMockContext({ tenantId: 'test' });
+        const error = await service
+          .getNwsService()
+          .getOfficeDiscussion('SEW', productType, ctx)
+          .catch((e: unknown) => e);
+
+        expect(error).toMatchObject({
+          code: JsonRpcErrorCode.NotFound,
+          data: {
+            reason: 'no_products',
+            office: 'SEW',
+            productType,
+            recovery: {
+              hint: `${productType} products are issued only when conditions warrant. Retry with product_type "AFD" for the always-available forecast discussion.`,
+            },
+          },
+        });
+        expect((error as Error).message).toBe(
+          `No ${productType} products are currently available for office "SEW". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
+        );
+      });
+
+      it.each(['AFD', 'ZFP'])(
+        'says no %s is filed under the location code and names the Anchorage ZFP codes',
+        async (productType) => {
+          routeEmptyList('AFC', productType);
+          const ctx = createMockContext({ tenantId: 'test' });
+          const error = (await service
+            .getNwsService()
+            .getOfficeDiscussion('AFC', productType, ctx)
+            .catch((e: unknown) => e)) as { message: string; data: Record<string, unknown> };
+
+          expect(error).toMatchObject({
+            code: JsonRpcErrorCode.NotFound,
+            data: { reason: 'no_products', office: 'AFC', productType },
+          });
+          // Neither the message nor the hint calls a routine product episodic.
+          expect(error.message).toBe(
+            `No ${productType} product is filed under location code "AFC". Some offices file a product under location codes other than their WFO code — Anchorage (AFC) files its ZFP under "AER" (Anchorage East) and "ALU" (Anchorage West), and San Juan (SJU) its ZFP under "PR".`,
+          );
+          expect((error.data.recovery as { hint: string }).hint).toBe(
+            productType === 'ZFP'
+              ? 'Retry with the location code the office files its ZFP under (Anchorage: "AER" or "ALU"; San Juan: "PR"), or use nws_get_zone_forecast with a zone code for one zone\'s text forecast.'
+              : // No office files its AFD under another code, so the hint names none.
+                'Confirm the WFO code from the "office" field of nws_get_forecast output and retry with it.',
+          );
+        },
+      );
+    });
+
     it('treats a missing @graph key the same as an empty one (probes the office)', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse({}))

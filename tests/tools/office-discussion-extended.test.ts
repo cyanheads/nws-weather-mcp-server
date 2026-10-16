@@ -104,6 +104,31 @@ describe('nws_get_office_discussion extended', () => {
     });
   });
 
+  describe('wire output — under budget, no sections', () => {
+    it('returns the whole product on both surfaces with no outline or notice', async () => {
+      mockGetOfficeDiscussion.mockResolvedValueOnce(baseResult);
+
+      const result = await runToolContract(getOfficeDiscussionTool, { office: 'SEW' });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        issuanceTime: '2026-05-30T10:33:00+00:00',
+        issuingOffice: 'KSEW',
+        productCode: 'AFD',
+        productName: 'Area Forecast Discussion',
+        productText:
+          'FXUS66 KSEW 301033\nAFDSEW\n\nArea Forecast Discussion\nNWS Seattle WA\n.SYNOPSIS...\nDry pattern continues.',
+        wmoCollectiveId: 'FXUS66',
+      });
+      expect(result.content).toEqual([
+        {
+          type: 'text',
+          text: '## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\nFXUS66 KSEW 301033\nAFDSEW\n\nArea Forecast Discussion\nNWS Seattle WA\n.SYNOPSIS...\nDry pattern continues.',
+        },
+      ]);
+    });
+  });
+
   describe('format', () => {
     it('renders product name, code, issuing office, and WMO ID in header', () => {
       const blocks = getOfficeDiscussionTool.format!(baseResult);
@@ -134,6 +159,35 @@ describe('nws_get_office_discussion extended', () => {
       const t = (blocks[0] as { type: 'text'; text: string }).text;
       expect(t).toContain('## Hazardous Weather Outlook (HWO)');
       expect(t).toContain('FLUS44');
+    });
+
+    it('renders outline rows, labelled and unlabelled, in place of product text', () => {
+      const { productText: _text, ...metadata } = baseResult;
+      const blocks = getOfficeDiscussionTool.format!({
+        ...metadata,
+        productCode: 'ZFP',
+        productName: 'Zone Forecast Product',
+        outline: [
+          { name: 'WAZ315', label: 'City of Seattle', bytes: 2106 },
+          { name: 'FLZ076>078, IDZ001', bytes: 1869 },
+        ],
+      });
+      const t = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(t).toBe(
+        '## Zone Forecast Product (ZFP)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\n**2 sections** (largest first):\n\n- `WAZ315` — City of Seattle — 2106 bytes\n- `FLZ076>078, IDZ001` — 1869 bytes',
+      );
+    });
+
+    it('renders a selection exactly like a whole product', () => {
+      const selection = {
+        ...baseResult,
+        productText: 'AFDSEW\n\n.SYNOPSIS...\nDry pattern continues.',
+      };
+      const t = (getOfficeDiscussionTool.format!(selection)[0] as { type: 'text'; text: string })
+        .text;
+      expect(t).toBe(
+        '## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\nAFDSEW\n\n.SYNOPSIS...\nDry pattern continues.',
+      );
     });
 
     it('handles empty product text without crashing', () => {

@@ -124,10 +124,14 @@ describe('Input validation — limit bounds', () => {
     ).toThrow();
   });
 
-  it('rejects limit > 50 for nws_find_stations', () => {
+  it('rejects limit > 10000 for nws_find_stations, the ceiling past the 50-station page cap', () => {
     expect(() =>
-      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 51 }),
+      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 10_001 }),
     ).toThrow();
+    // Past the page cap but under the ceiling: accepted, then served up to the cap.
+    expect(
+      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 51 }).limit,
+    ).toBe(51);
   });
 
   it('accepts limit = 1 and limit = 50 for nws_find_stations', () => {

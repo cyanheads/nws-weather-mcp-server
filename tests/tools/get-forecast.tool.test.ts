@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ForecastResult } from '@/services/nws/nws-service.js';
@@ -67,9 +67,212 @@ function hourlyForecast(count: number): ForecastResult {
   };
 }
 
+type ForecastPeriodFixture = ForecastResult['forecast']['periods'][number];
+
+/** One upstream hourly period: empty `name`, metric dewpoint and humidity as NWS ships them. */
+function hourlyPeriod(
+  number: number,
+  startTime: string,
+  temperature: number,
+  dewpointC: number | null,
+  shortForecast: string,
+): ForecastPeriodFixture {
+  const start = new Date(startTime);
+  return {
+    number,
+    name: '',
+    startTime,
+    endTime: new Date(start.getTime() + 3_600_000).toISOString(),
+    isDaytime: true,
+    temperature,
+    temperatureUnit: 'F',
+    windSpeed: '2 mph',
+    windDirection: 'S',
+    shortForecast,
+    detailedForecast: '',
+    probabilityOfPrecipitation: { value: 0, unitCode: 'wmoUnit:percent' },
+    dewpoint: { value: dewpointC, unitCode: 'wmoUnit:degC' },
+    relativeHumidity: { value: 69, unitCode: 'wmoUnit:percent' },
+  };
+}
+
+/**
+ * Seattle hourly periods as `/gridpoints/SEW/.../forecast/hourly` returned them on
+ * 2026-10-16: NWS ships each dewpoint as the Celsius conversion of a whole °F value.
+ */
+const seattleHourly: ForecastResult = {
+  location: forecastResult.location,
+  forecast: {
+    generatedAt: '2026-10-16T13:50:39+00:00',
+    updateTime: '2026-10-16T06:26:45+00:00',
+    periods: [
+      hourlyPeriod(1, '2026-10-16T06:00:00-07:00', 53, 6.111111111111111, 'Mostly Sunny'),
+      hourlyPeriod(2, '2026-10-16T07:00:00-07:00', 53, 6.111111111111111, 'Partly Sunny'),
+      hourlyPeriod(4, '2026-10-16T09:00:00-07:00', 55, 6.666666666666667, 'Partly Sunny'),
+      hourlyPeriod(11, '2026-10-16T16:00:00-07:00', 73, 9.444444444444445, 'Mostly Sunny'),
+    ],
+  },
+};
+
+/** Text of every content block of a contract-run success result. */
+function contentText(result: Awaited<ReturnType<typeof runToolContract>>): string {
+  expect(result.isError).toBeFalsy();
+  return result.content
+    .filter((block) => block.type === 'text')
+    .map((block) => (block as { text: string }).text)
+    .join('\n');
+}
+
+type StructuredPeriod = { name: string; shortForecast: string; dewpointC: number | null };
+
+/** Run the tool through its contract boundary and return both surfaces. */
+async function runForecast(result: ForecastResult, hourly: boolean) {
+  mockGetForecast.mockResolvedValue(result);
+  const run = await runToolContract(getForecastTool, {
+    latitude: 47.6062,
+    longitude: -122.3321,
+    hourly,
+  });
+  const periods = (run.structuredContent as { periods: StructuredPeriod[] }).periods;
+  return { periods, text: contentText(run) };
+}
+
+/** Escape a literal for use inside a RegExp. */
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 describe('nws_get_forecast', () => {
   beforeEach(() => {
     mockGetForecast.mockReset();
+  });
+
+  describe('surface parity (issue #52)', () => {
+    it('derives each hourly name into structuredContent, equal to its content[] header', async () => {
+      const { periods, text } = await runForecast(seattleHourly, true);
+
+      expect(periods.map((p) => p.name)).toEqual([
+        'Fri 6:00 AM',
+        'Fri 7:00 AM',
+        'Fri 9:00 AM',
+        'Fri 4:00 PM',
+      ]);
+      for (const p of periods) {
+        expect(text).toMatch(
+          new RegExp(`^### ${escapeRegExp(p.name)} — ${escapeRegExp(p.shortForecast)}$`, 'm'),
+        );
+      }
+    });
+
+    it('renders each dewpoint Celsius at the structured precision, °F derived from it', async () => {
+      const { periods, text } = await runForecast(seattleHourly, true);
+
+      // structuredContent keeps tenths of a degree.
+      expect(periods.map((p) => p.dewpointC)).toEqual([6.1, 6.1, 6.7, 9.4]);
+      // content[] renders one dewpoint per period, ending its line, at that precision.
+      const dewpoints = text
+        .split('\n')
+        .filter((line) => line.includes('**Dewpoint:**'))
+        .map((line) => line.slice(line.indexOf('**Dewpoint:**')));
+      expect(dewpoints).toEqual([
+        '**Dewpoint:** 43°F (6.1°C)',
+        '**Dewpoint:** 43°F (6.1°C)',
+        '**Dewpoint:** 44°F (6.7°C)',
+        '**Dewpoint:** 49°F (9.4°C)',
+      ]);
+    });
+
+    it('labels hourly periods identically whatever the host TZ', async () => {
+      const originalTz = process.env.TZ;
+      const labels: string[][] = [];
+      try {
+        for (const tz of ['UTC', 'Asia/Tokyo', 'America/New_York']) {
+          process.env.TZ = tz;
+          const { periods } = await runForecast(seattleHourly, true);
+          labels.push(periods.map((p) => p.name));
+        }
+      } finally {
+        if (originalTz === undefined) delete process.env.TZ;
+        else process.env.TZ = originalTz;
+      }
+
+      expect(labels).toEqual(
+        Array(3).fill(['Fri 6:00 AM', 'Fri 7:00 AM', 'Fri 9:00 AM', 'Fri 4:00 PM']),
+      );
+    });
+
+    it('keeps upstream names on the 7-day forecast and renders no dewpoint when it is null', async () => {
+      const sevenDay: ForecastResult = {
+        ...forecastResult,
+        forecast: {
+          ...forecastResult.forecast,
+          periods: [
+            {
+              ...forecastResult.forecast.periods[0]!,
+              dewpoint: { value: null, unitCode: 'wmoUnit:degC' },
+            },
+            {
+              ...forecastResult.forecast.periods[0]!,
+              number: 2,
+              name: 'Tonight',
+              startTime: '2026-04-03T18:00:00-07:00',
+              endTime: '2026-04-04T06:00:00-07:00',
+              shortForecast: 'Mostly Clear',
+              dewpoint: { value: null, unitCode: 'wmoUnit:degC' },
+            },
+          ],
+        },
+      };
+
+      const { periods, text } = await runForecast(sevenDay, false);
+
+      expect(periods.map((p) => p.name)).toEqual(['Today', 'Tonight']);
+      expect(periods.map((p) => p.dewpointC)).toEqual([null, null]);
+      expect(text).toMatch(/^### Today — Mostly Sunny$/m);
+      expect(text).toMatch(/^### Tonight — Mostly Clear$/m);
+      expect(text).not.toContain('Dewpoint');
+    });
+
+    it('labels hours in the forecast location TZ, not UTC (regression: issue #6)', async () => {
+      // 15:00 UTC = 8:00 AM PDT.
+      const { periods, text } = await runForecast(
+        {
+          ...seattleHourly,
+          forecast: {
+            ...seattleHourly.forecast,
+            periods: [hourlyPeriod(1, '2026-04-19T15:00:00Z', 51, 8.5, 'Cloudy')],
+          },
+        },
+        true,
+      );
+
+      expect(periods[0]!.name).toBe('Sun 8:00 AM');
+      expect(text).toMatch(/^### Sun 8:00 AM — Cloudy$/m);
+      expect(text).not.toMatch(/^### Sun 3:00 PM/m);
+    });
+
+    it('labels hours consistently with the time range rendered below them', async () => {
+      // 18:00 UTC = 2:00 PM EDT.
+      const { periods, text } = await runForecast(
+        {
+          location: {
+            ...forecastResult.location,
+            city: 'Boston',
+            state: 'MA',
+            timeZone: 'America/New_York',
+          },
+          forecast: {
+            ...seattleHourly.forecast,
+            periods: [hourlyPeriod(1, '2026-07-04T18:00:00Z', 78, null, 'Sunny')],
+          },
+        },
+        true,
+      );
+
+      expect(periods[0]!.name).toBe('Sat 2:00 PM');
+      // The header and the range line directly below it name the same hour.
+      expect(text).toMatch(
+        /^### Sat 2:00 PM — Sunny\n_[^\n]*\b2:00 PM EDT → [^\n]*\b3:00 PM EDT_$/m,
+      );
+    });
   });
 
   it('parses valid input', () => {
@@ -417,84 +620,6 @@ describe('nws_get_forecast', () => {
       const blocks = getForecastTool.format!(output);
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('No forecast periods available for this location.');
-    });
-
-    it('renders hourly period headers in the forecast location TZ (regression: issue #6)', () => {
-      // 15:00 UTC = 8:00 AM PDT — header should reflect PDT, not the host's TZ.
-      // When `name` is empty (hourly periods), the label is derived from startTime.
-      const output = {
-        location: {
-          city: 'Seattle',
-          state: 'WA',
-          office: 'SEW',
-          timeZone: 'America/Los_Angeles',
-          forecastZone: 'WAZ558',
-          county: 'WAC033',
-        },
-        generatedAt: '2026-04-19T12:00:00Z',
-        periods: [
-          {
-            name: '', // empty name → triggers periodLabel() derivation
-            startTime: '2026-04-19T15:00:00Z',
-            endTime: '2026-04-19T16:00:00Z',
-            temperature: 51,
-            temperatureUnit: 'F',
-            windSpeed: '2 mph',
-            windDirection: 'N',
-            shortForecast: 'Cloudy',
-            detailedForecast: '',
-            precipChancePct: 0,
-            dewpointC: 8.5,
-            relativeHumidityPct: 75,
-          },
-        ],
-      };
-
-      const blocks = getForecastTool.format!(output);
-      const text = (blocks[0] as { type: 'text'; text: string }).text;
-      // Header should be "Sun 8:00 AM" (PDT), not "Sun 3:00 PM" (UTC) or
-      // anything from the host TZ. Match the header line precisely so it's
-      // resilient to any unrelated formatter changes.
-      expect(text).toMatch(/^### Sun 8:00 AM — /m);
-      expect(text).not.toMatch(/^### Sun 3:00 PM$/m);
-    });
-
-    it('renders hourly headers consistently with the time range below them', () => {
-      // The header and the range line below it should agree on the time. Before
-      // the fix they disagreed by the host-vs-location TZ delta.
-      const output = {
-        location: {
-          city: 'Boston',
-          state: 'MA',
-          office: 'BOX',
-          timeZone: 'America/New_York',
-          forecastZone: 'MAZ014',
-          county: 'MAC025',
-        },
-        generatedAt: '2026-07-04T12:00:00Z',
-        periods: [
-          {
-            name: '',
-            startTime: '2026-07-04T18:00:00Z', // 2:00 PM EDT
-            endTime: '2026-07-04T19:00:00Z',
-            temperature: 78,
-            temperatureUnit: 'F',
-            windSpeed: '5 mph',
-            windDirection: 'SW',
-            shortForecast: 'Sunny',
-            detailedForecast: '',
-            precipChancePct: null,
-            dewpointC: null,
-            relativeHumidityPct: null,
-          },
-        ],
-      };
-
-      const blocks = getForecastTool.format!(output);
-      const text = (blocks[0] as { type: 'text'; text: string }).text;
-      // Header should match the start time of the range (2:00 PM EDT).
-      expect(text).toContain('### Sat 2:00 PM');
-      expect(text).toContain('2:00 PM EDT → ');
     });
 
     it('preserves NWS-supplied named periods on the standard 12-hour forecast', () => {

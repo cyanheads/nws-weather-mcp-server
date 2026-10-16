@@ -6,6 +6,7 @@
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { formatTimestamp } from '@/mcp-server/tools/format-utils.js';
 import type { AlertSearchResult } from '@/services/nws/nws-service.js';
 
 const mockSearchAlerts = vi.fn<() => Promise<AlertSearchResult>>();
@@ -350,6 +351,71 @@ describe('nws_search_alerts', () => {
       expect(text).toContain('**Supersedes:**');
       expect(text).toContain('urn:oid:prior.001.1');
       expect(text).toContain('urn:oid:prior.000.1');
+    });
+
+    it('renders a page of full and sparse alerts byte for byte', () => {
+      // Pins the per-alert block and its separators across two alerts — one with
+      // every optional line, one with every nullable field null and no zones.
+      const blocks = searchAlertsTool.format!({
+        alerts: [
+          formatAlert({
+            messageType: 'Update',
+            references: [{ identifier: 'urn:oid:prior.001.1', sent: '2026-04-03T04:00:00-07:00' }],
+          }),
+          formatAlert({
+            id: 'urn:oid:sparse',
+            headline: null,
+            description: null,
+            instruction: null,
+            onset: null,
+            ends: null,
+            expires: null,
+            affectedZones: [],
+          }),
+        ],
+      });
+
+      // Timestamps go through the shared formatter, whose locale text differs by
+      // runtime ICU; everything around them is pinned literally.
+      const pdt = (iso: string) => formatTimestamp(iso, 'America/Los_Angeles');
+      const offset = (iso: string) => formatTimestamp(iso);
+      const sent = '2026-04-03T05:00:00-07:00';
+
+      expect((blocks[0] as { type: 'text'; text: string }).text).toBe(
+        [
+          '## 2 Active Alerts\n',
+          '### Wind Advisory',
+          '_ID: urn:oid:2.49.0.1.840.0.abc123_',
+          '**Wind Advisory issued April 3**',
+          '**Severity:** Moderate | **Urgency:** Expected | **Certainty:** Likely',
+          '**Area:** King County',
+          `**Hazard onset:** ${pdt('2026-04-03T12:00:00-07:00')}`,
+          `**Hazard ends:** ${pdt('2026-04-03T18:00:00-07:00')}`,
+          `**Message valid until:** ${pdt('2026-04-04T00:00:00-07:00')}`,
+          '**Message type:** Update | **Status:** Actual',
+          `**Message sent:** ${pdt(sent)} | **Message effective:** ${pdt(sent)}`,
+          `**Supersedes:** urn:oid:prior.001.1 (sent ${pdt('2026-04-03T04:00:00-07:00')})`,
+          '**From:** NWS Seattle WA',
+          '**Zones:** WAZ558 (forecast)',
+          '',
+          'Strong winds expected.',
+          '',
+          '**Recommended Actions:** Secure outdoor objects.',
+          '',
+          '---',
+          '',
+          '### Wind Advisory',
+          '_ID: urn:oid:sparse_',
+          '**Severity:** Moderate | **Urgency:** Expected | **Certainty:** Likely',
+          '**Area:** King County',
+          '**Message type:** Alert | **Status:** Actual',
+          `**Message sent:** ${offset(sent)} | **Message effective:** ${offset(sent)}`,
+          '**From:** NWS Seattle WA',
+          '',
+          '---',
+          '',
+        ].join('\n'),
+      );
     });
 
     it('keeps the lifecycle lines from displacing the hazard timing block (issues #7, #18, #33)', () => {

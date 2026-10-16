@@ -15,16 +15,17 @@ import {
   formatWind,
   roundValue,
 } from '../format-utils.js';
+import { unsetIfBlank } from '../unset-if-blank.js';
 
 /**
- * Trim an optional station ID. Form-based clients send every optional field they
- * display, empty ones as "", so a blank or whitespace-only station_id is unset
- * and the coordinates, when given, resolve the nearest station (issue #46).
+ * Station ID shape advertised as a JSON Schema `pattern` (issue #54): letters and
+ * digits in any case and length, with surrounding whitespace, or blank. NWS station
+ * IDs run 3–10 characters with no letter-first rule ("000PG", "NTC1612401"). A
+ * malformed ID still fails in the service as station_not_found; the pattern only
+ * tells a client the shape. The trailing `\s*` sits inside the optional group so a
+ * long whitespace run cannot split between two `\s*` and backtrack quadratically.
  */
-function normalizeStationId(stationId: string | undefined): string | undefined {
-  const normalized = stationId?.trim();
-  return normalized ? normalized : undefined;
-}
+export const STATION_ID_INPUT_PATTERN = /^\s*(?:[A-Za-z0-9]+\s*)?$/;
 
 export const getObservationsTool = tool('nws_get_observations', {
   description:
@@ -102,6 +103,7 @@ export const getObservationsTool = tool('nws_get_observations', {
     station_id: z
       .string()
       .optional()
+      .meta({ pattern: STATION_ID_INPUT_PATTERN.source })
       .describe(
         'Station identifier directly (e.g., "KSEA", "KORD"). Use nws_find_stations to discover station IDs.',
       ),
@@ -154,7 +156,8 @@ export const getObservationsTool = tool('nws_get_observations', {
   },
 
   async handler(input, ctx) {
-    const normalizedStationId = normalizeStationId(input.station_id);
+    // A blank station_id is unset, so given coordinates resolve the nearest station (issue #46).
+    const normalizedStationId = unsetIfBlank(input.station_id);
 
     if (!normalizedStationId && (input.latitude == null || input.longitude == null)) {
       throw ctx.fail('missing_input');

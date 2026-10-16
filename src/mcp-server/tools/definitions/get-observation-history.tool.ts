@@ -16,7 +16,10 @@ import {
   formatWind,
   roundValue,
 } from '../format-utils.js';
+import { clampPageLimit, composeNotice, LIMIT_CEILING, type PageLimit } from '../page-limit.js';
+import { unsetIfBlank } from '../unset-if-blank.js';
 
+/** Observations per page. A larger `limit` is served up to this cap rather than rejected. */
 const MAX_LIMIT = 100;
 
 /**
@@ -27,6 +30,21 @@ const MAX_LIMIT = 100;
  */
 const DATE_TIME_RE =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+/**
+ * Shapes advertised as JSON Schema `pattern`s (issue #54), applied by a validating
+ * client to the raw value. Each admits surrounding whitespace, which the handler
+ * trims; start and end also admit a blank, which is unset. The date-time pattern is
+ * DATE_TIME_RE's grammar without its captures: calendar validity, offset range, and
+ * window order stay in the handler as invalid_time_window, and a malformed station
+ * ID stays the service's station_not_found. No `format: "date-time"`: a padded or
+ * blank value fails it, and it admits forms NWS refuses. A trailing `\s*` never
+ * follows another `\s*` across an empty match, so a backtracking engine stays
+ * linear on a long whitespace run.
+ */
+export const HISTORY_STATION_ID_INPUT_PATTERN = /^\s*[A-Za-z0-9]+\s*$/;
+export const DATE_TIME_INPUT_PATTERN =
+  /^\s*(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})\s*)?$/;
 
 /**
  * Epoch milliseconds of a well-formed, calendar-valid date-time, or undefined.
@@ -71,10 +89,10 @@ function parseDateTime(value: string): number | undefined {
 }
 
 /**
- * What a continuation token carries: the first page's window and page size, with
- * `end` moved to the oldest observation already returned. NWS treats `end` as
- * exclusive and observations are keyed by timestamp, so the next page starts at
- * the observation just older than the last one returned.
+ * What a continuation token carries: the first page's window and applied page
+ * size, with `end` moved to the oldest observation already returned. NWS treats
+ * `end` as exclusive and observations are keyed by timestamp, so the next page
+ * starts at the observation just older than the last one returned.
  */
 interface HistoryWindow {
   end?: string | undefined;
@@ -124,12 +142,6 @@ function readCursor(cursor: string, ctx: Context): HistoryWindow {
   return { limit, end: end as string, start: start as string | undefined };
 }
 
-/** Reduce a blank or whitespace-only optional string to unset (issue #46). */
-function unsetIfBlank(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
 /** The caller's window in words, for a notice. */
 function describeWindow(start: string | undefined, end: string | undefined): string {
   if (start && end) return `between ${start} and ${end}`;
@@ -170,18 +182,21 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
       .string()
       .trim()
       .min(1)
+      .meta({ pattern: HISTORY_STATION_ID_INPUT_PATTERN.source })
       .describe(
         'Observation station ID (e.g., "KSEA"), case-insensitive. Use nws_find_stations to discover station IDs near a coordinate.',
       ),
     start: z
       .string()
       .optional()
+      .meta({ pattern: DATE_TIME_INPUT_PATTERN.source })
       .describe(
         'Earliest observation time to include (inclusive), as an ISO 8601 date-time with seconds and an offset (e.g., "2026-09-30T00:00:00Z" or "2026-09-29T17:00:00-07:00"). Omit to reach back as far as NWS keeps, about 7 days.',
       ),
     end: z
       .string()
       .optional()
+      .meta({ pattern: DATE_TIME_INPUT_PATTERN.source })
       .describe(
         'Time to stop before (exclusive), in the same format as start. Omit to start from the most recent observation.',
       ),
@@ -189,16 +204,16 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
       .number()
       .int()
       .min(1)
-      .max(MAX_LIMIT)
+      .max(LIMIT_CEILING)
       .default(24)
       .describe(
-        `Observations per page (1-${MAX_LIMIT}), newest first. When a page fills the limit, pass its nextCursor back as cursor for older observations.`,
+        `Observations per page, newest first. A page holds at most ${MAX_LIMIT}; a larger limit (up to ${LIMIT_CEILING}) is served as ${MAX_LIMIT} and reported through requestedLimit and effectiveLimit. When older observations remain in the window, the response carries nextCursor; pass it back as cursor for them.`,
       ),
     cursor: z
       .string()
       .optional()
       .describe(
-        "Opaque continuation token from a previous response's nextCursor. Omit for the first page. It carries that query's start, end, and limit, so those inputs apply to the first page only. Each page continues from just before the oldest observation of the one before it, so pages neither repeat nor skip an observation.",
+        "Opaque continuation token from a previous response's nextCursor. Omit for the first page. It carries that query's start, end, and applied limit, so those inputs apply to the first page only. Each page continues from just before the oldest observation of the one before it, so pages neither repeat nor skip an observation.",
       ),
   }),
 
@@ -244,27 +259,39 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
   }),
 
   // Result-set context for the agent. NWS reports no total for a window, so the
-  // page reports what it returned and whether it filled the limit — no totalCount.
+  // page reports what it returned and whether older observations remain — no totalCount.
   enrichment: {
     shown: z.number().describe('Number of observations returned in this page'),
     truncated: z
       .boolean()
       .optional()
       .describe(
-        'True when this page filled the limit and older observations in the window may remain; continue with nextCursor.',
+        'True when older observations remain in the window past this page; continue with nextCursor.',
       ),
-    cap: z.number().optional().describe('The page limit this page filled, when truncated is true'),
+    cap: z.number().optional().describe('The page limit this page holds, when truncated is true'),
     nextCursor: z
       .string()
       .optional()
       .describe(
-        'Opaque token for the next, older page — pass it back as cursor. Present only when this page filled the limit; omitted on the last page.',
+        'Opaque token for the next, older page — pass it back as cursor. Present only when older observations remain in the window; omitted on the last page.',
+      ),
+    requestedLimit: z
+      .number()
+      .optional()
+      .describe(
+        `The limit asked for, when it exceeded the ${MAX_LIMIT}-observation page cap; absent otherwise.`,
+      ),
+    effectiveLimit: z
+      .number()
+      .optional()
+      .describe(
+        'The page size applied instead of requestedLimit; continued pages keep it. Absent when the limit was within the cap.',
       ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when the window held no observations (NWS keeps about the last 7 days), or when this page filled the limit and older observations may remain.',
+        'Guidance when the requested limit exceeded the page cap, when the window held no observations (NWS keeps about the last 7 days), or when older observations remain beyond this page.',
       ),
   },
 
@@ -273,11 +300,14 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
     truncated: { label: 'Page Full' },
     cap: { label: 'Page Limit' },
     nextCursor: { label: 'Next Cursor' },
+    requestedLimit: { label: 'Requested Limit' },
+    effectiveLimit: { label: 'Applied Limit' },
   },
 
   async handler(input, ctx) {
     const cursor = unsetIfBlank(input.cursor);
     let window: HistoryWindow;
+    let clamp: PageLimit['clamp'];
     if (cursor) {
       window = readCursor(cursor, ctx);
     } else {
@@ -304,15 +334,21 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
           { start, end },
         );
       }
-      window = { start, end, limit: input.limit };
+      const pageLimit = clampPageLimit(input.limit, MAX_LIMIT);
+      clamp = pageLimit.clamp;
+      window = { start, end, limit: pageLimit.effectiveLimit };
     }
 
+    // One past the page size: NWS reports no total, so the extra record is the
+    // only sign that older observations remain. It is the next page's first, and
+    // is never returned on this one.
     const result = await getNwsService().getObservationHistory(
-      { stationId: input.station_id, ...window },
+      { stationId: input.station_id, ...window, limit: window.limit + 1 },
       ctx,
     );
+    const hasOlder = result.observations.length > window.limit;
 
-    const observations = result.observations.map((obs) => ({
+    const observations = result.observations.slice(0, window.limit).map((obs) => ({
       timestamp: obs.timestamp,
       textDescription: obs.textDescription,
       temperatureC: roundValue(obs.temperature.value),
@@ -331,30 +367,30 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
       })),
     }));
 
-    ctx.enrich({ shown: observations.length });
+    ctx.enrich({ shown: observations.length, ...clamp?.fields });
 
-    // A page short of the limit is the last one. A full page continues from its
-    // oldest observation, unless that observation sits on `start` itself, where
-    // the window has nothing older left to give.
+    // The page continues from its oldest observation only when the extra record
+    // came back; otherwise the window has nothing older left to give.
     const oldest = observations.at(-1)?.timestamp;
-    const startMs = window.start ? parseDateTime(window.start) : undefined;
-    const oldestMs = oldest ? parseDateTime(oldest) : undefined;
-    const windowExhausted = startMs !== undefined && oldestMs !== undefined && oldestMs <= startMs;
-    if (oldest && observations.length === window.limit && !windowExhausted) {
+    if (oldest && hasOlder) {
+      const guidance = `Returned ${observations.length} observations, the page limit; older observations remain in this window. Pass nextCursor back as cursor to continue from before ${oldest}.`;
       ctx.enrich({ nextCursor: mintCursor(window, oldest) });
       ctx.enrich.truncated({
         shown: observations.length,
         cap: window.limit,
-        guidance: `Returned ${observations.length} observations, the page limit; older observations in this window may remain. Pass nextCursor back as cursor to continue from before ${oldest}.`,
+        guidance: clamp ? `${clamp.notice} ${guidance}` : guidance,
       });
-    } else if (observations.length === 0) {
-      ctx.enrich.notice(
-        cursor
+    } else {
+      let emptyNotice: string | undefined;
+      if (observations.length === 0) {
+        emptyNotice = cursor
           ? `No observations remain ${describeWindow(window.start, window.end)} — that is the end of ${result.stationId}'s history in this window. NWS keeps about the last 7 days of a station's observations.`
           : window.start || window.end
             ? `No observations from ${result.stationId} ${describeWindow(window.start, window.end)}. NWS keeps about the last 7 days of a station's observations, so move the window inside that range, or omit start and end for the latest.`
-            : `${result.stationId} has reported no observations in the ~7 days NWS keeps. Use nws_find_stations to pick an active station nearby.`,
-      );
+            : `${result.stationId} has reported no observations in the ~7 days NWS keeps. Use nws_find_stations to pick an active station nearby.`;
+      }
+      const notice = composeNotice(clamp?.notice, emptyNotice);
+      if (notice) ctx.enrich.notice(notice);
     }
 
     return {

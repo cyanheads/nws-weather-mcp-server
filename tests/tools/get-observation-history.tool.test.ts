@@ -36,6 +36,8 @@ type Success = {
   cap?: number;
   nextCursor?: string;
   notice?: string;
+  requestedLimit?: number;
+  effectiveLimit?: number;
 };
 type ErrorEnvelope = {
   code: number;
@@ -303,7 +305,8 @@ describe('nws_get_observation_history', () => {
       );
 
       expect(data.observations).toHaveLength(2);
-      expect(Object.fromEntries(listCalls()[0]!.searchParams)).toEqual({ limit: '2' });
+      // One past the page size, so the extra record says whether older ones remain.
+      expect(Object.fromEntries(listCalls()[0]!.searchParams)).toEqual({ limit: '3' });
     });
   });
 
@@ -340,25 +343,89 @@ describe('nws_get_observation_history', () => {
       expect(pages.map((p) => p.cap)).toEqual([5, 5, undefined]);
       expect(pages[2]!.notice).toBeUndefined();
 
-      // Each continuation resends the limit and moves end to the previous page's oldest.
+      // Each request asks for one past the page size and moves end to the previous page's oldest.
       const ends = listCalls().map((u) => u.searchParams.get('end'));
       expect(ends).toEqual([null, all[4], all[9]]);
-      expect(listCalls().every((u) => u.searchParams.get('limit') === '5')).toBe(true);
+      expect(listCalls().map((u) => u.searchParams.get('limit'))).toEqual(['6', '6', '6']);
     });
 
-    it('follows a full final page with an empty continuation that says the history ended', async () => {
+    it('ends on a full final page in two list requests, with no empty third page', async () => {
       const all = history(10);
       http.route(stationRoute(), observationsRoute(all));
 
       const pages = await walk({ limit: 5 });
 
-      expect(pages.map((p) => p.observations.length)).toEqual([5, 5, 0]);
+      expect(pages.map((p) => p.observations.length)).toEqual([5, 5]);
       expect(pages.flatMap((p) => p.observations.map((o) => o.timestamp))).toEqual(all);
-      const last = pages[2]!;
+      const last = pages[1]!;
       expect(last.nextCursor).toBeUndefined();
       expect(last.truncated).toBeUndefined();
-      expect(last.notice).toContain(`No observations remain before ${all[9]}`);
-      expect(last.notice).toContain('7 days');
+      expect(last.cap).toBeUndefined();
+      expect(last.notice).toBeUndefined();
+      expect(listCalls()).toHaveLength(2);
+    });
+
+    it('returns a window holding exactly limit observations with no cursor, no truncation, and no notice', async () => {
+      const all = history(5);
+      http.route(stationRoute(), observationsRoute(all));
+
+      const { data, text } = successOf(
+        await runToolContract(tool, { station_id: 'KSEA', limit: 5 }),
+      );
+
+      expect(data.observations.map((o) => o.timestamp)).toEqual(all);
+      expect(data.shown).toBe(5);
+      expect(data).not.toHaveProperty('truncated');
+      expect(data).not.toHaveProperty('cap');
+      expect(data).not.toHaveProperty('nextCursor');
+      expect(data).not.toHaveProperty('notice');
+      expect(text).not.toContain('Next Cursor');
+      expect(text).not.toContain('Page Full');
+      expect(listCalls()).toHaveLength(1);
+      expect(listCalls()[0]!.searchParams.get('limit')).toBe('6');
+    });
+
+    it('holds a limit + 1 window to limit, discloses it on both surfaces, and continues to the last one', async () => {
+      const all = history(6);
+      http.route(stationRoute(), observationsRoute(all));
+
+      const first = successOf(await runToolContract(tool, { station_id: 'KSEA', limit: 5 }));
+
+      const guidance = `Returned 5 observations, the page limit; older observations remain in this window. Pass nextCursor back as cursor to continue from before ${all[4]}.`;
+      expect(first.data.observations.map((o) => o.timestamp)).toEqual(all.slice(0, 5));
+      expect(first.data).toMatchObject({ shown: 5, truncated: true, cap: 5 });
+      expect(first.data.nextCursor).toEqual(expect.any(String));
+      expect(first.data.notice).toBe(guidance);
+      expect(first.text).toContain(`**Next Cursor:** ${first.data.nextCursor}`);
+      expect(first.text).toContain('**Page Full:** true');
+      expect(first.text).toContain('**Page Limit:** 5');
+      expect(first.text).toContain(guidance);
+
+      const second = successOf(
+        await runToolContract(tool, { station_id: 'KSEA', cursor: first.data.nextCursor! }),
+      );
+
+      expect(second.data.observations.map((o) => o.timestamp)).toEqual([all[5]]);
+      expect(second.data).not.toHaveProperty('nextCursor');
+      expect(second.data).not.toHaveProperty('truncated');
+      expect(second.data).not.toHaveProperty('notice');
+      const [, call] = listCalls();
+      expect(Object.fromEntries(call!.searchParams)).toEqual({ limit: '6', end: all[4] });
+    });
+
+    it('keeps the empty-continuation notice when the remaining observations aged out', async () => {
+      const all = history(4);
+      http.route(stationRoute(), observationsRoute(all));
+      // A cursor minted when older observations still existed, before NWS dropped them.
+      const cursor = encodeCursor({ offset: 0, limit: 5, end: all[3] });
+
+      const { data, text } = successOf(await runToolContract(tool, { station_id: 'KSEA', cursor }));
+
+      const notice = `No observations remain before ${all[3]} — that is the end of KSEA's history in this window. NWS keeps about the last 7 days of a station's observations.`;
+      expect(data.observations).toEqual([]);
+      expect(data).not.toHaveProperty('nextCursor');
+      expect(data.notice).toBe(notice);
+      expect(text).toContain(notice);
     });
 
     it('carries the first call’s start and limit in the cursor, over any inputs sent with it', async () => {
@@ -379,8 +446,11 @@ describe('nws_get_observation_history', () => {
       );
 
       expect(second.data.observations.map((o) => o.timestamp)).toEqual(all.slice(4, 8));
+      // The cursor's own page size, not the limit sent beside it, and no clamp disclosure.
+      expect(second.data).not.toHaveProperty('requestedLimit');
+      expect(second.data).not.toHaveProperty('effectiveLimit');
       const [, call] = listCalls();
-      expect(Object.fromEntries(call!.searchParams)).toEqual({ limit: '4', start, end: all[3] });
+      expect(Object.fromEntries(call!.searchParams)).toEqual({ limit: '5', start, end: all[3] });
     });
 
     it('stops at a full page whose oldest observation sits on start, with no empty follow-up', async () => {
@@ -410,7 +480,7 @@ describe('nws_get_observation_history', () => {
       expect(data.notice).toBeUndefined();
     });
 
-    it('discloses a full page on both surfaces', async () => {
+    it('discloses a truncated page on both surfaces, with no clamp for a limit within the cap', async () => {
       const all = history(8);
       http.route(stationRoute(), observationsRoute(all));
 
@@ -424,6 +494,14 @@ describe('nws_get_observation_history', () => {
       expect(text).toContain(`**Next Cursor:** ${data.nextCursor}`);
       expect(text).toContain('**Returned:** 5');
       expect(text).toContain(`continue from before ${all[4]}`);
+      // A limit within the cap discloses no clamp: the notice is the continuation alone.
+      expect(data).not.toHaveProperty('requestedLimit');
+      expect(data).not.toHaveProperty('effectiveLimit');
+      expect(data.notice).toBe(
+        `Returned 5 observations, the page limit; older observations remain in this window. Pass nextCursor back as cursor to continue from before ${all[4]}.`,
+      );
+      expect(text).not.toContain('**Requested Limit:**');
+      expect(text).not.toContain('**Applied Limit:**');
     });
 
     it.each([
@@ -447,6 +525,8 @@ describe('nws_get_observation_history', () => {
         encodeCursor({ offset: 0, limit: 500, end: '2026-09-30T11:00:00Z' }),
       ],
       ['a fractional limit', encodeCursor({ offset: 0, limit: 2.5, end: '2026-09-30T11:00:00Z' })],
+      ['a zero limit', encodeCursor({ offset: 0, limit: 0, end: '2026-09-30T11:00:00Z' })],
+      ['a negative limit', encodeCursor({ offset: 0, limit: -3, end: '2026-09-30T11:00:00Z' })],
     ])(
       'rejects a cursor that is %s as InvalidParams (invalid_cursor) with no request',
       async (_label, cursor) => {
@@ -458,6 +538,117 @@ describe('nws_get_observation_history', () => {
         expect(http.calls).toHaveLength(0);
       },
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Oversized limit (issue #53)
+  // ---------------------------------------------------------------------------
+
+  describe('limit past the 100-observation cap', () => {
+    const CLAMP = 'Requested limit 101 exceeds the per-page cap of 100; this page holds up to 100.';
+
+    it('serves 100, discloses the clamp ahead of the truncation notice on both surfaces, and continues 100 per page', async () => {
+      const all = history(250);
+      http.route(stationRoute(), observationsRoute(all));
+
+      const first = successOf(await runToolContract(tool, { station_id: 'KSEA', limit: 101 }));
+
+      expect(first.data.observations).toHaveLength(100);
+      expect(first.data).toMatchObject({
+        shown: 100,
+        truncated: true,
+        cap: 100,
+        requestedLimit: 101,
+        effectiveLimit: 100,
+      });
+      const notice = `${CLAMP} Returned 100 observations, the page limit; older observations remain in this window. Pass nextCursor back as cursor to continue from before ${all[99]}.`;
+      expect(first.data.notice).toBe(notice);
+      expect(first.text).toContain(notice);
+      expect(first.text).toContain('**Requested Limit:** 101');
+      expect(first.text).toContain('**Applied Limit:** 100');
+
+      const second = successOf(
+        await runToolContract(tool, { station_id: 'KSEA', cursor: first.data.nextCursor! }),
+      );
+      const third = successOf(
+        await runToolContract(tool, { station_id: 'KSEA', cursor: second.data.nextCursor! }),
+      );
+
+      expect(second.data.observations.map((o) => o.timestamp)).toEqual(all.slice(100, 200));
+      expect(third.data.observations.map((o) => o.timestamp)).toEqual(all.slice(200));
+      expect(third.data).not.toHaveProperty('nextCursor');
+      // Continued pages keep the applied 100 and disclose no clamp.
+      expect(second.data.notice).toBe(
+        `Returned 100 observations, the page limit; older observations remain in this window. Pass nextCursor back as cursor to continue from before ${all[199]}.`,
+      );
+      expect(third.data).not.toHaveProperty('notice');
+      for (const page of [second, third]) {
+        expect(page.data).not.toHaveProperty('requestedLimit');
+        expect(page.data).not.toHaveProperty('effectiveLimit');
+        expect(page.text).not.toContain('per-page cap');
+      }
+      expect(listCalls().map((u) => u.searchParams.get('limit'))).toEqual(['101', '101', '101']);
+    });
+
+    it('discloses the clamp alone when the window fits one page', async () => {
+      const all = history(30);
+      http.route(stationRoute(), observationsRoute(all));
+
+      const { data, text } = successOf(
+        await runToolContract(tool, { station_id: 'KSEA', limit: 10_000 }),
+      );
+
+      expect(data.observations).toHaveLength(30);
+      expect(data).not.toHaveProperty('nextCursor');
+      expect(data).not.toHaveProperty('truncated');
+      expect(data).toMatchObject({ requestedLimit: 10_000, effectiveLimit: 100 });
+      expect(data.notice).toBe(
+        'Requested limit 10000 exceeds the per-page cap of 100; this page holds up to 100.',
+      );
+      expect(text).toContain('**Applied Limit:** 100');
+      expect(listCalls()[0]!.searchParams.get('limit')).toBe('101');
+    });
+
+    it('composes the clamp with the empty-window notice', async () => {
+      http.route(stationRoute(), observationsRoute(history(5)));
+
+      const { data } = successOf(
+        await runToolContract(tool, {
+          station_id: 'KSEA',
+          start: '2026-09-01T00:00:00Z',
+          end: '2026-09-02T00:00:00Z',
+          limit: 101,
+        }),
+      );
+
+      expect(data.notice).toBe(
+        `${CLAMP} No observations from KSEA between 2026-09-01T00:00:00Z and 2026-09-02T00:00:00Z. NWS keeps about the last 7 days of a station's observations, so move the window inside that range, or omit start and end for the latest.`,
+      );
+    });
+
+    it('serves a limit of exactly 100 with no clamp disclosure', async () => {
+      http.route(stationRoute(), observationsRoute(history(30)));
+
+      const { data } = successOf(await runToolContract(tool, { station_id: 'KSEA', limit: 100 }));
+
+      expect(data.observations).toHaveLength(30);
+      expect(data).not.toHaveProperty('requestedLimit');
+      expect(data).not.toHaveProperty('effectiveLimit');
+      expect(data).not.toHaveProperty('notice');
+      expect(listCalls()[0]!.searchParams.get('limit')).toBe('101');
+    });
+
+    it.each([
+      ['past the 10000 ceiling', 10_001],
+      ['zero', 0],
+      ['fractional', 2.5],
+    ])('rejects a limit %s as invalid_arguments with no request', async (_label, limit) => {
+      const { error } = errorOf(await runToolContract(tool, { station_id: 'KSEA', limit }));
+
+      expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(error.data?.reason).toBe('invalid_arguments');
+      expect(http.calls).toHaveLength(0);
+    });
   });
 
   // ---------------------------------------------------------------------------

@@ -7,12 +7,14 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
+import { clampPageLimit, composeNotice, LIMIT_CEILING, type PageLimit } from '../page-limit.js';
 
 /**
  * Upper bound on stations per page. The NWS grid-stations endpoint returns the
  * whole collection in one response (~70 near a metro grid cell), so the service
  * hands back the complete distance-sorted set and this tool windows it. Stations
- * past the window are reachable through the `nextCursor` continuation token.
+ * past the window are reachable through the `nextCursor` continuation token. A
+ * larger `limit` is served up to this cap rather than rejected.
  */
 const MAX_STATIONS = 50;
 
@@ -41,10 +43,10 @@ export const findStationsTool = tool('nws_find_stations', {
       .number()
       .int()
       .min(1)
-      .max(MAX_STATIONS)
+      .max(LIMIT_CEILING)
       .default(10)
       .describe(
-        `Max stations per page (1-${MAX_STATIONS}). totalCount still reports every station near the point, so pass the returned nextCursor as cursor to reach the rest.`,
+        `Max stations per page. A page holds at most ${MAX_STATIONS}; a larger limit (up to ${LIMIT_CEILING}) is served as ${MAX_STATIONS} and reported through requestedLimit and effectiveLimit. totalCount still reports every station near the point, so pass the returned nextCursor as cursor to reach the rest.`,
       ),
     cursor: z
       .string()
@@ -88,11 +90,23 @@ export const findStationsTool = tool('nws_find_stations', {
       .describe(
         'Opaque token for the next page of stations — pass it back as `cursor`. Omitted when this is the last page.',
       ),
+    requestedLimit: z
+      .number()
+      .optional()
+      .describe(
+        `The limit asked for, when it exceeded the ${MAX_STATIONS}-station page cap; absent otherwise.`,
+      ),
+    effectiveLimit: z
+      .number()
+      .optional()
+      .describe(
+        'The page size applied instead of requestedLimit; continued pages keep it. Absent when the limit was within the cap.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no stations were found near the requested coordinates, when stations remain beyond this page, or when the supplied cursor points past the end of the list.',
+        'Guidance when the requested limit exceeded the page cap, when no stations were found near the requested coordinates, when stations remain beyond this page, or when the supplied cursor points past the end of the list.',
       ),
   },
 
@@ -100,6 +114,8 @@ export const findStationsTool = tool('nws_find_stations', {
     totalCount: { label: 'Total Nearby' },
     shown: { label: 'Returned' },
     nextCursor: { label: 'Next Cursor' },
+    requestedLimit: { label: 'Requested Limit' },
+    effectiveLimit: { label: 'Applied Limit' },
   },
 
   async handler(input, ctx) {
@@ -111,7 +127,12 @@ export const findStationsTool = tool('nws_find_stations', {
     // quantity from `shown`, which counts what this page returned.
     const totalCount = allStations.length;
 
-    const page = paginateArray(allStations, input.cursor, input.limit, MAX_STATIONS, ctx);
+    // A cursor carries its own page size, so only a first page's limit is held
+    // to the cap; `paginateArray` applies its cap to cursor pages alone.
+    const { effectiveLimit, clamp }: PageLimit = input.cursor
+      ? { effectiveLimit: input.limit }
+      : clampPageLimit(input.limit, MAX_STATIONS);
+    const page = paginateArray(allStations, input.cursor, effectiveLimit, MAX_STATIONS, ctx);
 
     const stations = page.items.map((s) => ({
       stationId: s.stationId,
@@ -128,20 +149,18 @@ export const findStationsTool = tool('nws_find_stations', {
       totalCount,
       shown: stations.length,
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      ...clamp?.fields,
     });
+    let pageNotice: string | undefined;
     if (totalCount === 0) {
-      ctx.enrich.notice(
-        `No observation stations found near (${input.latitude}, ${input.longitude}). Points beyond the NWS forecast grid (open waters and some remote islands) have no assigned stations — try coordinates on or near the coast of a US state or territory.`,
-      );
+      pageNotice = `No observation stations found near (${input.latitude}, ${input.longitude}). Points beyond the NWS forecast grid (open waters and some remote islands) have no assigned stations — try coordinates on or near the coast of a US state or territory.`;
     } else if (page.nextCursor) {
-      ctx.enrich.notice(
-        `Returning ${stations.length} of ${totalCount} nearby stations. Pass nextCursor back as cursor for the next page. Stations are contiguous within one response; the list is re-fetched on every call, so a later call can window an updated registry.`,
-      );
+      pageNotice = `Returning ${stations.length} of ${totalCount} nearby stations. Pass nextCursor back as cursor for the next page. Stations are contiguous within one response; the list is re-fetched on every call, so a later call can window an updated registry.`;
     } else if (input.cursor && stations.length === 0) {
-      ctx.enrich.notice(
-        `The cursor points past the end of the ${totalCount} stations near (${input.latitude}, ${input.longitude}). Call again without a cursor to restart from the nearest station.`,
-      );
+      pageNotice = `The cursor points past the end of the ${totalCount} stations near (${input.latitude}, ${input.longitude}). Call again without a cursor to restart from the nearest station.`;
     }
+    const notice = composeNotice(clamp?.notice, pageNotice);
+    if (notice) ctx.enrich.notice(notice);
 
     return { stations };
   },

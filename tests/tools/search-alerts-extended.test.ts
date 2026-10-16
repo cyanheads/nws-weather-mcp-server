@@ -5,7 +5,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -151,6 +151,32 @@ describe('nws_search_alerts extended', () => {
         expect.objectContaining({ point: '47.6,-122.3' }),
         ctx,
       );
+    });
+
+    it('answers the service’s out-of-coverage invalid_point with a recovery naming US coverage on both surfaces (issue #58)', async () => {
+      // The service raises the reason alone, as it does for NWS's out-of-bounds 400;
+      // the tool's declaration supplies the recovery.
+      const message =
+        'Point "10,10" is outside NWS coverage (NWS: Parameter "point" is invalid: out of bounds).';
+      mockSearchAlerts.mockRejectedValueOnce(
+        validationError(message, { status: 400, reason: 'invalid_point' }),
+      );
+      const hint =
+        'Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3") for a location NWS covers: the US states, territories, or adjacent marine areas.';
+
+      const result = await runToolContract(searchAlertsTool, { point: '10,10' });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message,
+          data: { status: 400, reason: 'invalid_point', recovery: { hint } },
+        },
+      });
+      const text = result.content.map((block) => (block as { text: string }).text).join('\n');
+      expect(text).toContain(message);
+      expect(text).toContain(`Recovery: ${hint}`);
     });
   });
 
@@ -786,8 +812,119 @@ describe('nws_search_alerts extended', () => {
       expect(() => searchAlertsTool.input.parse({ limit: 0 })).toThrow();
     });
 
-    it('rejects limit above the 25-alert cap', () => {
-      expect(() => searchAlertsTool.input.parse({ limit: 26 })).toThrow();
+    it('accepts a limit past the 25-alert cap up to the 10000 ceiling, and rejects beyond it', () => {
+      expect(searchAlertsTool.input.parse({ limit: 26 }).limit).toBe(26);
+      expect(searchAlertsTool.input.parse({ limit: 10_000 }).limit).toBe(10_000);
+      expect(() => searchAlertsTool.input.parse({ limit: 10_001 })).toThrow();
+    });
+  });
+
+  describe('limit past the 25-alert cap (issue #53)', () => {
+    type Surfaces = { data: Record<string, unknown> & { alerts: { id: string }[] }; text: string };
+
+    /** One call through the production parse, returning both client surfaces. */
+    async function call(args: Record<string, unknown>): Promise<Surfaces> {
+      const result = await runToolContract(searchAlertsTool, args);
+      expect(result.isError).toBeFalsy();
+      return {
+        data: result.structuredContent as Surfaces['data'],
+        text: result.content.map((block) => (block as { text: string }).text).join('\n'),
+      };
+    }
+
+    function alertList(count: number): AlertSearchResult {
+      return {
+        alerts: Array.from({ length: count }, (_, index) =>
+          makeAlert({ id: `urn:test:${String(index).padStart(3, '0')}`, event: 'Wind Advisory' }),
+        ),
+      };
+    }
+
+    const CLAMP = 'Requested limit 26 exceeds the per-page cap of 25; this page holds up to 25.';
+    /** The continuation guidance a page of 25 of 30 alerts carries. */
+    const PAGE_25_OF_30 =
+      'Returning 25 of 30 matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift entries across the page boundary. Duplicate alerts are collapsed on id within each fetch, so the same id arriving on two pages means the active set moved between calls, not that one alert was returned twice.';
+
+    it('serves 25 of 30, discloses the clamp on both surfaces, and continues to the other 5', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(30));
+
+      const first = await call({ limit: 26 });
+
+      expect(first.data.alerts).toHaveLength(25);
+      expect(first.data).toMatchObject({
+        totalCount: 30,
+        shown: 25,
+        requestedLimit: 26,
+        effectiveLimit: 25,
+      });
+      expect(first.data.nextCursor).toEqual(expect.any(String));
+      // One notice: the clamp first, then the page's own continuation guidance.
+      expect(first.data.notice).toBe(`${CLAMP} ${PAGE_25_OF_30}`);
+      expect(first.text).toContain(`${CLAMP} ${PAGE_25_OF_30}`);
+      expect(first.text).toContain('**Requested Limit:** 26');
+      expect(first.text).toContain('**Applied Limit:** 25');
+
+      const second = await call({ cursor: first.data.nextCursor });
+
+      expect(second.data.alerts.map((a) => a.id)).toEqual(
+        Array.from({ length: 5 }, (_, index) => `urn:test:0${25 + index}`),
+      );
+      expect(second.data).not.toHaveProperty('nextCursor');
+      expect(second.data).not.toHaveProperty('notice');
+      expect(second.data).not.toHaveProperty('requestedLimit');
+      expect(second.data).not.toHaveProperty('effectiveLimit');
+    });
+
+    it('composes the clamp with the no-match notice', async () => {
+      mockSearchAlerts.mockResolvedValue({ alerts: [] });
+
+      const { data } = await call({ limit: 26, area: 'WA' });
+
+      expect(data.notice).toBe(
+        `${CLAMP} No active alerts matched: area=WA. Try a broader area, remove severity or event filters, or use nws_list_alert_types to verify event names.`,
+      );
+    });
+
+    it('returns a limit within the cap exactly as before, with no clamp disclosure', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(30));
+
+      const { data, text } = await call({ limit: 25 });
+
+      expect(data.alerts).toHaveLength(25);
+      expect(data).not.toHaveProperty('requestedLimit');
+      expect(data).not.toHaveProperty('effectiveLimit');
+      // The continuation guidance alone, with no clamp sentence ahead of it.
+      expect(data.notice).toBe(PAGE_25_OF_30);
+      expect(text).not.toContain('**Requested Limit:**');
+      expect(text).not.toContain('**Applied Limit:**');
+    });
+
+    it('continues a cursor at its own page size when a different limit is sent with it, disclosing nothing', async () => {
+      mockSearchAlerts.mockResolvedValue(alertList(30));
+
+      const first = await call({ limit: 10 });
+      const second = await call({ cursor: first.data.nextCursor, limit: 500 });
+
+      expect(second.data.alerts).toHaveLength(10);
+      expect(second.data.alerts[0]!.id).toBe('urn:test:010');
+      expect(second.data).not.toHaveProperty('requestedLimit');
+      expect(second.data).not.toHaveProperty('effectiveLimit');
+    });
+
+    it.each([
+      ['past the 10000 ceiling', 10_001],
+      ['zero', 0],
+      ['fractional', 2.5],
+    ])('rejects a limit %s as invalid_arguments', async (_label, limit) => {
+      const result = await runToolContract(searchAlertsTool, { limit });
+      const { error } = result.structuredContent as {
+        error: { code: number; data?: { reason?: string } };
+      };
+
+      expect(result.isError).toBe(true);
+      expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(error.data?.reason).toBe('invalid_arguments');
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
     });
   });
 

@@ -1,9 +1,10 @@
 /**
  * @fileoverview Wire-contract tests for how upstream availability failures reach
- * callers: marine forecast refusals (issue #38), valid zones with no text forecast
+ * callers: marine forecast refusals (issues #38, #57), valid zones with no text forecast
  * and the point inside them (issues #40, #42), open-ocean points that 500 on every
- * request (issue #45), gridless land points (issue #47), and a nearest station with
- * no current observation (issue #48). Each case runs the real tool definition and
+ * request (issue #45), gridless land points (issue #47), a nearest station with
+ * no current observation (issue #48), and an alert search at a point outside NWS
+ * coverage (issue #58). Each case runs the real tool definition and
  * the real NWS service through `runToolContract` over a strict fetch fake, so the
  * 404 problem-type read, the retry loop, the zone-record probe, and the error
  * envelope are all exercised — nothing below the tool is mocked.
@@ -18,6 +19,9 @@ import {
 } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  alertsResponse,
+  coastalZoneForecastResponse,
+  coastalZoneRecordResponse,
   forecastResponse,
   griddedMarinePointsResponse,
   gridlessLandPointsResponse,
@@ -30,6 +34,8 @@ import {
   notFoundProblem,
   nullGeometryZoneRecordResponse,
   observationResponse,
+  offshoreZoneRecordResponse,
+  outOfBoundsPointProblem,
   pointsResponse,
   polygonZoneRecordResponse,
   stationInfoResponse,
@@ -442,16 +448,19 @@ describe('upstream availability contract', () => {
   });
 
   describe('nws_get_zone_forecast on a marine zone', () => {
-    it('turns a zone MarineForecastNotSupported into marine_forecast_unsupported, no probe', async () => {
+    const forecastUrl = (zone: string) => `${API}/zones/forecast/${zone}/forecast`;
+    const recordUrl = (zone: string) => `${API}/zones/forecast/${zone}`;
+
+    it('turns an offshore zone MarineForecastNotSupported into marine_forecast_unsupported, no probe', async () => {
       // The zone record is routed so a probe would be recorded: `http.calls` omits
       // requests the strict fake rejects as unhandled.
       http.route(
-        route(`${API}/zones/forecast/PZZ251/forecast`, marineForecastNotSupportedProblem, 404),
-        route(`${API}/zones/forecast/PZZ251`, zoneRecordResponse),
+        route(forecastUrl('GMZ056'), marineForecastNotSupportedProblem, 404),
+        route(recordUrl('GMZ056'), offshoreZoneRecordResponse),
       );
 
       const { error, text } = errorOf(
-        await runToolContract(tools.getZoneForecastTool, { zone_id: 'pzz251' }),
+        await runToolContract(tools.getZoneForecastTool, { zone_id: 'gmz056' }),
       );
       const hint = contractRecovery(tools.getZoneForecastTool, 'marine_forecast_unsupported');
 
@@ -460,6 +469,88 @@ describe('upstream availability contract', () => {
       expect(hint).toBeDefined();
       expect(error.data?.recovery?.hint).toBe(hint);
       expect(text).toContain(`Recovery: ${hint}`);
+      expect(http.calls).toHaveLength(1);
+    });
+
+    it.each([
+      { label: 'coastal', zone: 'LMZ645', record: coastalZoneRecordResponse },
+      { label: 'offshore', zone: 'GMZ056', record: offshoreZoneRecordResponse },
+    ])(
+      'turns a NotFound 404 on a $label zone into marine_forecast_unsupported, with no point',
+      async ({ zone, record }) => {
+        http.route(route(forecastUrl(zone), notFoundProblem, 404), route(recordUrl(zone), record));
+
+        const { error, text } = errorOf(
+          await runToolContract(tools.getZoneForecastTool, { zone_id: zone }),
+        );
+        const hint = contractRecovery(tools.getZoneForecastTool, 'marine_forecast_unsupported');
+
+        expect(error.code).toBe(JsonRpcErrorCode.NotFound);
+        expect(error.data?.reason).toBe('marine_forecast_unsupported');
+        expect(error.data?.zoneId).toBe(zone);
+        // A point inside a marine zone is in the water, where nws_get_forecast refuses too.
+        expect(error.data).not.toHaveProperty('latitude');
+        expect(error.data).not.toHaveProperty('longitude');
+        expect(error.message).toBe(
+          `Zone "${zone}" is a marine zone with no text forecast from NWS; text forecast availability varies across marine zones.`,
+        );
+        expect(hint).toBeDefined();
+        expect(error.data?.recovery?.hint).toBe(hint);
+        expect(text).toContain(`Recovery: ${hint}`);
+        expect(text).toContain('reason marine_forecast_unsupported');
+        // One forecast request, one record probe.
+        expect(http.calls.map((c) => c.request.url)).toEqual([forecastUrl(zone), recordUrl(zone)]);
+        expect(backoffDelays).toEqual([]);
+      },
+    );
+
+    it.each([
+      { label: 'coastal', zone: 'LMZ645', record: coastalZoneRecordResponse },
+      { label: 'offshore', zone: 'GMZ056', record: offshoreZoneRecordResponse },
+    ])(
+      'keeps an exhausted 500 on a $label zone the original ServiceUnavailable',
+      async ({ zone, record }) => {
+        // A 500 says nothing about whether a marine zone has a text forecast — most
+        // coastal zones serve one — so it is neither unsupported nor unavailable.
+        http.route(
+          route(forecastUrl(zone), unexpectedProblem, 500),
+          route(recordUrl(zone), record),
+        );
+
+        const { error } = errorOf(
+          await runToolContract(tools.getZoneForecastTool, { zone_id: zone }),
+        );
+
+        expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+        expect(error.data?.reason).toBeUndefined();
+        expect(error.data?.status).toBe(500);
+        expect(error.data).not.toHaveProperty('latitude');
+        expect(error.message).toBe('NWS returned HTTP 500. (failed after 3 attempts)');
+        expect(http.calls.map((c) => c.request.url)).toEqual([
+          forecastUrl(zone),
+          forecastUrl(zone),
+          forecastUrl(zone),
+          recordUrl(zone),
+        ]);
+        expect(backoffDelays).toEqual([2000, 4000]);
+      },
+    );
+
+    it('returns the periods of a coastal zone that serves a text forecast, with one request', async () => {
+      // Record routed so a probe would be recorded.
+      http.route(
+        route(forecastUrl('PZZ251'), coastalZoneForecastResponse),
+        route(recordUrl('PZZ251'), coastalZoneRecordResponse),
+      );
+
+      const result = await runToolContract(tools.getZoneForecastTool, { zone_id: 'PZZ251' });
+
+      expect(result.structuredContent).toMatchObject({
+        zoneId: 'PZZ251',
+        periods: [{ name: 'Today' }, { name: 'Tonight' }],
+        periodCount: 2,
+      });
+      expect(textOf(result)).toContain('Seas 3 to 5 ft');
       expect(http.calls).toHaveLength(1);
     });
   });
@@ -707,6 +798,7 @@ describe('upstream availability contract', () => {
     it.each([
       { label: 'InvalidZone (WAZ999)', zone: 'WAZ999', body: invalidZoneProblem },
       { label: 'InvalidZone (WAC033)', zone: 'WAC033', body: invalidZoneProblem },
+      { label: 'InvalidZone (LMZ999)', zone: 'LMZ999', body: invalidZoneProblem },
       { label: 'no body', zone: 'WAZ999', body: {} },
     ])('keeps zone_not_found for a 404 with $label, no probe', async ({ zone, body }) => {
       // Record routed so a probe would be recorded, and would turn the answer.
@@ -1103,6 +1195,78 @@ describe('upstream availability contract', () => {
   });
 
   // -------------------------------------------------------------------------
+  // #58 — nws_search_alerts at a point outside NWS coverage
+  // -------------------------------------------------------------------------
+
+  describe('nws_search_alerts at a point outside NWS coverage', () => {
+    /** Answer the alerts search at `point` with `body`; anything else stays unrouted. */
+    function routeAlertsAtPoint(point: string, body: unknown, status: number) {
+      http.route({
+        match: (request: Request) => {
+          const url = new URL(request.url);
+          return (
+            url.hostname === 'api.weather.gov' &&
+            url.pathname === '/alerts/active' &&
+            url.searchParams.get('point') === point
+          );
+        },
+        respond: () => json(body, status),
+      });
+    }
+
+    it.each(['10,10', '-47.6,-122.3'])(
+      'fails "%s" as invalid_point with the declared recovery on both surfaces',
+      async (point) => {
+        routeAlertsAtPoint(point, outOfBoundsPointProblem, 400);
+
+        const { error, text } = errorOf(await runToolContract(tools.searchAlertsTool, { point }));
+        const recovery =
+          'Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3") for a location NWS covers: the US states, territories, or adjacent marine areas.';
+
+        expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+        expect(error.data?.reason).toBe('invalid_point');
+        expect(error.data?.recovery?.hint).toBe(recovery);
+        expect(error.message).toBe(
+          `Point "${point}" is outside NWS coverage (NWS: Parameter "point" is invalid: out of bounds).`,
+        );
+        expect(text).toContain(`Recovery: ${recovery}`);
+        // A 400 is not transient: one request, no backoff.
+        expect(http.calls).toHaveLength(1);
+        expect(backoffDelays).toEqual([]);
+      },
+    );
+
+    it('keeps a 400 naming another parameter reason-less on a point search', async () => {
+      routeAlertsAtPoint(
+        '47.6,-122.3',
+        { ...outOfBoundsPointProblem, detail: 'Parameter "status" is invalid: unknown value' },
+        400,
+      );
+
+      const { error, text } = errorOf(
+        await runToolContract(tools.searchAlertsTool, { point: '47.6,-122.3' }),
+      );
+
+      expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error.data?.reason).toBeUndefined();
+      expect(error.data?.recovery).toBeUndefined();
+      expect(error.message).toBe('Parameter "status" is invalid: unknown value');
+      expect(text).not.toContain('Recovery:');
+    });
+
+    it('returns alerts for an in-coverage point as before', async () => {
+      routeAlertsAtPoint('47.6,-122.3', alertsResponse, 200);
+
+      const result = await runToolContract(tools.searchAlertsTool, { point: '47.6,-122.3' });
+
+      expect(textOf(result)).toContain('Wind Advisory');
+      expect(
+        (result.structuredContent as { alerts: { id: string }[] }).alerts.map((a) => a.id),
+      ).toEqual([alertsResponse.features[0]!.properties.id]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // #48 — no current observation at a coordinate's nearest station
   // -------------------------------------------------------------------------
 
@@ -1154,14 +1318,41 @@ describe('upstream availability contract', () => {
         const office = errorOf(
           await runToolContract(tools.getOfficeDiscussionTool, { office: id }),
         );
+        const alert = errorOf(await runToolContract(tools.getAlertTool, { alert_id: id }));
 
         expect(zone.error.data?.reason).toBe('zone_not_found');
         expect(station.error.data?.reason).toBe('station_not_found');
         expect(office.error.data?.reason).toBe('no_products');
         expect(office.error.message).toContain('Verify the 3-letter WFO code');
+        expect(alert.error.data?.reason).toBe('alert_not_found');
         expect(http.calls).toHaveLength(0);
       },
     );
+
+    const alertId = 'urn:oid:2.49.0.1.840.0.654087301e4bfcbe71d24494c26a965e54d3a1ad.001.1';
+
+    it.each([
+      '',
+      `${alertId}/../../active`,
+      `${alertId}/..`,
+      `https://api.weather.gov/alerts/${alertId}`,
+      alertId.toUpperCase(),
+      alertId.replaceAll('.', '%2E'),
+    ])('fails alert_id %j as alert_not_found with no request', async (id) => {
+      const { error, text } = errorOf(await runToolContract(tools.getAlertTool, { alert_id: id }));
+      const message =
+        'alert_id is not an NWS alert ID. NWS alert IDs read "urn:oid:2.49.0.1.840.0." followed by a 40-character lowercase hex hash, a 3-digit segment, and a version (e.g., "urn:oid:2.49.0.1.840.0.654087301e4bfcbe71d24494c26a965e54d3a1ad.001.1").';
+      const hint =
+        'Pass an id from nws_search_alerts, or a references[].identifier from an alert it returned, exactly as given; NWS no longer serves messages sent more than about 7 days ago.';
+
+      expect(error.code).toBe(JsonRpcErrorCode.NotFound);
+      expect(error.data?.reason).toBe('alert_not_found');
+      expect(error.data?.recovery?.hint).toBe(hint);
+      expect(error.message).toBe(message);
+      expect(text).toContain(message);
+      expect(text).toContain(`Recovery: ${hint}`);
+      expect(http.calls).toHaveLength(0);
+    });
 
     it('does not serve another office’s product for office ".."', async () => {
       // "/products/types/AFD/locations/.." resolves to /products/types/AFD/, which NWS

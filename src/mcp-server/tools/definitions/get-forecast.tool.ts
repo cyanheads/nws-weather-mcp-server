@@ -21,8 +21,8 @@ const MAX_PERIODS = 48;
 
 /**
  * Derive a period label from startTime when name is empty (hourly periods).
- * Renders in the forecast location's IANA zone so headers agree with the time
- * range rendered immediately below them.
+ * Renders in the forecast location's IANA zone, whatever the host TZ, so the
+ * label agrees with the time range rendered below it.
  */
 function periodLabel(name: string, startTime: string, timeZone: string): string {
   if (name) return name;
@@ -110,7 +110,11 @@ export const getForecastTool = tool('nws_get_forecast', {
       .array(
         z
           .object({
-            name: z.string().describe('Period name (e.g., "Today", "Tonight") or hour label'),
+            name: z
+              .string()
+              .describe(
+                'Period name (e.g., "Today", "Tonight"); in hourly mode, the weekday and start time in the location time zone (e.g., "Fri 6:00 AM")',
+              ),
             startTime: z.string().describe('Period start (ISO 8601)'),
             endTime: z.string().describe('Period end (ISO 8601)'),
             temperature: z.number().describe('Temperature value'),
@@ -208,7 +212,7 @@ export const getForecastTool = tool('nws_get_forecast', {
       location: result.location,
       generatedAt: result.forecast.generatedAt,
       periods: page.items.map((p) => ({
-        name: p.name,
+        name: periodLabel(p.name, p.startTime, result.location.timeZone),
         startTime: p.startTime,
         endTime: p.endTime,
         temperature: p.temperature,
@@ -244,12 +248,10 @@ export const getForecastTool = tool('nws_get_forecast', {
       const humidity =
         p.relativeHumidityPct != null ? ` | **Humidity:** ${p.relativeHumidityPct}%` : '';
       const dew =
-        p.dewpointC != null
-          ? ` | **Dewpoint:** ${cToF(p.dewpointC)}°F (${Math.round(p.dewpointC)}°C)`
-          : '';
+        p.dewpointC != null ? ` | **Dewpoint:** ${cToF(p.dewpointC)}°F (${p.dewpointC}°C)` : '';
 
       const timeRange = `${formatTimestamp(p.startTime, loc.timeZone)} → ${formatTimestamp(p.endTime, loc.timeZone)}`;
-      lines.push(`### ${periodLabel(p.name, p.startTime, loc.timeZone)} — ${p.shortForecast}`);
+      lines.push(`### ${p.name} — ${p.shortForecast}`);
       lines.push(`_${timeRange}_`);
       const tempDual =
         p.temperatureUnit === 'F'

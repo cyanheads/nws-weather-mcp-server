@@ -1,5 +1,5 @@
 /**
- * @fileoverview Tool: nws_get_zone_forecast — fetches the text forecast for a public forecast zone.
+ * @fileoverview Tool: nws_get_zone_forecast — fetches the text forecast for an NWS forecast zone.
  * @module mcp-server/tools/definitions/get-zone-forecast
  */
 
@@ -7,9 +7,17 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 
+/**
+ * Forecast-zone shape advertised as a JSON Schema `pattern` (issue #54): a 2-letter
+ * prefix, a `Z` infix, and 3 digits, in any case and with surrounding whitespace,
+ * which the schema trims. County (`C`) codes have no zone forecast. A malformed or
+ * unknown code still fails in the service as zone_not_found.
+ */
+export const ZONE_ID_INPUT_PATTERN = /^\s*[A-Za-z]{2}[Zz]\d{3}\s*$/;
+
 export const getZoneForecastTool = tool('nws_get_zone_forecast', {
   description:
-    'Get the text forecast for a public NWS forecast zone. Returns named forecast periods (e.g., "Today", "Tonight", "Monday") with detailed narrative text — the human-readable, zone-level forecast written by local forecasters. Completes the alert-to-forecast chain: nws_search_alerts returns each affected zone in "affectedZones" as a code plus a type, and nws_find_stations returns codes in the "forecastZone" column. Only affectedZones entries with type "forecast" work here; entries typed "county" or "fire" have no text forecast upstream and will not resolve, and neither do marine forecast zones (e.g., "PZZ251", "GMZ056"). Zone codes follow the pattern XXZ### (e.g., "WAZ315" for Western Washington lowlands).',
+    'Get the text forecast for an NWS forecast zone. Returns named forecast periods (e.g., "Today", "Tonight", "Monday") with detailed narrative text — the human-readable, zone-level forecast written by local forecasters. Completes the alert-to-forecast chain: nws_search_alerts returns each affected zone in "affectedZones" as a code plus a type, and nws_find_stations returns codes in the "forecastZone" column. Only affectedZones entries with type "forecast" work here; entries typed "county" or "fire" have no text forecast upstream and will not resolve. Marine forecast zones vary: many coastal zones serve a text forecast of wind and seas (e.g., "PZZ251"), while offshore zones (e.g., "GMZ056") and some coastal ones have none. Zone codes follow the pattern XXZ### (e.g., "WAZ315" for the City of Seattle).',
   annotations: { readOnlyHint: true },
   // Every reason below is raised by the NWS service layer carrying only the
   // reason, not by a `ctx.fail` in this handler; the framework fills the hint.
@@ -18,7 +26,7 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
     {
       reason: 'zone_not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'Zone code is not a valid public forecast zone',
+      when: 'Zone code is not a valid NWS forecast zone',
       recovery:
         'Use an affectedZones entry from nws_search_alerts whose type is "forecast" (entries typed "county" or "fire" have no forecast product), the "forecastZone" field from nws_get_forecast, or the "forecastZone" column from nws_find_stations. Zone codes follow the pattern XXZ### (e.g., "WAZ315").',
       severity: 'notice',
@@ -27,7 +35,7 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
     {
       reason: 'zone_forecast_unavailable',
       code: JsonRpcErrorCode.NotFound,
-      when: 'Zone is a valid public forecast zone, but NWS has no text forecast for it',
+      when: 'Zone is a valid land forecast zone, but NWS has no text forecast for it',
       recovery:
         'Call nws_get_forecast with coordinates inside this zone for its point forecast; NWS usually serves one where a zone has no zone text product.',
       // Also raised when the zone forecast endpoint fails outright while the zone
@@ -39,7 +47,7 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
     {
       reason: 'marine_forecast_unsupported',
       code: JsonRpcErrorCode.NotFound,
-      when: 'Zone is a marine forecast zone, for which NWS publishes no text forecast',
+      when: 'Zone is a marine forecast zone NWS publishes no text forecast for (availability varies by zone)',
       recovery:
         'Use nws_search_alerts with this zone code for marine hazards, or nws_get_forecast with coordinates on nearby land for a land forecast.',
       severity: 'notice',
@@ -52,8 +60,9 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
       .string()
       .trim()
       .min(1)
+      .meta({ pattern: ZONE_ID_INPUT_PATTERN.source })
       .describe(
-        'NWS public forecast zone code (e.g., "WAZ315" for the Western Washington lowlands including Seattle). Returned as "forecastZone" by nws_get_forecast and nws_find_stations, or as the "code" of an "affectedZones" entry with type "forecast" in nws_search_alerts. Format: two-letter state + "Z" + three-digit number.',
+        'NWS forecast zone code (e.g., "WAZ315" for the City of Seattle, or a marine zone such as "PZZ251"). Returned as "forecastZone" by nws_get_forecast and nws_find_stations, or as the "code" of an "affectedZones" entry with type "forecast" in nws_search_alerts. Format: two-letter state or marine area code + "Z" + three-digit number.',
       ),
   }),
 

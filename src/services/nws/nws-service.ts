@@ -26,6 +26,7 @@ import type {
   AffectedZone,
   Alert,
   AlertCounts,
+  AlertReference,
   ForecastPeriod,
   ForecastResponse,
   NwsValue,
@@ -83,8 +84,15 @@ const POINTS_NOT_FOUND =
   'NWS only covers the US. Provide coordinates within US states or territories.';
 const CANCELLED_MESSAGE = 'NWS API request cancelled — the caller disconnected.';
 
-/** Problem type NWS returns (HTTP 404) for any marine gridpoint or marine zone forecast. */
+/**
+ * Problem type NWS returns (HTTP 404) for a marine gridpoint forecast and for an
+ * offshore marine zone's text forecast. A coastal marine zone without a text
+ * forecast answers a generic `NotFound` instead; many coastal zones serve one.
+ */
 const MARINE_FORECAST_NOT_SUPPORTED = 'MarineForecastNotSupported';
+
+/** Zone record `properties.type` values that mark a marine forecast zone; land zones are `public`. */
+const MARINE_ZONE_TYPES: ReadonlySet<unknown> = new Set(['coastal', 'offshore']);
 
 /**
  * Every NWS zone, station, and office ID is a plain alphanumeric token. A caller ID
@@ -95,6 +103,16 @@ const MARINE_FORECAST_NOT_SUPPORTED = 'MarineForecastNotSupported';
 const PATH_ID_PATTERN = /^[A-Za-z0-9]+$/;
 
 /**
+ * The two alert-ID shapes NWS emits: a CAP message identifier (a 40-hex message
+ * hash, a 3-digit segment, and a version) and the `-KEEPALIVE-` heartbeat it lists
+ * among active alerts with status Test. Case-sensitive, as NWS is — it answers an
+ * uppercased ID with 404. Anything else is rejected before a URL is built, which
+ * also keeps "/", "%", and ".." segments off the request path.
+ */
+export const ALERT_ID_PATTERN =
+  /^urn:oid:2\.49\.0\.1\.840\.0(?:\.[0-9a-f]{40}\.[0-9]{3}\.[0-9]+|-KEEPALIVE-[0-9]+)$/;
+
+/**
  * Builds the error for a 404. `problemType` is the last segment of the NWS
  * problem document's `type` URI (e.g. `InvalidZone`), or undefined when the body
  * carries none — the call site decides which types it can tell apart.
@@ -103,22 +121,40 @@ type NotFoundFactory = (message: string, problemType: string | undefined) => Err
 
 /**
  * The `marine_forecast_unsupported` failure `nws_get_forecast` and
- * `nws_get_zone_forecast` both declare: NWS serves no point or zone text forecast
- * for marine areas. The framework fills the recovery hint from the calling
- * tool's contract entry for this reason.
+ * `nws_get_zone_forecast` both declare: NWS serves no point forecast for marine
+ * areas, and no zone text forecast for some marine zones. The framework fills the
+ * recovery hint from the calling tool's contract entry for this reason.
  */
 function marineForecastUnsupported(message: string, data: Record<string, unknown>): McpError {
   return notFound(message, { ...data, reason: 'marine_forecast_unsupported' });
 }
 
-/** Last path segment of an NWS problem document's `type` URI, when the body has one. */
-function parseProblemType(text: string): string | undefined {
+/** The fields of an NWS RFC 7807 problem document a call site can key on. */
+interface NwsProblem {
+  /** Raw `detail` string, when the body has one. */
+  readonly detail: string | undefined;
+  /** Last path segment of the `type` URI (e.g. `InvalidParameter`), when the body has one. */
+  readonly type: string | undefined;
+}
+
+/**
+ * Builds the error for a 400 from the `ValidationError` `nwsFetch` raises by
+ * default and the problem document it came from. The call site decides which
+ * problems it can name a reason for and returns `error` for the rest.
+ */
+type BadRequestFactory = (error: McpError, problem: NwsProblem) => Error;
+
+/** Read the `type` segment and `detail` of an NWS problem document; both undefined when absent. */
+function parseProblem(text: string): NwsProblem {
   try {
-    const type = (JSON.parse(text) as { type?: unknown } | null)?.type;
-    if (typeof type !== 'string') return;
-    return type.slice(type.lastIndexOf('/') + 1) || undefined;
+    const body = JSON.parse(text) as { type?: unknown; detail?: unknown } | null;
+    const type = typeof body?.type === 'string' ? body.type : '';
+    return {
+      type: type.slice(type.lastIndexOf('/') + 1) || undefined,
+      detail: typeof body?.detail === 'string' ? body.detail : undefined,
+    };
   } catch {
-    return;
+    return { type: undefined, detail: undefined };
   }
 }
 
@@ -252,6 +288,7 @@ function nwsFetch<T>(
   retries = MAX_RETRIES,
   notFoundMessage = DEFAULT_NOT_FOUND,
   notFoundFactory: NotFoundFactory = (message) => notFound(message),
+  badRequestFactory: BadRequestFactory = (error) => error,
 ): Promise<T> {
   let attempts = 0;
   const retryContext = createRetryContext(ctx);
@@ -271,17 +308,20 @@ function nwsFetch<T>(
       }
 
       if (response.status === 404) {
-        throw notFoundFactory(notFoundMessage, parseProblemType(text));
+        throw notFoundFactory(notFoundMessage, parseProblem(text).type);
       }
 
       // 400 carries an upstream parameter-validation message we want to surface
       // verbatim — our params were valid JSON-RPC, NWS rejected the semantics.
       if (response.status === 400) {
         const detail = parseNwsErrorDetail(text);
-        throw validationError(detail ?? `NWS API returned 400: Bad Request for ${url}`, {
-          url,
-          status: response.status,
-        });
+        throw badRequestFactory(
+          validationError(detail ?? `NWS API returned 400: Bad Request for ${url}`, {
+            url,
+            status: response.status,
+          }),
+          parseProblem(text),
+        );
       }
 
       // Body already consumed via `response.text()` above — captureBody: false
@@ -348,6 +388,26 @@ function explainPointServerError(error: unknown, request: string, seaAdvice: str
     },
     { cause: error },
   );
+}
+
+/**
+ * NWS rejects a well-formed alert-search `point` outside its coverage with a 400
+ * `InvalidParameter` problem whose detail names the parameter ("Parameter \"point\"
+ * is invalid: out of bounds"). That one fails as `nws_search_alerts`' declared
+ * `invalid_point` reason, whose recovery the framework fills; a 400 naming any
+ * other parameter, or of another problem type, passes through unchanged.
+ */
+function pointOutsideCoverage(point: string): BadRequestFactory {
+  return (error, problem) => {
+    const namesPoint =
+      problem.type === 'InvalidParameter' && problem.detail?.startsWith('Parameter "point" ');
+    if (!namesPoint) return error;
+    return validationError(
+      `Point "${point}" is outside NWS coverage (NWS: ${error.message}).`,
+      { ...error.data, reason: 'invalid_point' },
+      { cause: error },
+    );
+  };
 }
 
 /** Resolve coordinates to NWS grid metadata, cached in-process. */
@@ -464,6 +524,24 @@ function parseForecastPeriods(data: Record<string, unknown>): ForecastResponse {
   };
 }
 
+/**
+ * NWS lists an update's references in no fixed order. Sort them newest first by
+ * the parsed `sent` instant — offsets differ across a DST change, so the strings
+ * do not compare. References sent at the same instant keep upstream order (the
+ * sort is stable), and one whose `sent` does not parse sorts after every
+ * parseable one, kept verbatim.
+ */
+function newestReferencesFirst(references: AlertReference[]): AlertReference[] {
+  return references
+    .map((reference) => ({ reference, instant: Date.parse(reference.sent) }))
+    .sort((a, b) => {
+      if (Number.isNaN(a.instant)) return Number.isNaN(b.instant) ? 0 : 1;
+      if (Number.isNaN(b.instant)) return -1;
+      return b.instant - a.instant;
+    })
+    .map(({ reference }) => reference);
+}
+
 /** Parse a single alert from GeoJSON feature. */
 function parseAlert(feature: Record<string, unknown>): Alert {
   const p = feature.properties as Record<string, unknown>;
@@ -486,10 +564,12 @@ function parseAlert(feature: Record<string, unknown>): Alert {
     messageType: p.messageType as string,
     // Compact each upstream CAP reference to the pair that identifies the prior
     // message, dropping its @id and sender.
-    references: ((p.references as Record<string, unknown>[]) ?? []).map((r) => ({
-      identifier: r.identifier as string,
-      sent: r.sent as string,
-    })),
+    references: newestReferencesFirst(
+      ((p.references as Record<string, unknown>[]) ?? []).map((r) => ({
+        identifier: r.identifier as string,
+        sent: r.sent as string,
+      })),
+    ),
     senderName: p.senderName as string,
     affectedZones: ((p.affectedZones as string[]) ?? []).map(parseAffectedZone),
   };
@@ -633,7 +713,7 @@ export interface ObservationResult {
 }
 
 export interface ObservationHistoryResult {
-  /** Observations in the requested window, newest first, at most `limit` of them. */
+  /** Observations in the requested window, newest first, at most the requested count. */
   readonly observations: readonly Observation[];
   readonly stationId: string;
   readonly stationName: string;
@@ -759,16 +839,21 @@ export class NwsService {
     if (normalizedStatus) url.searchParams.set('status', normalizedStatus);
 
     ctx.log.info('Searching alerts', { url: url.toString() });
-    const data = await nwsFetch<Record<string, unknown>>(url.toString(), ctx).catch(
-      (error: unknown) => {
-        if (!params.point) throw error;
-        throw explainPointServerError(
-          error,
-          `the alerts search at point "${params.point}"`,
-          'For a point at sea, search by marine region (e.g., region "AT") or a marine area or zone filter instead.',
-        );
-      },
-    );
+    const data = await nwsFetch<Record<string, unknown>>(
+      url.toString(),
+      ctx,
+      MAX_RETRIES,
+      DEFAULT_NOT_FOUND,
+      undefined,
+      params.point ? pointOutsideCoverage(params.point) : undefined,
+    ).catch((error: unknown) => {
+      if (!params.point) throw error;
+      throw explainPointServerError(
+        error,
+        `the alerts search at point "${params.point}"`,
+        'For a point at sea, search by marine region (e.g., region "AT") or a marine area or zone filter instead.',
+      );
+    });
 
     const features = (data.features ?? []) as Record<string, unknown>[];
     const eventFilters = params.event
@@ -794,6 +879,36 @@ export class NwsService {
       return eventFilters.some((event) => normalizedEvent.includes(event));
     });
     return { alerts };
+  }
+
+  /**
+   * One alert message by ID, current or superseded. NWS answers `/alerts/{id}` with
+   * a single GeoJSON Feature, parsed exactly as a search result is. A malformed ID
+   * fails before any request, and NWS's 404 is the same `InvalidAlert` problem for
+   * a fabricated ID and one past its ~7-day retention, so both are `alert_not_found`.
+   */
+  async getAlert(alertId: string, ctx: Context): Promise<Alert> {
+    const id = alertId.trim();
+    if (!ALERT_ID_PATTERN.test(id)) {
+      throw notFound(
+        'alert_id is not an NWS alert ID. NWS alert IDs read "urn:oid:2.49.0.1.840.0." followed by a 40-character lowercase hex hash, a 3-digit segment, and a version (e.g., "urn:oid:2.49.0.1.840.0.654087301e4bfcbe71d24494c26a965e54d3a1ad.001.1").',
+        { reason: 'alert_not_found' },
+      );
+    }
+
+    ctx.log.info('Fetching alert', { alertId: id });
+    const feature = await nwsFetch<Record<string, unknown>>(
+      `${BASE_URL}/alerts/${id}`,
+      ctx,
+      MAX_RETRIES,
+      DEFAULT_NOT_FOUND,
+      () =>
+        notFound(
+          `NWS has no alert "${id}": the ID does not exist, or the message is past the ~7 days NWS keeps alerts.`,
+          { alertId: id, reason: 'alert_not_found' },
+        ),
+    );
+    return parseAlert(feature);
   }
 
   /**
@@ -919,10 +1034,12 @@ export class NwsService {
   }
 
   /**
-   * One page of a station's observation history, newest first. `start` is
+   * Up to `limit` of a station's observations, newest first. `start` is
    * inclusive and `end` exclusive, and both must already be validated ISO 8601
    * date-times with seconds and an offset: NWS answers a date-only value with a
-   * 400 and a calendar-invalid one (e.g. Feb 30) with a 500.
+   * 400 and a calendar-invalid one (e.g. Feb 30) with a 500. The tool asks for
+   * one past its page size, so the extra record tells it older observations
+   * remain; paging policy stays with the caller.
    *
    * NWS answers an unknown station's observation list with HTTP 200 and an empty
    * collection, so only the station record's 404 tells a missing station from an
@@ -1028,7 +1145,9 @@ export class NwsService {
    * An empty @graph is ambiguous — both an unknown office and a valid office with no
    * current product of that type return HTTP 200 with `{"@graph":[]}`. When it's empty,
    * probe /offices/{officeId} (200 = valid, no product; 404 = unknown office) to branch
-   * the error message; episodic types (SPS, HWO) are commonly empty for valid offices.
+   * the error message. Episodic types (SPS, HWO) are commonly empty for valid offices;
+   * routine types (AFD, ZFP) are empty when the office files them under another location
+   * code (Anchorage's ZFP lives under AER and ALU, not AFC).
    */
   async getOfficeDiscussion(
     office: string,
@@ -1058,14 +1177,31 @@ export class NwsService {
 
     if (graph.length === 0) {
       if (!(await this.probeRecord(`${BASE_URL}/offices/${office}`, ctx))) throw unknownOffice();
+      if (productType === 'HWO' || productType === 'SPS') {
+        throw notFound(
+          `No ${productType} products are currently available for office "${office}". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
+          {
+            office,
+            productType,
+            reason: 'no_products',
+            recovery: {
+              hint: `${productType} products are issued only when conditions warrant. Retry with product_type "AFD" for the always-available forecast discussion.`,
+            },
+          },
+        );
+      }
+      // AFD and ZFP are routine; an empty list means the office files them under another code.
       throw notFound(
-        `No ${productType} products are currently available for office "${office}". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
+        `No ${productType} product is filed under location code "${office}". Some offices file a product under location codes other than their WFO code — Anchorage (AFC) files its ZFP under "AER" (Anchorage East) and "ALU" (Anchorage West), and San Juan (SJU) its ZFP under "PR".`,
         {
           office,
           productType,
           reason: 'no_products',
           recovery: {
-            hint: `${productType} products are issued only when conditions warrant. Retry with product_type "AFD" for the always-available forecast discussion.`,
+            hint:
+              productType === 'ZFP'
+                ? `Retry with the location code the office files its ZFP under (Anchorage: "AER" or "ALU"; San Juan: "PR"), or use nws_get_zone_forecast with a zone code for one zone's text forecast.`
+                : `Confirm the WFO code from the "office" field of nws_get_forecast output and retry with it.`,
           },
         },
       );
@@ -1109,7 +1245,7 @@ export class NwsService {
     }
   }
 
-  /** Get the text forecast for a public forecast zone. */
+  /** Get the text forecast for a land (public) or marine forecast zone. */
   async getZoneForecast(zoneId: string, ctx: Context): Promise<ZoneForecastResult> {
     // The tool's contract owns every recovery text below: each throw carries only
     // its reason, and the framework fills the matching contract hint, so there is
@@ -1117,8 +1253,13 @@ export class NwsService {
     // is zone_forecast_unavailable with a point inside the zone, whose hint names it.
     const zoneNotFound = () =>
       notFound(
-        `Zone "${zoneId}" is not a public forecast zone. Provide a public forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county and fire zones have no text forecast product.`,
+        `Zone "${zoneId}" is not an NWS forecast zone. Provide a forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county and fire zones have no text forecast product.`,
         { zoneId, reason: 'zone_not_found' },
+      );
+    const marineZoneUnsupported = () =>
+      marineForecastUnsupported(
+        `Zone "${zoneId}" is a marine zone with no text forecast from NWS; text forecast availability varies across marine zones.`,
+        { zoneId },
       );
     if (!PATH_ID_PATTERN.test(zoneId)) throw zoneNotFound();
 
@@ -1129,7 +1270,8 @@ export class NwsService {
      * NWS types a 404 `NotFound` both for a valid zone with no text product and
      * for a made-up zone with an unknown prefix, so that answer — like a 500 that
      * outlives the retry budget, which some valid zones return on every attempt —
-     * is settled by probing the zone record.
+     * is settled by probing the zone record, whose `type` also tells a land zone
+     * from a marine one. A zone that serves its forecast is never probed.
      */
     let notFoundIsAmbiguous = false;
 
@@ -1139,12 +1281,7 @@ export class NwsService {
       MAX_RETRIES,
       DEFAULT_NOT_FOUND,
       (_message, problemType) => {
-        if (problemType === MARINE_FORECAST_NOT_SUPPORTED) {
-          return marineForecastUnsupported(
-            `Zone "${zoneId}" is a marine zone; NWS publishes no text forecast for marine zones.`,
-            { zoneId },
-          );
-        }
+        if (problemType === MARINE_FORECAST_NOT_SUPPORTED) return marineZoneUnsupported();
         notFoundIsAmbiguous = problemType === 'NotFound';
         return zoneNotFound();
       },
@@ -1163,6 +1300,18 @@ export class NwsService {
         throw notFoundIsAmbiguous || ctx.signal.aborted ? probeError : error;
       });
       if (!record) throw zoneNotFound();
+
+      /**
+       * A marine zone's interior point is in the water, where nws_get_forecast
+       * refuses too. Its NotFound 404 is the same "no text forecast" answer an
+       * offshore zone gives as MarineForecastNotSupported; a 500 says nothing about
+       * the product (most coastal zones serve one), so it keeps its own failure.
+       */
+      const zoneType = (record.properties as { type?: unknown } | undefined)?.type;
+      if (MARINE_ZONE_TYPES.has(zoneType)) {
+        if (status === 500) throw error;
+        throw marineZoneUnsupported();
+      }
 
       // The record's geometry yields a point for nws_get_forecast with no extra request;
       // without one, the contract recovery stands.

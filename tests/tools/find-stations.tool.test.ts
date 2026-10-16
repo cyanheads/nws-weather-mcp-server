@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FindStationsResult } from '@/services/nws/nws-service.js';
@@ -52,9 +52,15 @@ describe('nws_find_stations', () => {
     expect(input.limit).toBe(10);
   });
 
-  it('rejects limit out of range', () => {
+  it('accepts a limit past the page cap up to the 10000 ceiling, and rejects beyond it', () => {
+    expect(
+      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 100 }).limit,
+    ).toBe(100);
+    expect(
+      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 10_000 }).limit,
+    ).toBe(10_000);
     expect(() =>
-      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 100 }),
+      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 10_001 }),
     ).toThrow();
   });
 
@@ -278,6 +284,120 @@ describe('nws_find_stations', () => {
 
       expect(result.stations[0]!.stationId).toBe('K000');
       expect(enrichment.shown).toBe(10);
+    });
+
+    describe('limit past the 50-station cap (issue #53)', () => {
+      type Surfaces = {
+        data: Record<string, unknown> & { stations: { stationId: string }[] };
+        text: string;
+      };
+
+      /** One call through the production parse, returning both client surfaces. */
+      async function call(args: Record<string, unknown>): Promise<Surfaces> {
+        const result = await runToolContract(findStationsTool, {
+          latitude: 47.6,
+          longitude: -122.3,
+          ...args,
+        });
+        expect(result.isError).toBeFalsy();
+        return {
+          data: result.structuredContent as Surfaces['data'],
+          text: result.content.map((block) => (block as { text: string }).text).join('\n'),
+        };
+      }
+
+      const CLAMP = 'Requested limit 51 exceeds the per-page cap of 50; this page holds up to 50.';
+
+      it('serves 50 of 60, discloses the clamp on both surfaces, and continues to the other 10', async () => {
+        mockFindStations.mockResolvedValue(stationList(60));
+
+        const first = await call({ limit: 51 });
+
+        expect(first.data.stations).toHaveLength(50);
+        expect(first.data).toMatchObject({
+          totalCount: 60,
+          shown: 50,
+          requestedLimit: 51,
+          effectiveLimit: 50,
+        });
+        expect(first.data.nextCursor).toEqual(expect.any(String));
+        // One notice: the clamp first, then the page's own continuation guidance.
+        const notice = `${CLAMP} Returning 50 of 60 nearby stations. Pass nextCursor back as cursor for the next page. Stations are contiguous within one response; the list is re-fetched on every call, so a later call can window an updated registry.`;
+        expect(first.data.notice).toBe(notice);
+        expect(first.text).toContain(notice);
+        expect(first.text).toContain('**Requested Limit:** 51');
+        expect(first.text).toContain('**Applied Limit:** 50');
+
+        const second = await call({ cursor: first.data.nextCursor });
+
+        expect(second.data.stations.map((s) => s.stationId)).toEqual(
+          Array.from({ length: 10 }, (_, index) => `K0${50 + index}`),
+        );
+        expect(second.data).not.toHaveProperty('nextCursor');
+        expect(second.data).not.toHaveProperty('notice');
+        expect(second.data).not.toHaveProperty('requestedLimit');
+        expect(second.data).not.toHaveProperty('effectiveLimit');
+      });
+
+      it('discloses the clamp alone when every station fits one page', async () => {
+        mockFindStations.mockResolvedValue(stationList(12));
+
+        const { data } = await call({ limit: 10_000 });
+
+        expect(data.stations).toHaveLength(12);
+        expect(data).toMatchObject({ requestedLimit: 10_000, effectiveLimit: 50 });
+        expect(data.notice).toBe(
+          'Requested limit 10000 exceeds the per-page cap of 50; this page holds up to 50.',
+        );
+      });
+
+      it('returns a limit within the cap exactly as before, with no clamp disclosure', async () => {
+        mockFindStations.mockResolvedValue(stationList(60));
+
+        const { data, text } = await call({ limit: 50 });
+
+        expect(data.stations).toHaveLength(50);
+        expect(data).not.toHaveProperty('requestedLimit');
+        expect(data).not.toHaveProperty('effectiveLimit');
+        // The continuation guidance alone, with no clamp sentence ahead of it.
+        expect(data.notice).toBe(
+          'Returning 50 of 60 nearby stations. Pass nextCursor back as cursor for the next page. Stations are contiguous within one response; the list is re-fetched on every call, so a later call can window an updated registry.',
+        );
+        expect(text).not.toContain('**Requested Limit:**');
+        expect(text).not.toContain('**Applied Limit:**');
+      });
+
+      it('continues a cursor at its own page size when a different limit is sent with it, disclosing nothing', async () => {
+        mockFindStations.mockResolvedValue(stationList(60));
+
+        const first = await call({ limit: 20 });
+        const second = await call({ cursor: first.data.nextCursor, limit: 500 });
+
+        expect(second.data.stations).toHaveLength(20);
+        expect(second.data.stations[0]!.stationId).toBe('K020');
+        expect(second.data).not.toHaveProperty('requestedLimit');
+        expect(second.data).not.toHaveProperty('effectiveLimit');
+      });
+
+      it.each([
+        ['past the 10000 ceiling', 10_001],
+        ['zero', 0],
+        ['fractional', 2.5],
+      ])('rejects a limit %s as invalid_arguments', async (_label, limit) => {
+        const result = await runToolContract(findStationsTool, {
+          latitude: 47.6,
+          longitude: -122.3,
+          limit,
+        });
+        const { error } = result.structuredContent as {
+          error: { code: number; data?: { reason?: string } };
+        };
+
+        expect(result.isError).toBe(true);
+        expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+        expect(error.data?.reason).toBe('invalid_arguments');
+        expect(mockFindStations).not.toHaveBeenCalled();
+      });
     });
 
     it('renders the cursor-selected window in format(), not the first window', async () => {

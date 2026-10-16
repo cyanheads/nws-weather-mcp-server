@@ -7,13 +7,16 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
-import { formatTimestamp, zoneCodeToTimeZone } from '../format-utils.js';
+import { alertMarkdownLines, alertOutputSchema, toAlertOutput } from '../alert-output.js';
+import { clampPageLimit, composeNotice, LIMIT_CEILING, type PageLimit } from '../page-limit.js';
+import { unsetIfBlank } from '../unset-if-blank.js';
 
 /**
  * Upper bound on alerts per page. `/alerts/active` rejects an upstream `limit`,
  * so the service fetches and filters the whole active collection and this tool
  * windows the result. Matches past the window are reachable through the
- * `nextCursor` continuation token.
+ * `nextCursor` continuation token. A larger `limit` is served up to this cap
+ * rather than rejected.
  */
 const MAX_ALERTS = 25;
 
@@ -47,6 +50,23 @@ const NWS_POINT_PATTERN = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/;
  * with a clean zero-result search.
  */
 const NWS_ZONE_PATTERN = /^([A-Z]{2})[CZ]\d{3}$/;
+
+/**
+ * Shapes advertised as JSON Schema `pattern`s on area, point, and zone (issue #54).
+ * A validating client applies a pattern to the raw value, so each admits every form
+ * the handler accepts before it normalizes: any case, surrounding whitespace, a blank
+ * or whitespace-only value (unset), and for point whitespace anywhere, which the
+ * handler strips. Enforcement stays in the handler checks above — area and prefix
+ * sets, coordinate bounds — with their declared reasons; a Zod `.regex()` would
+ * reject first as a generic -32602. The trailing `\s*` sits inside the optional
+ * group, and a minus sign carries its own `\s*`, so no two whitespace runs can split
+ * one stretch of input between them and a backtracking engine stays linear on long
+ * whitespace.
+ */
+export const AREA_INPUT_PATTERN = /^\s*(?:[A-Za-z]{2}\s*)?$/;
+export const POINT_INPUT_PATTERN =
+  /^\s*(?:(?:-\s*)?\d(?:\s*\d)*(?:\s*\.\s*\d(?:\s*\d)*)?\s*,\s*(?:-\s*)?\d(?:\s*\d)*(?:\s*\.\s*\d(?:\s*\d)*)?\s*)?$/;
+export const ZONE_INPUT_PATTERN = /^\s*(?:[A-Za-z]{2}[CcZz]\d{3}\s*)?$/;
 
 /** Valid area codes: US states, DC, territories, and marine areas. */
 const VALID_AREA_CODES = new Set([
@@ -148,16 +168,6 @@ function describeFilters(input: SearchAlertsInput): string {
   return parts.length > 0 ? parts.join(', ') : 'national (no filters)';
 }
 
-/**
- * Trim an optional string filter. Form-based clients send every optional field
- * they display, empty ones as "", so a blank or whitespace-only value is unset:
- * left off the upstream request and out of `appliedFilters` (issue #46).
- */
-function normalizeOptionalFilter(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized ? normalized : undefined;
-}
-
 /** An empty array filters nothing, so it is unset like an omitted one (issue #46). */
 function nonEmpty<T>(values: T[] | undefined): T[] | undefined {
   return values?.length ? values : undefined;
@@ -181,9 +191,9 @@ function normalizeEventFilter(events: string[] | undefined): string[] | undefine
 function normalizeSearchAlertsInput(input: SearchAlertsInput): SearchAlertsInput {
   return {
     ...input,
-    area: normalizeOptionalFilter(input.area)?.toUpperCase(),
-    point: normalizeOptionalFilter(input.point)?.replace(/\s+/g, ''),
-    zone: normalizeOptionalFilter(input.zone)?.toUpperCase(),
+    area: unsetIfBlank(input.area)?.toUpperCase(),
+    point: unsetIfBlank(input.point)?.replace(/\s+/g, ''),
+    zone: unsetIfBlank(input.zone)?.toUpperCase(),
     region: nonEmpty(input.region),
     event: normalizeEventFilter(input.event),
     severity: nonEmpty(input.severity),
@@ -204,18 +214,21 @@ const searchAlertsInputSchema = z.object({
   area: z
     .string()
     .optional()
+    .meta({ pattern: AREA_INPUT_PATTERN.source })
     .describe(
       'US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM"). Mutually exclusive with point and zone.',
     ),
   point: z
     .string()
     .optional()
+    .meta({ pattern: POINT_INPUT_PATTERN.source })
     .describe(
       'Coordinates as "lat,lon" (e.g., "47.6,-122.3"). Returns alerts whose geometry contains this point. Mutually exclusive with area and zone.',
     ),
   zone: z
     .string()
     .optional()
+    .meta({ pattern: ZONE_INPUT_PATTERN.source })
     .describe(
       'NWS forecast zone (e.g., "WAZ558") or county zone (e.g., "WAC033"). Mutually exclusive with area and point.',
     ),
@@ -255,10 +268,10 @@ const searchAlertsInputSchema = z.object({
     .number()
     .int()
     .min(1)
-    .max(MAX_ALERTS)
+    .max(LIMIT_CEILING)
     .default(MAX_ALERTS)
     .describe(
-      'Maximum number of alerts to include in this page (1-25, default 25). totalCount still reports the full number of distinct matches, so a small limit returns a digest of broad or national searches without dropping the total; pass the returned nextCursor as cursor to reach the rest.',
+      `Maximum number of alerts to include in this page (default ${MAX_ALERTS}). A page holds at most ${MAX_ALERTS}; a larger limit (up to ${LIMIT_CEILING}) is served as ${MAX_ALERTS} and reported through requestedLimit and effectiveLimit. totalCount still reports the full number of distinct matches, so a small limit returns a digest of broad or national searches without dropping the total; pass the returned nextCursor as cursor to reach the rest.`,
     ),
   cursor: z
     .string()
@@ -274,8 +287,10 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   description:
     'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, land/marine region, event type, severity, urgency, or certainty. area, point, zone, region_type, and region are mutually exclusive — provide at most one. Omit all filters for a national search.',
   annotations: { readOnlyHint: true },
-  // Every reason is caller input rejected before any request, so each logs at
-  // notice rather than error.
+  // Every reason is caller input NWS cannot serve, so each logs at notice rather
+  // than error. All are rejected before any request except invalid_point, which
+  // the service also raises when NWS refuses a well-formed point outside its
+  // coverage.
   errors: [
     {
       reason: 'mutually_exclusive_filters',
@@ -296,10 +311,11 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     {
       reason: 'invalid_point',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Point coordinates are malformed or outside valid bounds',
+      when: 'Point coordinates are malformed, outside valid bounds, or outside NWS coverage (US states, territories, and adjacent marine areas)',
       recovery:
-        'Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").',
+        'Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3") for a location NWS covers: the US states, territories, or adjacent marine areas.',
       severity: 'notice',
+      thrownBy: 'service',
     },
     {
       reason: 'invalid_zone',
@@ -315,90 +331,10 @@ export const searchAlertsTool = tool('nws_search_alerts', {
 
   output: z.object({
     alerts: z
-      .array(
-        z
-          .object({
-            id: z.string().describe('Alert ID'),
-            event: z.string().describe('Event type (e.g., "Tornado Warning")'),
-            headline: z.string().nullable().describe('Alert headline'),
-            description: z
-              .string()
-              .nullable()
-              .describe('Full alert description; null when NWS publishes the alert without one'),
-            instruction: z.string().nullable().describe('Recommended actions'),
-            severity: z.string().describe('Severity level'),
-            urgency: z.string().describe('Urgency level'),
-            certainty: z.string().describe('Certainty level'),
-            areaDesc: z.string().describe('Affected area description'),
-            sent: z
-              .string()
-              .describe(
-                'Message issuance time (ISO 8601) — when the office transmitted this CAP message. Describes the message, not the hazard: use it to judge how stale the report is.',
-              ),
-            effective: z
-              .string()
-              .describe(
-                'Message effective time (ISO 8601) — when this version of the CAP message takes effect. A property of the message, not of the hazard: distinct from onset (when the hazard begins) and from expires (when a superseding message is due). Usually equals sent.',
-              ),
-            onset: z
-              .string()
-              .nullable()
-              .describe('Expected hazard onset (ISO 8601). When the hazard is expected to begin.'),
-            ends: z
-              .string()
-              .nullable()
-              .describe(
-                'Hazard end (ISO 8601) — when the hazard is expected to end; null when open-ended ("until further notice"). Distinct from expires, which is the message-refresh time.',
-              ),
-            expires: z
-              .string()
-              .nullable()
-              .describe(
-                'Message expiration (ISO 8601) — when NWS will issue a superseding statement. NOT when the hazard ends; the hazard window is described in the headline.',
-              ),
-            status: z
-              .string()
-              .describe(
-                'This alert\'s own CAP status as reported by NWS ("Actual", "Exercise", "System", "Test", "Draft"). Distinct from the status input filter, which selects which alerts are searched — with the default filter every returned alert reads "Actual".',
-              ),
-            messageType: z
-              .string()
-              .describe(
-                'CAP message type: "Alert" for an original issuance, "Update" for a revision of an earlier message, "Cancel" for a cancellation.',
-              ),
-            references: z
-              .array(
-                z
-                  .object({
-                    identifier: z.string().describe('CAP identifier of the superseded message'),
-                    sent: z.string().describe('When the superseded message was issued (ISO 8601)'),
-                  })
-                  .describe('One prior message this alert supersedes'),
-              )
-              .describe(
-                'Prior alert messages this one supersedes, newest first. Empty for an original issuance — never inferred when NWS reports none.',
-              ),
-            senderName: z.string().describe('Issuing office'),
-            affectedZones: z
-              .array(
-                z
-                  .object({
-                    code: z
-                      .string()
-                      .describe('Zone code, e.g. "WAZ558" (forecast) or "WAC033" (county)'),
-                    type: z
-                      .string()
-                      .describe(
-                        'NWS zone type: "forecast", "county", or "fire" ("unknown" when upstream reports a shape this server cannot type). Only "forecast" codes have a zone text forecast — pass those to nws_get_zone_forecast. All types are valid values for this tool\'s own zone filter.',
-                      ),
-                  })
-                  .describe('Affected zone with its NWS zone type'),
-              )
-              .describe('Affected zones, each with the zone type that decides where it can chain'),
-          })
-          .describe('Single active alert with event, severity, area, and timing'),
-      )
-      .describe('Matching alerts for this page (at most the requested limit, max 25)'),
+      .array(alertOutputSchema)
+      .describe(
+        `Matching alerts for this page (at most the applied limit, which never exceeds ${MAX_ALERTS})`,
+      ),
   }),
 
   // Result-set context the agent reasons with — counts, applied filters echo, and empty-result
@@ -418,11 +354,23 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       .describe(
         'Opaque token for the next page of matches — pass it back as `cursor`. Omitted when this is the last page.',
       ),
+    requestedLimit: z
+      .number()
+      .optional()
+      .describe(
+        `The limit asked for, when it exceeded the ${MAX_ALERTS}-alert page cap; absent otherwise.`,
+      ),
+    effectiveLimit: z
+      .number()
+      .optional()
+      .describe(
+        'The page size applied instead of requestedLimit; continued pages keep it. Absent when the limit was within the cap.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no alerts matched (echoes applied filters and suggests how to broaden), when matches remain beyond this page, or when the supplied cursor points past the end of the match set.',
+        'Guidance when the requested limit exceeded the page cap, when no alerts matched (echoes applied filters and suggests how to broaden), when matches remain beyond this page, or when the supplied cursor points past the end of the match set.',
       ),
   },
 
@@ -431,6 +379,8 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     shown: { label: 'Shown' },
     appliedFilters: { label: 'Filters' },
     nextCursor: { label: 'Next Cursor' },
+    requestedLimit: { label: 'Requested Limit' },
+    effectiveLimit: { label: 'Applied Limit' },
   },
 
   async handler(input, ctx) {
@@ -486,14 +436,12 @@ export const searchAlertsTool = tool('nws_search_alerts', {
 
     // The fetched, filtered match set is windowed here — `/alerts/active` takes
     // no upstream limit or cursor, so continuation is local to this array. The
-    // cursor carries its own page size, so `limit` shapes the first page only.
-    const page = paginateArray(
-      allAlerts,
-      normalizedInput.cursor,
-      normalizedInput.limit,
-      MAX_ALERTS,
-      ctx,
-    );
+    // cursor carries its own page size, so `limit` shapes the first page only,
+    // and only there is it held to the cap.
+    const { effectiveLimit, clamp }: PageLimit = normalizedInput.cursor
+      ? { effectiveLimit: normalizedInput.limit }
+      : clampPageLimit(normalizedInput.limit, MAX_ALERTS);
+    const page = paginateArray(allAlerts, normalizedInput.cursor, effectiveLimit, MAX_ALERTS, ctx);
 
     ctx.log.info('Alerts search completed', { total, shown: page.items.length, appliedFilters });
 
@@ -502,28 +450,20 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       shown: page.items.length,
       appliedFilters,
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      ...clamp?.fields,
     });
+    let pageNotice: string | undefined;
     if (total === 0) {
-      ctx.enrich.notice(
-        `No active alerts matched: ${appliedFilters}. Try a broader area, remove severity or event filters, or use nws_list_alert_types to verify event names.`,
-      );
+      pageNotice = `No active alerts matched: ${appliedFilters}. Try a broader area, remove severity or event filters, or use nws_list_alert_types to verify event names.`;
     } else if (page.nextCursor) {
-      ctx.enrich.notice(
-        `Returning ${page.items.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift entries across the page boundary. Duplicate alerts are collapsed on id within each fetch, so the same id arriving on two pages means the active set moved between calls, not that one alert was returned twice.`,
-      );
+      pageNotice = `Returning ${page.items.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift entries across the page boundary. Duplicate alerts are collapsed on id within each fetch, so the same id arriving on two pages means the active set moved between calls, not that one alert was returned twice.`;
     } else if (normalizedInput.cursor && page.items.length === 0) {
-      ctx.enrich.notice(
-        `The cursor points past the end of the ${total} alerts matching: ${appliedFilters}. Call again without a cursor to restart from the first match.`,
-      );
+      pageNotice = `The cursor points past the end of the ${total} alerts matching: ${appliedFilters}. Call again without a cursor to restart from the first match.`;
     }
+    const notice = composeNotice(clamp?.notice, pageNotice);
+    if (notice) ctx.enrich.notice(notice);
 
-    return {
-      alerts: page.items.map((a) => ({
-        ...a,
-        affectedZones: [...a.affectedZones],
-        references: [...a.references],
-      })),
-    };
+    return { alerts: page.items.map(toAlertOutput) };
   },
 
   format: (result) => {
@@ -540,49 +480,8 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       `## ${result.alerts.length} Active Alert${result.alerts.length === 1 ? '' : 's'}\n`,
     ];
 
-    for (const a of result.alerts) {
-      // Derive a representative IANA zone from the first affected zone code so
-      // alert timestamps render with named US abbreviations (PDT/CDT/EDT) like
-      // forecast/observations, rather than falling back to numeric UTC offsets.
-      const alertTimeZone = zoneCodeToTimeZone(a.affectedZones[0]?.code);
-
-      lines.push(`### ${a.event}`);
-      lines.push(`_ID: ${a.id}_`);
-      if (a.headline) lines.push(`**${a.headline}**`);
-      lines.push(
-        `**Severity:** ${a.severity} | **Urgency:** ${a.urgency} | **Certainty:** ${a.certainty}`,
-      );
-      lines.push(`**Area:** ${a.areaDesc}`);
-      if (a.onset) lines.push(`**Hazard onset:** ${formatTimestamp(a.onset, alertTimeZone)}`);
-      if (a.ends) lines.push(`**Hazard ends:** ${formatTimestamp(a.ends, alertTimeZone)}`);
-      if (a.expires) {
-        lines.push(`**Message valid until:** ${formatTimestamp(a.expires, alertTimeZone)}`);
-      }
-      lines.push(`**Message type:** ${a.messageType} | **Status:** ${a.status}`);
-      lines.push(
-        `**Message sent:** ${formatTimestamp(a.sent, alertTimeZone)} | **Message effective:** ${formatTimestamp(a.effective, alertTimeZone)}`,
-      );
-      if (a.references.length > 0) {
-        const priors = a.references
-          .map((r) => `${r.identifier} (sent ${formatTimestamp(r.sent, alertTimeZone)})`)
-          .join('; ');
-        lines.push(`**Supersedes:** ${priors}`);
-      }
-      lines.push(`**From:** ${a.senderName}`);
-      if (a.affectedZones.length > 0) {
-        lines.push(`**Zones:** ${a.affectedZones.map((z) => `${z.code} (${z.type})`).join(', ')}`);
-      }
-      if (a.description) {
-        lines.push('');
-        lines.push(a.description);
-      }
-      if (a.instruction) {
-        lines.push('');
-        lines.push(`**Recommended Actions:** ${a.instruction}`);
-      }
-      lines.push('');
-      lines.push('---');
-      lines.push('');
+    for (const alert of result.alerts) {
+      lines.push(...alertMarkdownLines(alert), '', '---', '');
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

@@ -6,11 +6,27 @@
 import http from 'node:http';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ALERT_ID_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-alert.tool.js';
 import {
+  DATE_TIME_INPUT_PATTERN,
+  HISTORY_STATION_ID_INPUT_PATTERN,
+} from '@/mcp-server/tools/definitions/get-observation-history.tool.js';
+import { STATION_ID_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-observations.tool.js';
+import { OFFICE_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-office-discussion.tool.js';
+import { ZONE_ID_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-zone-forecast.tool.js';
+import {
+  AREA_INPUT_PATTERN,
+  POINT_INPUT_PATTERN,
+  ZONE_INPUT_PATTERN,
+} from '@/mcp-server/tools/definitions/search-alerts.tool.js';
+import {
+  CURRENT_ALERT_ID,
+  coastalZoneRecordResponse,
   duplicateAlertsResponse,
   emptyAlertsResponse,
   griddedMarinePointsResponse,
   gridlessMarinePointsResponse,
+  KEEPALIVE_ALERT_ID,
   marineForecastNotSupportedProblem,
   multiPolygonZoneRecordResponse,
   notFoundProblem,
@@ -226,7 +242,15 @@ async function initializeSession(port: number): Promise<string> {
   return sessionId!;
 }
 
-async function startHttpTestServer(mockFetch: typeof fetch): Promise<TestServer> {
+/**
+ * Boots the HTTP app against `mockFetch`. `logLevel` is the `MCP_LOG_LEVEL` floor, which also
+ * gates the `ctx.log` mirror to the client: `emerg` keeps the run quiet, and a test asserting
+ * `notifications/message` frames passes the level it expects them at.
+ */
+async function startHttpTestServer(
+  mockFetch: typeof fetch,
+  logLevel = 'emerg',
+): Promise<TestServer> {
   const envKeys = [
     'NODE_ENV',
     'MCP_TRANSPORT_TYPE',
@@ -250,7 +274,7 @@ async function startHttpTestServer(mockFetch: typeof fetch): Promise<TestServer>
   process.env.MCP_HTTP_PORT = String(port);
   process.env.MCP_HTTP_ENDPOINT_PATH = '/mcp';
   process.env.MCP_AUTH_MODE = 'none';
-  process.env.MCP_LOG_LEVEL = 'emerg';
+  process.env.MCP_LOG_LEVEL = logLevel;
   process.env.NWS_USER_AGENT =
     '(nws-weather-mcp-server-test, github.com/cyanheads/nws-weather-mcp-server)';
 
@@ -261,7 +285,9 @@ async function startHttpTestServer(mockFetch: typeof fetch): Promise<TestServer>
   const { alertTypesResource } = await import('@/mcp-server/resources/definitions/index.js');
   const {
     findStationsTool,
+    getAlertTool,
     getForecastTool,
+    getObservationHistoryTool,
     getObservationsTool,
     getOfficeDiscussionTool,
     getZoneForecastTool,
@@ -274,7 +300,9 @@ async function startHttpTestServer(mockFetch: typeof fetch): Promise<TestServer>
     tools: [
       getForecastTool,
       searchAlertsTool,
+      getAlertTool,
       getObservationsTool,
+      getObservationHistoryTool,
       findStationsTool,
       listAlertTypesTool,
       getOfficeDiscussionTool,
@@ -769,6 +797,22 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
       ]);
       expect(discussion.result.structuredContent).toMatchObject({ productCode: 'AFD' });
       expect(discussion.text).toContain('Area Forecast Discussion (AFD)');
+
+      // Blank sections (issue #50) select nothing: the whole product, no notice.
+      for (const sections of [[], [''], ['  ']]) {
+        const whole = await call('blank-sections', 'nws_get_office_discussion', {
+          office: 'SEW',
+          sections,
+        });
+        expect(whole.result.structuredContent, JSON.stringify(sections)).toEqual({
+          issuanceTime: '2026-09-30T10:33:00+00:00',
+          issuingOffice: 'KSEW',
+          productCode: 'AFD',
+          productName: 'Area Forecast Discussion',
+          productText: 'AFDSEW\n.SYNOPSIS...',
+          wmoCollectiveId: 'FXUS66',
+        });
+      }
     } finally {
       await server.close();
     }
@@ -829,7 +873,7 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
       }
       throw new Error(`Unexpected upstream URL: ${url}`);
     });
-    const server = await startHttpTestServer(mockFetch);
+    const server = await startHttpTestServer(mockFetch, 'info');
 
     try {
       const sessionId = await initializeSession(server.port);
@@ -1028,6 +1072,9 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
         return jsonResponse(notFoundProblem, 404);
       if (url === `${API}/zones/forecast/PRZ001`)
         return jsonResponse(multiPolygonZoneRecordResponse);
+      if (url === `${API}/zones/forecast/LMZ645/forecast`)
+        return jsonResponse(notFoundProblem, 404);
+      if (url === `${API}/zones/forecast/LMZ645`) return jsonResponse(coastalZoneRecordResponse);
       if (url === `${API}/alerts/active?status=actual`) {
         return jsonResponse({ title: 'Unexpected Problem', status: 500 }, 500);
       }
@@ -1066,6 +1113,9 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
       expect(
         await failureLevels('zone-bad-id', 'nws_get_zone_forecast', { zone_id: 'X-Y' }),
       ).toEqual(['notice']);
+      expect(
+        await failureLevels('alert-bad-id', 'nws_get_alert', { alert_id: '../alerts/active' }),
+      ).toEqual(['notice']);
       // Handler-thrown via ctx.fail.
       expect(await failureLevels('alerts-bad-area', 'nws_search_alerts', { area: 'ZZ' })).toEqual([
         'notice',
@@ -1077,6 +1127,10 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
       expect(
         await failureLevels('zone-unavailable', 'nws_get_zone_forecast', { zone_id: 'PRZ001' }),
       ).toEqual(['warning']);
+      // A coastal marine zone with no text forecast is a modeled outcome, not an outage.
+      expect(
+        await failureLevels('zone-marine', 'nws_get_zone_forecast', { zone_id: 'LMZ645' }),
+      ).toEqual(['notice']);
       // An exhausted 5xx is a baseline ServiceUnavailable no entry declares.
       expect(await failureLevels('alerts-exhausted-500', 'nws_search_alerts', {})).toEqual([
         'error',
@@ -1163,7 +1217,7 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
 
         const cases = [
           { args: { latitude: 47.6, longitude: -122.3, radius_km: 50 }, field: 'radius_km' },
-          { args: { latitude: '47.6', longitude: -122.3 }, field: 'latitude' },
+          { args: { latitude: true, longitude: -122.3 }, field: 'latitude' },
           { args: { longitude: -122.3 }, field: 'latitude' },
           { args: { latitude: 91, longitude: -122.3 }, field: 'latitude' },
         ];
@@ -1255,7 +1309,7 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
     }
   });
 
-  it('advertises the optional inputs a form client may blank with unchanged schemas (issue #46)', async () => {
+  it('advertises the optional inputs a form client may blank with schemas that admit the blank (issue #46)', async () => {
     const mockFetch = vi.fn<typeof fetch>();
     const server = await startHttpTestServer(mockFetch);
 
@@ -1276,7 +1330,7 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
       ).result.tools;
       const inputOf = (name: string) => tools.find((entry) => entry.name === name)?.inputSchema;
 
-      // A blank is unset at parse time; the advertised contract stays the same.
+      // A blank is unset at parse time, so every advertised schema admits it.
       const alerts = inputOf('nws_search_alerts');
       expect(alerts?.properties.region_type).toEqual({
         description: expect.any(String),
@@ -1289,11 +1343,18 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
         type: 'string',
         enum: ['Actual', 'Exercise', 'System', 'Test', 'Draft'],
       });
-      for (const field of ['area', 'point', 'zone']) {
+      // Lexical shapes are advertised as patterns (issue #54), each admitting a blank.
+      for (const [field, pattern] of [
+        ['area', AREA_INPUT_PATTERN],
+        ['point', POINT_INPUT_PATTERN],
+        ['zone', ZONE_INPUT_PATTERN],
+      ] as const) {
         expect(alerts?.properties[field], field).toEqual({
           description: expect.any(String),
           type: 'string',
+          pattern: pattern.source,
         });
+        expect(new RegExp(pattern.source, 'u').test(''), field).toBe(true);
       }
       for (const field of ['region', 'event', 'severity', 'urgency', 'certainty']) {
         expect(alerts?.properties[field], field).toMatchObject({ type: 'array' });
@@ -1314,8 +1375,238 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
       expect(observations?.properties.station_id).toEqual({
         description: expect.any(String),
         type: 'string',
+        pattern: STATION_ID_INPUT_PATTERN.source,
       });
+      expect(new RegExp(STATION_ID_INPUT_PATTERN.source, 'u').test('')).toBe(true);
       expect(observations?.required ?? []).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('advertises each lexical input shape as a pattern that admits every raw form served today (issue #54)', async () => {
+    const mockFetch = vi.fn<typeof fetch>();
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+      const response = await postJsonRpc(
+        server.port,
+        { jsonrpc: '2.0', id: 'tools-list-patterns', method: 'tools/list', params: {} },
+        sessionId,
+      );
+      const tools = (
+        response.body as {
+          result: {
+            tools: {
+              inputSchema: { properties: Record<string, Record<string, unknown>> };
+              name: string;
+            }[];
+          };
+        }
+      ).result.tools;
+
+      const times = [
+        '2026-10-15T12:00:00Z',
+        '2026-10-15T05:00:00-07:00',
+        '2026-10-15T12:00:00+00:00',
+        '2026-10-15T12:00:00.123456Z',
+        ' 2026-10-15T12:00:00Z ',
+        '',
+        '   ',
+      ];
+      const timesRefused = [
+        '2026-10-15T12:00Z',
+        '2026-10-15t12:00:00z',
+        '2026-10-15',
+        '2026-10-15T12:00:00.1234567Z',
+      ];
+      /**
+       * `served` holds raw forms that return a result today; `refused` holds forms the
+       * server rejects today, which the pattern refuses too. `minLength` marks a
+       * required field whose trimmed value must be non-blank.
+       */
+      const cases = [
+        {
+          tool: 'nws_search_alerts',
+          field: 'area',
+          pattern: AREA_INPUT_PATTERN,
+          served: ['wa', ' WA ', 'Wa', 'pz', '', '   '],
+          refused: ['WAS', 'Washington', 'W A'],
+        },
+        {
+          tool: 'nws_search_alerts',
+          field: 'point',
+          pattern: POINT_INPUT_PATTERN,
+          served: [
+            '47.6,-122.3',
+            ' 47.6 , -122.3 ',
+            '47.6, -122.3',
+            '4 7.6,-122.3',
+            '- 47.6,-1 22.3',
+            '47,-122',
+            '47.600000,-122.300000',
+            '',
+            '   ',
+          ],
+          refused: ['47.6,', 'abc', '.5,1', '47.,-122', '+47.6,-122.3', '47.6,-122.3,1'],
+        },
+        {
+          tool: 'nws_search_alerts',
+          field: 'zone',
+          pattern: ZONE_INPUT_PATTERN,
+          served: ['waz315', ' WAZ315 ', 'WaZ315', 'wac033', 'WAZ999', 'pzz135', '', '   '],
+          refused: ['WA315', 'WA-315', 'WAZ31', 'WA Z315'],
+        },
+        {
+          tool: 'nws_get_observations',
+          field: 'station_id',
+          pattern: STATION_ID_INPUT_PATTERN,
+          served: ['ksea', ' KSEA ', 'KsEa', '000PG', '0007W', 'NTC1612401', 'COOPUPSW3', '', '  '],
+          refused: ['K/SEA', 'KS EA', '../KSEA', 'KSEA%2F', '.'],
+        },
+        {
+          tool: 'nws_get_observation_history',
+          field: 'station_id',
+          pattern: HISTORY_STATION_ID_INPUT_PATTERN,
+          minLength: 1,
+          served: ['ksea', ' KSEA ', '000PG', 'NTC1612401'],
+          refused: ['', '   ', 'K/SEA', 'KS EA'],
+        },
+        {
+          tool: 'nws_get_observation_history',
+          field: 'start',
+          pattern: DATE_TIME_INPUT_PATTERN,
+          served: times,
+          refused: timesRefused,
+        },
+        {
+          tool: 'nws_get_observation_history',
+          field: 'end',
+          pattern: DATE_TIME_INPUT_PATTERN,
+          served: times,
+          refused: timesRefused,
+        },
+        {
+          tool: 'nws_get_office_discussion',
+          field: 'office',
+          pattern: OFFICE_INPUT_PATTERN,
+          minLength: 1,
+          served: ['sew', ' SEW ', 'Sew', 'PR', 'pq1', 'AER'],
+          refused: ['S.W', 'KSEW', 'S', '   '],
+        },
+        {
+          tool: 'nws_get_zone_forecast',
+          field: 'zone_id',
+          pattern: ZONE_ID_INPUT_PATTERN,
+          minLength: 1,
+          served: ['waz315', ' WAZ315 ', 'WaZ315', 'pzz135'],
+          refused: ['WA-315', 'wac033', 'WAZ31', '   '],
+        },
+        {
+          tool: 'nws_get_alert',
+          field: 'alert_id',
+          pattern: ALERT_ID_INPUT_PATTERN,
+          served: [CURRENT_ALERT_ID, KEEPALIVE_ALERT_ID, ` ${CURRENT_ALERT_ID}\n`],
+          refused: [
+            CURRENT_ALERT_ID.toUpperCase(),
+            `${CURRENT_ALERT_ID}/x`,
+            'urn:oid:2.49.0.1.840.0.not-an-alert',
+            '',
+          ],
+        },
+      ];
+
+      for (const { tool, field, pattern, minLength, served, refused } of cases) {
+        const label = `${tool}.${field}`;
+        const schema = tools.find((entry) => entry.name === tool)?.inputSchema.properties[field];
+        expect(schema, label).toEqual({
+          description: expect.any(String),
+          type: 'string',
+          pattern: pattern.source,
+          ...(minLength ? { minLength } : {}),
+        });
+
+        // JSON Schema patterns are ECMA-262, compiled with or without the unicode flag.
+        for (const flags of ['', 'u']) {
+          const advertised = new RegExp(String(schema?.pattern), flags);
+          for (const value of served) {
+            expect(advertised.test(value), `${label} admits ${JSON.stringify(value)}`).toBe(true);
+          }
+          for (const value of refused) {
+            expect(advertised.test(value), `${label} refuses ${JSON.stringify(value)}`).toBe(false);
+          }
+        }
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('keeps declared reasons for malformed patterned inputs instead of rejecting them at the schema (issue #54)', async () => {
+    // A Zod-enforced pattern would answer each of these as -32602 invalid_arguments;
+    // an advertised pattern leaves them to the handler and service checks.
+    const cases = [
+      ['nws_search_alerts', { zone: 'WA315' }, 'invalid_zone', JsonRpcErrorCode.ValidationError],
+      ['nws_search_alerts', { zone: 'QQZ123' }, 'invalid_zone', JsonRpcErrorCode.ValidationError],
+      ['nws_search_alerts', { area: 'WAS' }, 'invalid_area_code', JsonRpcErrorCode.ValidationError],
+      ['nws_search_alerts', { point: '47.6,' }, 'invalid_point', JsonRpcErrorCode.ValidationError],
+      [
+        'nws_get_observation_history',
+        { station_id: 'KSEA', start: '2026-10-15T12:00Z' },
+        'invalid_time_window',
+        JsonRpcErrorCode.ValidationError,
+      ],
+      [
+        'nws_get_observation_history',
+        { station_id: 'K/SEA' },
+        'station_not_found',
+        JsonRpcErrorCode.NotFound,
+      ],
+      [
+        'nws_get_observations',
+        { station_id: 'K/SEA' },
+        'station_not_found',
+        JsonRpcErrorCode.NotFound,
+      ],
+      ['nws_get_office_discussion', { office: 'S.W' }, 'no_products', JsonRpcErrorCode.NotFound],
+      ['nws_get_zone_forecast', { zone_id: 'WA-315' }, 'zone_not_found', JsonRpcErrorCode.NotFound],
+      [
+        'nws_get_alert',
+        { alert_id: 'urn:oid:2.49.0.1.840.0.not-an-alert' },
+        'alert_not_found',
+        JsonRpcErrorCode.NotFound,
+      ],
+    ] as const;
+
+    const mockFetch = vi.fn<typeof fetch>().mockRejectedValue(new Error('unmocked fetch'));
+    const server = await startHttpTestServer(mockFetch);
+
+    try {
+      const sessionId = await initializeSession(server.port);
+
+      for (const [tool, args, reason, code] of cases) {
+        const label = `${tool} ${JSON.stringify(args)}`;
+        const response = await postJsonRpc(
+          server.port,
+          {
+            jsonrpc: '2.0',
+            id: label,
+            method: 'tools/call',
+            params: { name: tool, arguments: args },
+          },
+          sessionId,
+        );
+
+        expect(response.statusCode, label).toBe(200);
+        expect((response.body as { result?: unknown }).result, label).toMatchObject({
+          isError: true,
+          structuredContent: { error: { code, data: { reason } } },
+        });
+      }
+
+      // Each is rejected before a request goes out.
+      expect(mockFetch).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
@@ -1346,6 +1637,7 @@ describe('declared error severities (issue #43)', () => {
         invalid_point: 'notice',
         invalid_zone: 'notice',
       },
+      nws_get_alert: { alert_not_found: 'notice' },
       nws_get_observations: {
         missing_input: 'notice',
         station_not_found: 'notice',
@@ -1358,7 +1650,7 @@ describe('declared error severities (issue #43)', () => {
         invalid_time_window: 'notice',
       },
       nws_find_stations: { out_of_scope: 'notice' },
-      nws_get_office_discussion: { no_products: 'notice' },
+      nws_get_office_discussion: { no_products: 'notice', unknown_section: 'notice' },
       nws_get_zone_forecast: {
         zone_not_found: 'notice',
         zone_forecast_unavailable: 'warning',

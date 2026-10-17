@@ -29,7 +29,7 @@
 
 ## Overview
 
-US weather data from the National Weather Service API (`api.weather.gov`). Get forecasts, active alerts, current observations, forecast-office narrative products, and zone-level text forecasts for any coordinate in the 50 states and US territories, plus national alert counts and a station's last ~7 days of observations. Adjacent marine areas are covered by alerts, plus stations and observations near the coast; NWS publishes no point forecast for them, and zone text forecasts for marine zones vary by zone. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Real-time US weather from the National Weather Service: forecasts, active alerts, current conditions, and forecaster discussions for any point in the 50 states and US territories, plus zone forecasts, coastal and marine alerts, and a week of station history. No API key required.
 
 ### Tools
 
@@ -58,24 +58,24 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 ### `nws_get_forecast` <sub>tool</sub>
 
-- `latitude` + `longitude`; returns named 12-hour periods by default (14, ~7 days), or with `hourly: true` one-hour periods (named by weekday and start time in the location's time zone, e.g. `Fri 6:00 AM`) with dewpoint and humidity, 48 per page of the ~156 upstream
-- Returns the `forecastZone` and `county` zone codes for chaining into `nws_search_alerts`; marine coordinates fail with a typed `marine_forecast_unsupported` error pointing to a nearby land point or `nws_search_alerts`, and land points NWS serves no forecast grid for with `no_forecast_grid`
+- `latitude` + `longitude`; returns 14 named 12-hour periods (~7 days) by default, or with `hourly: true` one-hour periods with dewpoint and humidity, 48 per page of the ~156 upstream
+- Returns the `forecastZone` and `county` zone codes for chaining into `nws_search_alerts`
+- Marine coordinates fail with `marine_forecast_unsupported`, and land points NWS serves no forecast grid for fail with `no_forecast_grid`
 
 ---
 
 ### `nws_search_alerts` <sub>tool</sub>
 
-- At most one location filter — `area`, `point`, `zone`, `region_type`, or `region` — or none for a national search; `event` matches case-insensitively and partially; `status` defaults to `Actual` (also `Exercise`, `System`, `Test`, `Draft`); `limit` (default 25) pages at most 25 alerts, and a larger limit is served as 25 and reported through `requestedLimit`/`effectiveLimit`
-- Each `affectedZones` entry carries its zone `type` (`forecast`/`county`/`fire`), marking which codes chain into `nws_get_zone_forecast`; CAP message-lifecycle fields (`sent`, `effective`, `status`, `messageType`, `references`) are distinct from the hazard's own `onset`/`ends`; `references` lists superseded messages newest first by `sent`
-- A `point` outside NWS coverage fails with `invalid_point`
+- At most one location filter (`area`, `point`, `zone`, `region_type`, or `region`), or none for a national search; `event` matches case-insensitively and partially; `status` defaults to `Actual` (also `Exercise`, `System`, `Test`, `Draft`)
+- `limit` (default 25) is capped at 25; a larger limit is served as 25 and reported through `requestedLimit`/`effectiveLimit`
+- Each `affectedZones` entry carries its zone `type` (`forecast`/`county`/`fire`); `references` lists superseded messages newest first by `sent`; a `point` outside NWS coverage fails with `invalid_point`
 
 ---
 
 ### `nws_get_alert` <sub>tool</sub>
 
-- `alert_id`: an alert `id` from `nws_search_alerts`, or a `references[].identifier` from any alert; returns `{ alert }` in the same shape `nws_search_alerts` returns, including superseded messages that an active-alert search no longer lists
-- The message's own `references` run newest first, so the references sharing the newest `sent` are its immediate predecessors (`references[0]` is one; an update can merge several earlier segments) and a revision chain is walked one call per message
-- A malformed ID, an unknown one, and one past NWS's ~7-day retention all fail with a typed `alert_not_found` error
+- `alert_id`: an alert `id` from `nws_search_alerts`, or a `references[].identifier` from any alert; returns `{ alert }` in the same shape as `nws_search_alerts`, including superseded messages
+- A malformed ID, an unknown one, and one past NWS's ~7-day retention all fail with `alert_not_found`
 
 ---
 
@@ -95,15 +95,16 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 ### `nws_get_observation_history` <sub>tool</sub>
 
-- `station_id` (from `nws_find_stations`); optional `start` (inclusive) and `end` (exclusive) as ISO 8601 date-times with seconds and an offset; `limit` (default 24) pages at most 100 observations, and a larger limit is served as 100 and reported through `requestedLimit`/`effectiveLimit`; newest first, back through the ~7 days NWS keeps
+- `station_id` (from `nws_find_stations`); optional `start` (inclusive) and `end` (exclusive) as ISO 8601 date-times with seconds and an offset; newest first, back through the ~7 days NWS keeps
+- `limit` (default 24) is capped at 100; a larger limit is served as 100 and reported through `requestedLimit`/`effectiveLimit`
 - Each observation carries the `nws_get_observations` measurement fields, `null` where the station reported nothing; an unknown station fails with `station_not_found`, and a malformed window or a `start` not before `end` with `invalid_time_window`
-- `nextCursor` appears only when older observations remain in the window (a window holding exactly `limit` ends with no cursor), and pages neither repeat nor skip an observation; no `totalCount`, since NWS reports none for a window
+- `nextCursor` appears only when older observations remain; there is no `totalCount`, since NWS reports none for a window
 
 ---
 
 ### `nws_find_stations` <sub>tool</sub>
 
-- `latitude` + `longitude`; optional `limit` (default 10) sizes the page, at most 50 stations; a larger limit is served as 50 and reported through `requestedLimit`/`effectiveLimit`
+- `latitude` + `longitude`; optional `limit` (default 10) is capped at 50; a larger limit is served as 50 and reported through `requestedLimit`/`effectiveLimit`
 - Nearest first; each result carries the station ID for `nws_get_observations`, distance (km), bearing, zone codes, elevation, and time zone
 
 ---
@@ -117,16 +118,17 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 ### `nws_get_office_discussion` <sub>tool</sub>
 
-- `office`: product location code of 2–3 letters or digits, usually the 3-letter WFO code (e.g., "SEW" for Seattle) returned as the `office` field by `nws_get_forecast`; Anchorage files its ZFP under `AER` and `ALU` rather than `AFC`, San Juan its ZFP under `PR`, and Guam its SPS under `PQ1`; `product_type`: `AFD` (default), `HWO`, `ZFP`, or `SPS`
-- Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`; an unknown office, or a valid office with no current product of the requested type, fails with a typed `no_products` error (SPS and HWO are episodic; for AFD and ZFP the recovery names the location-code case)
-- A product too large to inline (most ZFPs) returns an `outline` of its sections (name, area label, size) instead of `productText`; optional `sections` (AFD section names, or zone codes for ZFP/HWO/SPS) returns the product header, the matching sections verbatim, and the product's closing lines on a product of any size, and a name the product lacks fails with `unknown_section`. A `notice` names the worked re-call
+- `office`: usually the 3-letter WFO code (e.g., "SEW" for Seattle) returned as the `office` field by `nws_get_forecast`; `product_type`: `AFD` (default), `HWO`, `ZFP`, or `SPS`
+- Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`; an unknown office, or one with no current product of the requested type, fails with `no_products`
+- A product too large to inline (most ZFPs) returns an `outline` of its sections instead of `productText`; pass `sections` (AFD section names, or zone codes for ZFP/HWO/SPS) to get the matching sections, and an unknown name fails with `unknown_section`
 
 ---
 
 ### `nws_get_zone_forecast` <sub>tool</sub>
 
 - `zone_id`: forecast zone code (e.g., "WAZ315") — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`)
-- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters; county (`XXC###`), fire, and unknown zone codes fail with a typed `zone_not_found` error, marine zones NWS publishes no text forecast for (offshore zones such as `GMZ056`, and some coastal zones such as `LMZ645`) with `marine_forecast_unsupported` (many coastal zones, e.g. `PZZ251`, return periods), and a valid land zone NWS publishes no text forecast for with `zone_forecast_unavailable`, which carries a point inside the zone for `nws_get_forecast`
+- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters
+- County (`XXC###`), fire, and unknown zone codes fail with `zone_not_found`; marine zones with no text forecast fail with `marine_forecast_unsupported`, and land zones with none with `zone_forecast_unavailable`
 
 ---
 
@@ -145,14 +147,14 @@ NWS-specific:
 - Automatic coordinate-to-grid resolution via `/points`, cached for 1h since grid cells rarely change
 - Request timeouts plus retry/backoff for transient NWS API failures
 - Zero-auth access — no API keys required
-- Paged results — `nws_get_forecast`, `nws_find_stations`, and `nws_search_alerts` report `totalCount` against this page's `shown`, and `nws_get_observation_history` reports `shown` alone (NWS gives no total for a time window); pass the returned `nextCursor` back as `cursor` for the next page (omitted on the last page)
+- Paged results — pass the returned `nextCursor` back as `cursor` for the next page (omitted on the last page)
 
 Agent-friendly output:
 
-- Provenance — forecast, observation, and station responses echo office codes, time zones, and forecast/county zone codes so agents can chain directly into `nws_get_office_discussion`, `nws_get_zone_forecast`, and `nws_search_alerts` without re-deriving them
-- Guidance over silence — empty, truncated, or cursor-past-end results carry a `notice` naming the cause and the concrete next step, rather than an empty array or a bare page
-- Discriminated output contracts — zone `type` (`forecast`/`county`/`fire`), CAP `status`/`messageType` distinct from hazard `onset`/`ends`, and typed error reasons (`invalid_area_code`, `no_products`, `zone_not_found`, …) — callers branch on data, not string parsing
-- Response shaping — upstream single-unit floats are normalized into dual-unit pairs (F/C, mph/km/h, inHg/hPa, mi/km) and rounded to match what `format()` renders, so structured and text output agree
+- Provenance — responses echo office codes, time zones, and zone codes so agents can chain into `nws_get_office_discussion`, `nws_get_zone_forecast`, and `nws_search_alerts`
+- Guidance over silence — empty, truncated, or cursor-past-end results carry a `notice` naming the cause and the next step
+- Typed error reasons (`invalid_area_code`, `no_products`, `zone_not_found`, …) so callers branch on data, not string parsing
+- Dual-unit measurements (F/C, mph/km/h, inHg/hPa, mi/km), rounded to match the text output
 
 ## Getting started
 

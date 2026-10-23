@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.11.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.11.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -43,7 +43,7 @@ Real-time US weather from the National Weather Service: forecasts, active alerts
 | `nws_get_observation_history` | A station's recent observations, newest first, paged back through the ~7 days NWS keeps. |
 | `nws_find_stations` | Nearby observation stations sorted by distance with bearing. |
 | `nws_list_alert_types` | All valid alert event type names for filter discovery. |
-| `nws_get_office_discussion` | Latest narrative product (AFD, HWO, ZFP, SPS) from a Weather Forecast Office; a product too large to inline comes back as a section outline. |
+| `nws_get_office_discussion` | Latest narrative product (AFD, HWO, ZFP, SPS, FWF) from a Weather Forecast Office; a product too large to inline comes back as a section outline. |
 | `nws_get_zone_forecast` | Text forecast periods for an NWS forecast zone. |
 
 ### Resources
@@ -59,6 +59,8 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 ### `nws_get_forecast` <sub>tool</sub>
 
 - `latitude` + `longitude`; returns 14 named 12-hour periods (~7 days) by default, or with `hourly: true` one-hour periods with dewpoint and humidity, 48 per page of the ~156 upstream
+- `nextCursor` carries its mode, so an hourly walk continues hourly without resending `hourly: true`
+- Returns `updateTime`, when the grid's forecast data was last updated, beside `generatedAt`; a `notice` flags a grid not updated in more than 24 hours
 - Returns the `forecastZone` and `county` zone codes for chaining into `nws_search_alerts`
 - Marine coordinates fail with `marine_forecast_unsupported`, and land points NWS serves no forecast grid for fail with `no_forecast_grid`
 
@@ -68,7 +70,9 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 - At most one location filter (`area`, `point`, `zone`, `region_type`, or `region`), or none for a national search; `event` matches case-insensitively and partially; `status` defaults to `Actual` (also `Exercise`, `System`, `Test`, `Draft`)
 - `limit` (default 25) is capped at 25; a larger limit is served as 25 and reported through `requestedLimit`/`effectiveLimit`
+- `nextCursor` carries the query's filters and page size, so pass it back as `cursor` on its own; filters sent with it are ignored
 - Each `affectedZones` entry carries its zone `type` (`forecast`/`county`/`fire`); `references` lists superseded messages newest first by `sent`; a `point` outside NWS coverage fails with `invalid_point`
+- Each alert carries `office` (the issuing office code for `nws_get_office_discussion`, e.g. `RIW`), raw `vtec` strings, the `nwsHeadline`, and `hazard` tags such as `maxHailSize` and `maxWindGust`, verbatim
 
 ---
 
@@ -89,7 +93,7 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 ### `nws_get_observations` <sub>tool</sub>
 
 - Look up by coordinates (resolves nearest station) or `station_id` directly
-- Dual-unit display on every measurement (F/C, mph/km/h, inHg/hPa, mi/km); observations older than 2 hours carry a staleness notice, and a separate warning flags a station with most measurements unavailable
+- Dual-unit display on every measurement (F/C, mph/km/h, inHg/hPa, mi/km, in/mm), temperatures to one decimal; 1-, 3-, and 6-hour precipitation amounts from hourly reports, with `0` a trace and `null` no amount reported; observations older than 2 hours carry a staleness notice, and a separate warning flags a station with most measurements unavailable
 
 ---
 
@@ -118,9 +122,10 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 ### `nws_get_office_discussion` <sub>tool</sub>
 
-- `office`: usually the 3-letter WFO code (e.g., "SEW" for Seattle) returned as the `office` field by `nws_get_forecast`; `product_type`: `AFD` (default), `HWO`, `ZFP`, or `SPS`
-- Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`; an unknown office, or one with no current product of the requested type, fails with `no_products`
-- A product too large to inline (most ZFPs) returns an `outline` of its sections instead of `productText`; pass `sections` (AFD section names, or zone codes for ZFP/HWO/SPS) to get the matching sections, and an unknown name fails with `unknown_section`
+- `office`: usually the 3-letter WFO code (e.g., "SEW" for Seattle) returned as the `office` field by `nws_get_forecast`; `product_type`: `AFD` (default), `HWO`, `ZFP`, `SPS`, or `FWF` (Fire Weather Planning Forecast)
+- Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`; `content[]` carries the product text in a `text` code block, so fixed-width tables keep their columns; an unknown office, or one with no current product of the requested type, fails with `no_products`
+- A product too large to inline (most ZFPs and FWFs) returns an `outline` of its sections instead of `productText`; pass `sections` (AFD section names, or zone codes for ZFP/HWO/SPS/FWF) to get the matching sections, and an unknown name fails with `unknown_section`
+- An alert zone typed `fire` gets its forecast from the FWF: `office` from the alert's `office` field, `product_type: "FWF"`, `sections: [<zone code>]`
 
 ---
 
@@ -128,7 +133,7 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 - `zone_id`: forecast zone code (e.g., "WAZ315") — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`)
 - Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters
-- County (`XXC###`), fire, and unknown zone codes fail with `zone_not_found`; marine zones with no text forecast fail with `marine_forecast_unsupported`, and land zones with none with `zone_forecast_unavailable`
+- County (`XXC###`) and unknown zone codes fail with `zone_not_found`, and so do most fire zone codes, whose forecast is their segment of the office FWF on `nws_get_office_discussion`; a fire code that is also a public zone code returns the public zone's forecast; marine zones with no text forecast fail with `marine_forecast_unsupported`, and land zones with none with `zone_forecast_unavailable`
 
 ---
 
@@ -154,7 +159,7 @@ Agent-friendly output:
 - Provenance — responses echo office codes, time zones, and zone codes so agents can chain into `nws_get_office_discussion`, `nws_get_zone_forecast`, and `nws_search_alerts`
 - Guidance over silence — empty, truncated, or cursor-past-end results carry a `notice` naming the cause and the next step
 - Typed error reasons (`invalid_area_code`, `no_products`, `zone_not_found`, …) so callers branch on data, not string parsing
-- Dual-unit measurements (F/C, mph/km/h, inHg/hPa, mi/km), rounded to match the text output
+- Dual-unit measurements (F/C, mph/km/h, inHg/hPa, mi/km, in/mm), rounded to match the text output
 
 ## Getting started
 

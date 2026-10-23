@@ -38,6 +38,9 @@ const observationResult: ObservationResult = {
     relativeHumidity: { value: 66.720955975373, unitCode: 'wmoUnit:percent' },
     heatIndex: { value: null, unitCode: 'wmoUnit:degC' },
     windChill: { value: null, unitCode: 'wmoUnit:degC' },
+    precipitationLastHour: { value: null, unitCode: 'wmoUnit:mm' },
+    precipitationLast3Hours: { value: null, unitCode: 'wmoUnit:mm' },
+    precipitationLast6Hours: { value: null, unitCode: 'wmoUnit:mm' },
     cloudLayers: [{ base: { value: 1524.123, unitCode: 'wmoUnit:m' }, amount: 'BKN' }],
   },
 };
@@ -80,16 +83,115 @@ describe('nws_get_observations', () => {
     const input = getObservationsTool.input.parse({ station_id: 'KSEA' });
     const result = await getObservationsTool.handler(input, ctx);
 
-    // Raw upstream floats round to the integer precision format() renders, so the
-    // structured channel and the markdown channel never disagree.
-    expect(result.temperatureC).toBe(12); // 12.4
-    expect(result.dewpointC).toBe(8); // 8.347
+    // Raw upstream floats round to the precision format() renders — temperatures to
+    // one decimal, everything else to an integer — so the structured channel and the
+    // markdown channel never disagree.
+    expect(result.temperatureC).toBe(12.4); // 12.4
+    expect(result.dewpointC).toBe(8.3); // 8.347
     expect(result.windSpeedKmh).toBe(15); // 14.832
     expect(result.windDirectionDeg).toBe(200); // 199.6
     expect(result.barometricPressurePa).toBe(101693); // 101693.25
     expect(result.visibilityM).toBe(16093); // 16093.44
     expect(result.relativeHumidityPct).toBe(67); // 66.720955975373
     expect(result.cloudLayers[0]!.baseM).toBe(1524); // 1524.123
+  });
+
+  it('keeps METAR tenths on both surfaces and derives °F from the one-decimal value (issue #64)', async () => {
+    // KPDX 2026-10-23T06:53Z: raw `08/03 … T00830033`, NWS-computed wind chill float.
+    mockGetObservation.mockResolvedValueOnce({
+      observation: {
+        ...observationResult.observation,
+        temperature: { value: 8.3, unitCode: 'wmoUnit:degC' },
+        dewpoint: { value: 3.3, unitCode: 'wmoUnit:degC' },
+        heatIndex: { value: 24.151, unitCode: 'wmoUnit:degC' },
+        windChill: { value: 7.710126527509445, unitCode: 'wmoUnit:degC' },
+      },
+    });
+
+    const result = await runToolContract(getObservationsTool, { station_id: 'KSEA' });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      temperatureC: 8.3,
+      dewpointC: 3.3,
+      heatIndexC: 24.2,
+      windChillC: 7.7,
+    });
+    const lines = result.content
+      .map((block) => ('text' in block ? block.text : ''))
+      .join('\n')
+      .split('\n');
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        '**Temperature:** 47°F (8.3°C)',
+        '**Dewpoint:** 38°F (3.3°C)',
+        // °F is the conversion of the shown 24.2°C (75.56 → 76), not of the raw 24.151.
+        '**Heat Index:** 76°F (24.2°C)',
+        '**Wind Chill:** 46°F (7.7°C)',
+      ]),
+    );
+  });
+
+  it('returns precipitation amounts in mm on both surfaces, a 0 as a trace (issue #65)', async () => {
+    // KSLC 2026-10-23T02:54Z (`P0013 60024`), then KSEA 2026-10-23T04:53Z (`P0000`).
+    const mm = (value: number | null) => ({ value, unitCode: 'wmoUnit:mm' });
+    mockGetObservation
+      .mockResolvedValueOnce({
+        observation: {
+          ...observationResult.observation,
+          precipitationLastHour: mm(3.3),
+          precipitationLast3Hours: mm(6.1),
+          precipitationLast6Hours: mm(null),
+        },
+      })
+      .mockResolvedValueOnce({
+        observation: {
+          ...observationResult.observation,
+          precipitationLastHour: mm(0),
+          precipitationLast3Hours: mm(null),
+          precipitationLast6Hours: mm(null),
+        },
+      });
+
+    /** The Precipitation lines of a result's content[], each whole. */
+    const precipitationLines = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content
+        .map((block) => ('text' in block ? block.text : ''))
+        .join('\n')
+        .split('\n')
+        .filter((line) => line.startsWith('**Precipitation:**'));
+
+    const rain = await runToolContract(getObservationsTool, { station_id: 'KSLC' });
+    expect(rain.structuredContent).toMatchObject({
+      precipitationLastHourMm: 3.3,
+      precipitationLast3HoursMm: 6.1,
+      precipitationLast6HoursMm: null,
+    });
+    expect(precipitationLines(rain)).toEqual([
+      '**Precipitation:** 1 h: 0.13 in (3.3 mm), 3 h: 0.24 in (6.1 mm)',
+    ]);
+
+    const trace = await runToolContract(getObservationsTool, { station_id: 'KSEA' });
+    expect(trace.structuredContent).toMatchObject({
+      precipitationLastHourMm: 0,
+      precipitationLast3HoursMm: null,
+      precipitationLast6HoursMm: null,
+    });
+    expect(precipitationLines(trace)).toEqual(['**Precipitation:** 1 h: Trace']);
+  });
+
+  it('returns null precipitation and no Precipitation line when no amount was reported', async () => {
+    mockGetObservation.mockResolvedValueOnce(observationResult);
+
+    const result = await runToolContract(getObservationsTool, { station_id: 'KSEA' });
+
+    expect(result.structuredContent).toMatchObject({
+      precipitationLastHourMm: null,
+      precipitationLast3HoursMm: null,
+      precipitationLast6HoursMm: null,
+    });
+    const text = result.content.map((block) => ('text' in block ? block.text : '')).join('\n');
+    expect(text).not.toContain('Precipitation');
   });
 
   it('preserves null measurements through rounding (does not coerce to 0)', async () => {
@@ -313,6 +415,9 @@ describe('nws_get_observations', () => {
         relativeHumidityPct: 65.2,
         heatIndexC: null,
         windChillC: null,
+        precipitationLastHourMm: null,
+        precipitationLast3HoursMm: null,
+        precipitationLast6HoursMm: null,
         cloudLayers: [{ amount: 'BKN', baseM: 1524 }],
       };
 
@@ -321,8 +426,9 @@ describe('nws_get_observations', () => {
 
       expect(text).toContain('KSEA');
       expect(text).toContain('Mostly Cloudy');
-      // Should show both F and C
-      expect(text).toMatch(/\d+°F \(\d+°C\)/);
+      // Should show both F and C, at the one-decimal Celsius precision it was given
+      expect(text).toContain('**Temperature:** 58°F (14.4°C)');
+      expect(text).toContain('**Dewpoint:** 47°F (8.3°C)');
       // Should show wind
       expect(text).toContain('mph');
       // Should show pressure in both units
@@ -349,6 +455,9 @@ describe('nws_get_observations', () => {
         relativeHumidityPct: 67,
         heatIndexC: null,
         windChillC: null,
+        precipitationLastHourMm: null,
+        precipitationLast3HoursMm: null,
+        precipitationLast6HoursMm: null,
         cloudLayers: [],
       };
 
@@ -378,6 +487,9 @@ describe('nws_get_observations', () => {
         relativeHumidityPct: null,
         heatIndexC: null,
         windChillC: null,
+        precipitationLastHourMm: null,
+        precipitationLast3HoursMm: null,
+        precipitationLast6HoursMm: null,
         cloudLayers: [],
       };
 

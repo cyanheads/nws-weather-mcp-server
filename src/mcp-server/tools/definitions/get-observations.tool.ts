@@ -8,11 +8,13 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import {
   formatCloudLayers,
+  formatPrecipitation,
   formatPressure,
   formatTemp,
   formatTimestamp,
   formatVisibility,
   formatWind,
+  roundTenth,
   roundValue,
 } from '../format-utils.js';
 import { unsetIfBlank } from '../unset-if-blank.js';
@@ -115,16 +117,37 @@ export const getObservationsTool = tool('nws_get_observations', {
     timestamp: z.string().describe('Observation time (ISO 8601)'),
     timeZone: z.string().nullable().describe('Station time zone when known'),
     textDescription: z.string().describe('Conditions summary (e.g., "Mostly Cloudy")'),
-    temperatureC: z.number().nullable().describe('Temperature in Celsius'),
-    dewpointC: z.number().nullable().describe('Dewpoint in Celsius'),
+    temperatureC: z
+      .number()
+      .nullable()
+      .describe('Temperature in Celsius, to one decimal (e.g., 8.3)'),
+    dewpointC: z.number().nullable().describe('Dewpoint in Celsius, to one decimal'),
     windSpeedKmh: z.number().nullable().describe('Wind speed in km/h'),
     windDirectionDeg: z.number().nullable().describe('Wind direction in degrees (0-360)'),
     windGustKmh: z.number().nullable().describe('Wind gust in km/h'),
     barometricPressurePa: z.number().nullable().describe('Barometric pressure in Pascals'),
     visibilityM: z.number().nullable().describe('Visibility in meters'),
     relativeHumidityPct: z.number().nullable().describe('Relative humidity in percent (0-100)'),
-    heatIndexC: z.number().nullable().describe('Heat index in Celsius'),
-    windChillC: z.number().nullable().describe('Wind chill in Celsius'),
+    heatIndexC: z.number().nullable().describe('Heat index in Celsius, to one decimal'),
+    windChillC: z.number().nullable().describe('Wind chill in Celsius, to one decimal'),
+    precipitationLastHourMm: z
+      .number()
+      .nullable()
+      .describe(
+        'Precipitation in the past hour in mm, to 0.1 mm. 0 is a trace (under 0.01 in), not a dry hour; null means no amount was reported, the usual value for a dry hour and on 5-minute reports.',
+      ),
+    precipitationLast3HoursMm: z
+      .number()
+      .nullable()
+      .describe(
+        'Precipitation in the past 3 hours in mm, to 0.1 mm, carried by the hourly reports nearest 03, 09, 15, and 21 UTC. 0 is a trace (under 0.01 in); null means no amount was reported.',
+      ),
+    precipitationLast6HoursMm: z
+      .number()
+      .nullable()
+      .describe(
+        'Precipitation in the past 6 hours in mm, to 0.1 mm, carried by the hourly reports nearest 00, 06, 12, and 18 UTC. 0 is a trace (under 0.01 in); null means no amount was reported.',
+      ),
     cloudLayers: z
       .array(
         z
@@ -196,16 +219,19 @@ export const getObservationsTool = tool('nws_get_observations', {
       timestamp: obs.timestamp,
       timeZone: obs.timeZone,
       textDescription: obs.textDescription,
-      temperatureC: roundValue(obs.temperature.value),
-      dewpointC: roundValue(obs.dewpoint.value),
+      temperatureC: roundTenth(obs.temperature.value),
+      dewpointC: roundTenth(obs.dewpoint.value),
       windSpeedKmh: roundValue(obs.windSpeed.value),
       windDirectionDeg: roundValue(obs.windDirection.value),
       windGustKmh: roundValue(obs.windGust.value),
       barometricPressurePa: roundValue(obs.barometricPressure.value),
       visibilityM: roundValue(obs.visibility.value),
       relativeHumidityPct: roundValue(obs.relativeHumidity.value),
-      heatIndexC: roundValue(obs.heatIndex.value),
-      windChillC: roundValue(obs.windChill.value),
+      heatIndexC: roundTenth(obs.heatIndex.value),
+      windChillC: roundTenth(obs.windChill.value),
+      precipitationLastHourMm: roundTenth(obs.precipitationLastHour.value),
+      precipitationLast3HoursMm: roundTenth(obs.precipitationLast3Hours.value),
+      precipitationLast6HoursMm: roundTenth(obs.precipitationLast6Hours.value),
       cloudLayers: obs.cloudLayers.map((l) => ({
         amount: l.amount,
         baseM: roundValue(l.base.value),
@@ -238,7 +264,7 @@ export const getObservationsTool = tool('nws_get_observations', {
     }
 
     lines.push(
-      `**Wind:** ${formatWind(result.windSpeedKmh, result.windDirectionDeg, result.windGustKmh)}`,
+      `**Wind:** ${formatWind(result.windSpeedKmh, result.windDirectionDeg, result.windGustKmh) ?? 'Not available'}`,
     );
 
     if (result.barometricPressurePa != null) {
@@ -254,6 +280,13 @@ export const getObservationsTool = tool('nws_get_observations', {
 
     const chill = formatTemp(result.windChillC);
     if (chill) lines.push(`**Wind Chill:** ${chill}`);
+
+    const precipitation = formatPrecipitation(
+      result.precipitationLastHourMm,
+      result.precipitationLast3HoursMm,
+      result.precipitationLast6HoursMm,
+    );
+    if (precipitation) lines.push(`**Precipitation:** ${precipitation}`);
 
     if (result.cloudLayers.length > 0) {
       lines.push(`**Clouds:** ${formatCloudLayers(result.cloudLayers)}`);

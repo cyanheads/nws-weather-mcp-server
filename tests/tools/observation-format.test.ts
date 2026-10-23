@@ -35,6 +35,9 @@ function fmt(
     relativeHumidityPct: 60,
     heatIndexC: null,
     windChillC: null,
+    precipitationLastHourMm: null,
+    precipitationLast3HoursMm: null,
+    precipitationLast6HoursMm: null,
     cloudLayers: [],
   };
   return getObservationsTool.format!({ ...base, ...overrides });
@@ -62,6 +65,27 @@ describe('nws_get_observations format() — unit conversions', () => {
     expect(t).toContain('8°C');
   });
 
+  it('renders °C at one decimal and derives °F from that value (issue #64)', () => {
+    // KPDX 2026-10-23T06:53Z after one-decimal rounding: 8.3 / 3.3 / wind chill 7.7.
+    const t = text({ temperatureC: 8.3, dewpointC: 3.3, windChillC: 7.7 });
+    expect(t).toContain('**Temperature:** 47°F (8.3°C)');
+    expect(t).toContain('**Dewpoint:** 38°F (3.3°C)');
+    expect(t).toContain('**Wind Chill:** 46°F (7.7°C)');
+  });
+
+  it('renders a whole degree without .0 and a negative tenth signed', () => {
+    const t = text({ temperatureC: 17, dewpointC: -0.4 });
+    expect(t).toContain('**Temperature:** 63°F (17°C)');
+    expect(t).toContain('**Dewpoint:** 31°F (-0.4°C)');
+    expect(t).not.toContain('.0°C');
+  });
+
+  it('renders a one-decimal heat index with °F from the shown °C', () => {
+    // 24.2°C → 75.56°F → 76°F (the raw 24.151 would give 75°F).
+    const t = text({ heatIndexC: 24.2 });
+    expect(t).toContain('**Heat Index:** 76°F (24.2°C)');
+  });
+
   it('renders wind speed with both mph and km/h', () => {
     // 20 km/h ≈ 12 mph
     const t = text({ windSpeedKmh: 20, windDirectionDeg: 270, windGustKmh: null });
@@ -79,9 +103,27 @@ describe('nws_get_observations format() — unit conversions', () => {
     expect(t).toContain('Calm');
   });
 
-  it('renders "Not available" when wind speed is null', () => {
+  it('renders "Not available" when no wind component is reported', () => {
     const t = text({ windSpeedKmh: null, windDirectionDeg: null, windGustKmh: null });
-    expect(t).toContain('Not available');
+    expect(t).toContain('**Wind:** Not available');
+  });
+
+  it('renders a reported gust when sustained speed is null (issue #61)', () => {
+    // KDEN 2026-10-23T04:25Z: windSpeed and windDirection null, windGust 44.46 km/h.
+    const t = text({ windSpeedKmh: null, windDirectionDeg: null, windGustKmh: 44 });
+    expect(t).toContain('**Wind:** sustained not reported, gusts 27 mph (44 km/h)');
+    expect(t).not.toContain('Not available');
+  });
+
+  it('renders direction and gust when sustained speed is null', () => {
+    const t = text({ windSpeedKmh: null, windDirectionDeg: 350, windGustKmh: 44 });
+    expect(t).toContain('**Wind:** 350°, sustained not reported, gusts 27 mph (44 km/h)');
+  });
+
+  it('renders a reported direction when sustained speed and gust are null', () => {
+    const t = text({ windSpeedKmh: null, windDirectionDeg: 180, windGustKmh: null });
+    expect(t).toContain('**Wind:** 180°, sustained not reported\n');
+    expect(t).not.toContain('Not available');
   });
 
   it('renders pressure in inHg and hPa', () => {
@@ -142,6 +184,33 @@ describe('nws_get_observations format() — heat index and wind chill', () => {
   it('does not render wind chill section when null', () => {
     const t = text({ windChillC: null });
     expect(t).not.toContain('Wind Chill');
+  });
+});
+
+describe('nws_get_observations format() — precipitation (issue #65)', () => {
+  it('renders each reported amount in inches to two decimals beside mm', () => {
+    const t = text({
+      precipitationLastHourMm: 2.5,
+      precipitationLast3HoursMm: null,
+      precipitationLast6HoursMm: 11.2,
+    });
+    // 2.5 mm = 0.098 in → 0.10 in (METAR P0010); 11.2 mm = 0.441 in → 0.44 in (60044).
+    expect(t).toContain('**Precipitation:** 1 h: 0.10 in (2.5 mm), 6 h: 0.44 in (11.2 mm)');
+  });
+
+  it('renders a 0 amount as a trace, not a dry hour', () => {
+    const t = text({ precipitationLastHourMm: 0, precipitationLast6HoursMm: 0 });
+    expect(t).toContain('**Precipitation:** 1 h: Trace, 6 h: Trace');
+    expect(t).not.toContain('0 mm');
+  });
+
+  it('omits the Precipitation line when no amount was reported', () => {
+    const t = text({
+      precipitationLastHourMm: null,
+      precipitationLast3HoursMm: null,
+      precipitationLast6HoursMm: null,
+    });
+    expect(t).not.toContain('Precipitation');
   });
 });
 
@@ -242,6 +311,9 @@ describe('nws_get_observations format() — sparse payloads', () => {
       relativeHumidityPct: 55,
       heatIndexC: null,
       windChillC: null,
+      precipitationLastHourMm: null,
+      precipitationLast3HoursMm: null,
+      precipitationLast6HoursMm: null,
       cloudLayers: [],
     });
     const t = (blocks[0] as { type: 'text'; text: string }).text;
@@ -292,13 +364,13 @@ describe('nws_get_observations format() — exact output', () => {
       "## Current Conditions — Seattle-Tacoma Intl (KSEA)
       **Partly Cloudy** | Observed: <observed> (America/Los_Angeles)
 
-      **Temperature:** 89°F (32°C)
-      **Dewpoint:** 70°F (21°C)
+      **Temperature:** 89°F (31.6°C)
+      **Dewpoint:** 70°F (21.2°C)
       **Humidity:** 54%
       **Wind:** 225° 15 mph (24 km/h), gusts 25 mph (41 km/h)
       **Pressure:** 30.03 inHg (1017 hPa, 101693 Pa)
       **Visibility:** 10 mi (16.1 km, 16093 m)
-      **Heat Index:** 95°F (35°C)
+      **Heat Index:** 95°F (34.8°C)
       **Clouds:** FEW at 610m (2001 ft), BKN at 1524m (5000 ft), OVC"
     `);
   });
@@ -323,13 +395,13 @@ describe('nws_get_observations format() — exact output', () => {
       "## Current Conditions — Seattle-Tacoma Intl (KSEA)
       **Clear** | Observed: <observed>
 
-      **Temperature:** 10°F (-12°C)
-      **Dewpoint:** -1°F (-18°C)
+      **Temperature:** 10°F (-12.2°C)
+      **Dewpoint:** -1°F (-18.3°C)
       **Humidity:** 60%
       **Wind:** Calm
       **Pressure:** 30.43 inHg (1031 hPa, 103050 Pa)
       **Visibility:** 0.2 mi (0.4 km, 402 m)
-      **Wind Chill:** -3°F (-20°C)"
+      **Wind Chill:** -3°F (-19.7°C)"
     `);
   });
 
@@ -351,9 +423,38 @@ describe('nws_get_observations format() — exact output', () => {
       Observed: <observed> (America/Los_Angeles)
 
       **Temperature:** 46°F (8°C)
-      **Wind:** Not available
+      **Wind:** 180°, sustained not reported
 
       _Limited data — most measurements unavailable from this station. Try a different station using nws_find_stations._"
+    `);
+  });
+
+  it('pins a rainy hourly report with precipitation amounts', () => {
+    // KSLC 2026-10-23T02:54Z: `14008KT 8SM -RA … 13/12 … P0013 60024 T01330122`.
+    expect(
+      pinned({
+        textDescription: 'Light Rain',
+        temperatureC: 13.3,
+        dewpointC: 12.2,
+        windSpeedKmh: 15,
+        windDirectionDeg: 140,
+        relativeHumidityPct: 93,
+        precipitationLastHourMm: 3.3,
+        precipitationLast3HoursMm: 6.1,
+        cloudLayers: [{ amount: 'SCT', baseM: 1250 }],
+      }),
+    ).toMatchInlineSnapshot(`
+      "## Current Conditions — Seattle-Tacoma Intl (KSEA)
+      **Light Rain** | Observed: <observed> (America/Los_Angeles)
+
+      **Temperature:** 56°F (13.3°C)
+      **Dewpoint:** 54°F (12.2°C)
+      **Humidity:** 93%
+      **Wind:** 140° 9 mph (15 km/h)
+      **Pressure:** 29.92 inHg (1013 hPa, 101325 Pa)
+      **Visibility:** 9.9 mi (16 km, 16000 m)
+      **Precipitation:** 1 h: 0.13 in (3.3 mm), 3 h: 0.24 in (6.1 mm)
+      **Clouds:** SCT at 1250m (4101 ft)"
     `);
   });
 

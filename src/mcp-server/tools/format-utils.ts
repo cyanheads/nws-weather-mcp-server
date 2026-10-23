@@ -102,13 +102,23 @@ export function fToC(f: number): number {
 
 /**
  * Round a nullable measurement to the integer precision the observation tools
- * render, so structuredContent and content[] agree. Upstream ships long floats
- * (e.g. relativeHumidity 23.358035108353); format() shows every metric value via
- * Math.round, so the structured channel matches by rounding here too. A missing
- * value stays null rather than becoming 0.
+ * render for wind, direction, pressure, visibility, humidity, and cloud base, so
+ * structuredContent and content[] agree. Upstream ships long floats (e.g.
+ * relativeHumidity 23.358035108353); format() shows those values via Math.round,
+ * so the structured channel matches by rounding here too. A missing value stays
+ * null rather than becoming 0.
  */
 export function roundValue(value: number | null): number | null {
   return value != null ? Math.round(value) : null;
+}
+
+/**
+ * Round a nullable measurement to one decimal — the precision of METAR temperature
+ * tenths (T-group) and NWS's precipitation amounts. format() renders the same value,
+ * so both surfaces agree. A whole number stays whole (17, not 17.0); null stays null.
+ */
+export function roundTenth(value: number | null): number | null {
+  return value != null ? Math.round(value * 10) / 10 : null;
 }
 
 /** Convert km/h to mph. */
@@ -136,34 +146,63 @@ function mToFt(m: number): number {
   return Math.round(m * 3.28084);
 }
 
-/** Format a Celsius temperature with both F and C, or null when it was not reported. */
+/**
+ * Format a Celsius temperature at one decimal with the °F of that shown value
+ * (`47°F (8.3°C)`), or null when it was not reported.
+ */
 export function formatTemp(value: number | null): string | null {
-  if (value == null) return null;
-  const c = Math.round(value);
-  return `${cToF(value)}°F (${c}°C)`;
+  const c = roundTenth(value);
+  if (c == null) return null;
+  return `${cToF(c)}°F (${c}°C)`;
 }
 
-/** Format wind speed with both mph and km/h, plus direction and gusts when reported. */
+/**
+ * Format wind speed with both mph and km/h, plus direction and gusts when reported.
+ * A gust or direction renders even when the sustained speed is null (NWS sends that
+ * shape on some 5-minute and hourly records). Null when no wind component was reported.
+ */
 export function formatWind(
   speed: number | null,
   direction: number | null,
   gust: number | null,
-): string {
-  if (speed == null) return 'Not available';
-  if (Math.round(speed) === 0 && gust == null) return 'Calm';
-  const mph = kmhToMph(speed);
-  const kmh = Math.round(speed);
+): string | null {
   const dir = direction != null ? `${Math.round(direction)}°` : '';
-  let result = `${dir} ${mph} mph (${kmh} km/h)`.trim();
-  if (gust != null) {
-    result += `, gusts ${kmhToMph(gust)} mph (${Math.round(gust)} km/h)`;
+  const gusts = gust != null ? `gusts ${kmhToMph(gust)} mph (${Math.round(gust)} km/h)` : '';
+  if (speed == null) {
+    if (!dir && !gusts) return null;
+    return [dir, 'sustained not reported', gusts].filter(Boolean).join(', ');
   }
-  return result;
+  if (Math.round(speed) === 0 && !gusts) return 'Calm';
+  const sustained = `${dir} ${kmhToMph(speed)} mph (${Math.round(speed)} km/h)`.trim();
+  return gusts ? `${sustained}, ${gusts}` : sustained;
 }
 
 /** Format barometric pressure in inHg, hPa, and the reported Pascals. */
 export function formatPressure(pa: number): string {
   return `${paToInHg(pa)} inHg (${Math.round(pa / 100)} hPa, ${Math.round(pa)} Pa)`;
+}
+
+/**
+ * Format the 1-, 3-, and 6-hour precipitation amounts (mm) as
+ * `1 h: 0.13 in (3.3 mm), 3 h: 0.24 in (6.1 mm)`, inches to two decimals (the METAR
+ * hundredths). A 0 is a METAR trace and renders `Trace`; a null amount is left out.
+ * Null when no amount was reported.
+ */
+export function formatPrecipitation(
+  lastHourMm: number | null,
+  last3HoursMm: number | null,
+  last6HoursMm: number | null,
+): string | null {
+  const parts: string[] = [];
+  for (const [span, mm] of [
+    ['1 h', lastHourMm],
+    ['3 h', last3HoursMm],
+    ['6 h', last6HoursMm],
+  ] as const) {
+    if (mm == null) continue;
+    parts.push(`${span}: ${mm === 0 ? 'Trace' : `${(mm / 25.4).toFixed(2)} in (${mm} mm)`}`);
+  }
+  return parts.length > 0 ? parts.join(', ') : null;
 }
 
 /** Format visibility in miles, km, and the reported meters. */

@@ -4,19 +4,27 @@
  */
 
 import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
-import { invalidParams, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import {
   formatCloudLayers,
+  formatPrecipitation,
   formatPressure,
   formatTemp,
   formatTimestamp,
   formatVisibility,
   formatWind,
+  roundTenth,
   roundValue,
 } from '../format-utils.js';
-import { clampPageLimit, composeNotice, LIMIT_CEILING, type PageLimit } from '../page-limit.js';
+import {
+  clampPageLimit,
+  composeNotice,
+  invalidCursor,
+  LIMIT_CEILING,
+  type PageLimit,
+} from '../page-limit.js';
 import { unsetIfBlank } from '../unset-if-blank.js';
 
 /** Observations per page. A larger `limit` is served up to this cap rather than rejected. */
@@ -128,15 +136,9 @@ function readCursor(cursor: string, ctx: Context): HistoryWindow {
     endMs !== undefined &&
     (start === undefined || (startMs !== undefined && startMs < endMs));
   if (!valid) {
-    throw invalidParams(
-      'Invalid pagination cursor. The cursor may be corrupted or from a different tool.',
-      {
-        cursor,
-        reason: 'invalid_cursor',
-        recovery: {
-          hint: 'Omit `cursor` to start from the latest observation, or pass the `nextCursor` from the previous response unchanged.',
-        },
-      },
+    throw invalidCursor(
+      cursor,
+      'Omit `cursor` to start from the latest observation, or pass the `nextCursor` from the previous response unchanged.',
     );
   }
   return { limit, end: end as string, start: start as string | undefined };
@@ -229,8 +231,11 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
             textDescription: z
               .string()
               .describe('Conditions summary (e.g., "Mostly Cloudy"); empty when not reported'),
-            temperatureC: z.number().nullable().describe('Temperature in Celsius'),
-            dewpointC: z.number().nullable().describe('Dewpoint in Celsius'),
+            temperatureC: z
+              .number()
+              .nullable()
+              .describe('Temperature in Celsius, to one decimal (e.g., 8.3)'),
+            dewpointC: z.number().nullable().describe('Dewpoint in Celsius, to one decimal'),
             windSpeedKmh: z.number().nullable().describe('Wind speed in km/h'),
             windDirectionDeg: z.number().nullable().describe('Wind direction in degrees (0-360)'),
             windGustKmh: z.number().nullable().describe('Wind gust in km/h'),
@@ -240,8 +245,26 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
               .number()
               .nullable()
               .describe('Relative humidity in percent (0-100)'),
-            heatIndexC: z.number().nullable().describe('Heat index in Celsius'),
-            windChillC: z.number().nullable().describe('Wind chill in Celsius'),
+            heatIndexC: z.number().nullable().describe('Heat index in Celsius, to one decimal'),
+            windChillC: z.number().nullable().describe('Wind chill in Celsius, to one decimal'),
+            precipitationLastHourMm: z
+              .number()
+              .nullable()
+              .describe(
+                'Precipitation in the past hour in mm, to 0.1 mm. 0 is a trace (under 0.01 in), not a dry hour; null means no amount was reported, the usual value for a dry hour and on 5-minute reports.',
+              ),
+            precipitationLast3HoursMm: z
+              .number()
+              .nullable()
+              .describe(
+                'Precipitation in the past 3 hours in mm, to 0.1 mm, carried by the hourly reports nearest 03, 09, 15, and 21 UTC. 0 is a trace (under 0.01 in); null means no amount was reported.',
+              ),
+            precipitationLast6HoursMm: z
+              .number()
+              .nullable()
+              .describe(
+                'Precipitation in the past 6 hours in mm, to 0.1 mm, carried by the hourly reports nearest 00, 06, 12, and 18 UTC. 0 is a trace (under 0.01 in); null means no amount was reported.',
+              ),
             cloudLayers: z
               .array(
                 z
@@ -351,16 +374,19 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
     const observations = result.observations.slice(0, window.limit).map((obs) => ({
       timestamp: obs.timestamp,
       textDescription: obs.textDescription,
-      temperatureC: roundValue(obs.temperature.value),
-      dewpointC: roundValue(obs.dewpoint.value),
+      temperatureC: roundTenth(obs.temperature.value),
+      dewpointC: roundTenth(obs.dewpoint.value),
       windSpeedKmh: roundValue(obs.windSpeed.value),
       windDirectionDeg: roundValue(obs.windDirection.value),
       windGustKmh: roundValue(obs.windGust.value),
       barometricPressurePa: roundValue(obs.barometricPressure.value),
       visibilityM: roundValue(obs.visibility.value),
       relativeHumidityPct: roundValue(obs.relativeHumidity.value),
-      heatIndexC: roundValue(obs.heatIndex.value),
-      windChillC: roundValue(obs.windChill.value),
+      heatIndexC: roundTenth(obs.heatIndex.value),
+      windChillC: roundTenth(obs.windChill.value),
+      precipitationLastHourMm: roundTenth(obs.precipitationLastHour.value),
+      precipitationLast3HoursMm: roundTenth(obs.precipitationLast3Hours.value),
+      precipitationLast6HoursMm: roundTenth(obs.precipitationLast6Hours.value),
       cloudLayers: obs.cloudLayers.map((l) => ({
         amount: l.amount,
         baseM: roundValue(l.base.value),
@@ -416,8 +442,8 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
     lines.push(
       `${result.observations.length} observation${result.observations.length === 1 ? '' : 's'}, newest first. ${MISSING} = not reported.`,
       '',
-      '| Time | Conditions | Temperature | Dewpoint | Humidity | Wind | Pressure | Visibility | Heat Index | Wind Chill | Clouds |',
-      '|:-----|:-----------|:------------|:---------|:---------|:-----|:---------|:-----------|:-----------|:-----------|:-------|',
+      '| Time | Conditions | Temperature | Dewpoint | Humidity | Wind | Pressure | Visibility | Heat Index | Wind Chill | Precipitation | Clouds |',
+      '|:-----|:-----------|:------------|:---------|:---------|:-----|:---------|:-----------|:-----------|:-----------|:--------------|:-------|',
     );
 
     for (const o of result.observations) {
@@ -427,13 +453,16 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
         formatTemp(o.temperatureC) ?? MISSING,
         formatTemp(o.dewpointC) ?? MISSING,
         o.relativeHumidityPct != null ? `${o.relativeHumidityPct}%` : MISSING,
-        o.windSpeedKmh != null
-          ? formatWind(o.windSpeedKmh, o.windDirectionDeg, o.windGustKmh)
-          : MISSING,
+        formatWind(o.windSpeedKmh, o.windDirectionDeg, o.windGustKmh) ?? MISSING,
         o.barometricPressurePa != null ? formatPressure(o.barometricPressurePa) : MISSING,
         o.visibilityM != null ? formatVisibility(o.visibilityM) : MISSING,
         formatTemp(o.heatIndexC) ?? MISSING,
         formatTemp(o.windChillC) ?? MISSING,
+        formatPrecipitation(
+          o.precipitationLastHourMm,
+          o.precipitationLast3HoursMm,
+          o.precipitationLast6HoursMm,
+        ) ?? MISSING,
         o.cloudLayers.length > 0 ? formatCloudLayers(o.cloudLayers) : MISSING,
       ];
       lines.push(`| ${cells.join(' | ')} |`);

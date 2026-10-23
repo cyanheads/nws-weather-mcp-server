@@ -73,6 +73,9 @@ const mockObsResult = {
     relativeHumidity: { value: 55, unitCode: 'wmoUnit:percent' },
     heatIndex: { value: null, unitCode: 'wmoUnit:degC' },
     windChill: { value: null, unitCode: 'wmoUnit:degC' },
+    precipitationLastHour: { value: null, unitCode: 'wmoUnit:mm' },
+    precipitationLast3Hours: { value: null, unitCode: 'wmoUnit:mm' },
+    precipitationLast6Hours: { value: null, unitCode: 'wmoUnit:mm' },
     cloudLayers: [],
   },
 };

@@ -714,7 +714,8 @@ describe('nws_get_observation_history', () => {
       expect(first).toMatchObject({
         timestamp: newest,
         textDescription: 'Mostly Cloudy',
-        temperatureC: 14,
+        temperatureC: 14.4,
+        dewpointC: 8.3,
         windSpeedKmh: 19,
         windDirectionDeg: 200,
         windGustKmh: 41,
@@ -727,13 +728,120 @@ describe('nws_get_observation_history', () => {
       const rows = text.split('\n').filter((line) => /^\| [A-Z][a-z]{2}, /.test(line));
       expect(rows).toHaveLength(2);
       expect(rows[0]).toBe(
-        `| ${formatTimestamp(newest!, 'America/Los_Angeles')} | Mostly Cloudy | 57°F (14°C) | 46°F (8°C) | 65% | 200° 12 mph (19 km/h), gusts 25 mph (41 km/h) | 30.03 inHg (1017 hPa, 101693 Pa) | 10 mi (16.1 km, 16093 m) | — | — | BKN at 1524m (5000 ft) |`,
+        `| ${formatTimestamp(newest!, 'America/Los_Angeles')} | Mostly Cloudy | 58°F (14.4°C) | 47°F (8.3°C) | 65% | 200° 12 mph (19 km/h), gusts 25 mph (41 km/h) | 30.03 inHg (1017 hPa, 101693 Pa) | 10 mi (16.1 km, 16093 m) | — | — | — | BKN at 1524m (5000 ft) |`,
       );
       expect(text).toContain(
         '## Observation History — Seattle, Seattle-Tacoma International Airport (KSEA)',
       );
       expect(text).toContain('**Station time zone:** America/Los_Angeles');
       expect(text).toContain('2 observations, newest first.');
+    });
+
+    it('keeps temperatures at one decimal, whole degrees without .0, and °F from the shown °C (issue #64)', async () => {
+      // Newest: KPDX 2026-10-23T06:53Z (raw `08/03 … T00830033`, NWS wind chill float).
+      // Older: KDEN 2026-10-23T04:25Z, a 5-minute record at whole degrees.
+      // Oldest: a negative tenth with an NWS-computed heat index float.
+      const [metar, fiveMinute, negative] = history(3);
+      const degC = (value: number | null) => ({ value, unitCode: 'wmoUnit:degC' });
+      http.route(stationRoute(), {
+        match: (request: Request) => new URL(request.url).pathname === LIST_PATH,
+        respond: () =>
+          json({
+            features: [
+              observationFeature(metar!, {
+                temperature: degC(8.3),
+                dewpoint: degC(3.3),
+                windChill: degC(7.710126527509445),
+              }),
+              observationFeature(fiveMinute!, { temperature: degC(17), dewpoint: degC(7) }),
+              observationFeature(negative!, {
+                temperature: degC(-0.4),
+                dewpoint: degC(-6.1),
+                heatIndex: degC(24.151),
+              }),
+            ],
+          }),
+      });
+
+      const { data, text } = successOf(await runToolContract(tool, { station_id: 'KSEA' }));
+
+      expect(
+        data.observations.map((o) => [o.temperatureC, o.dewpointC, o.heatIndexC, o.windChillC]),
+      ).toEqual([
+        [8.3, 3.3, null, 7.7],
+        [17, 7, null, null],
+        [-0.4, -6.1, 24.2, null],
+      ]);
+      const rows = text.split('\n').filter((line) => /^\| [A-Z][a-z]{2}, /.test(line));
+      // Temperature, Dewpoint, Heat Index, Wind Chill cells.
+      const temps = (row: string) => row.split(' | ').filter((_, i) => [2, 3, 8, 9].includes(i));
+      expect(rows.map(temps)).toEqual([
+        ['47°F (8.3°C)', '38°F (3.3°C)', '—', '46°F (7.7°C)'],
+        ['63°F (17°C)', '45°F (7°C)', '—', '—'],
+        ['31°F (-0.4°C)', '21°F (-6.1°C)', '76°F (24.2°C)', '—'],
+      ]);
+    });
+
+    it('returns 1-, 3-, and 6-hour precipitation in mm, 0 as a trace, and — when none was reported (issue #65)', async () => {
+      // Newest: KSLC 2026-10-23T02:54Z (`P0013 60024`). Next: KCOS 2026-10-23T02:54Z
+      // (`P0000 60000`, two traces). Next: a dry hourly METAR (the base fixture, all
+      // three null). Oldest: a 5-minute record (KDEN 2026-10-23T04:25Z) with the 1- and
+      // 6-hour keys absent.
+      const [rain, trace, dry, fiveMinute] = history(4);
+      const mm = (value: number | null) => ({
+        unitCode: 'wmoUnit:mm',
+        value,
+        qualityControl: value == null ? 'Z' : 'C',
+      });
+      const {
+        precipitationLastHour: _1h,
+        precipitationLast6Hours: _6h,
+        ...fiveMinuteProperties
+      } = observationFeature(fiveMinute!).properties;
+      http.route(stationRoute(), {
+        match: (request: Request) => new URL(request.url).pathname === LIST_PATH,
+        respond: () =>
+          json({
+            features: [
+              observationFeature(rain!, {
+                precipitationLastHour: mm(3.3),
+                precipitationLast3Hours: mm(6.1),
+                precipitationLast6Hours: mm(null),
+              }),
+              observationFeature(trace!, {
+                precipitationLastHour: mm(0),
+                precipitationLast3Hours: mm(0),
+                precipitationLast6Hours: mm(null),
+              }),
+              observationFeature(dry!),
+              { properties: fiveMinuteProperties },
+            ],
+          }),
+      });
+
+      const { data, text } = successOf(await runToolContract(tool, { station_id: 'KSEA' }));
+
+      expect(
+        data.observations.map((o) => [
+          o.precipitationLastHourMm,
+          o.precipitationLast3HoursMm,
+          o.precipitationLast6HoursMm,
+        ]),
+      ).toEqual([
+        [3.3, 6.1, null],
+        [0, 0, null],
+        [null, null, null],
+        [null, null, null],
+      ]);
+      expect(text).toContain('| Precipitation |');
+      const rows = text.split('\n').filter((line) => /^\| [A-Z][a-z]{2}, /.test(line));
+      const precipitationCell = (row: string) => row.split(' | ')[10];
+      expect(rows.map(precipitationCell)).toEqual([
+        '1 h: 0.13 in (3.3 mm), 3 h: 0.24 in (6.1 mm)',
+        '1 h: Trace, 3 h: Trace',
+        '—',
+        '—',
+      ]);
     });
 
     it('keeps a sparse observation null on structuredContent and — in the table, never 0', async () => {
@@ -768,11 +876,69 @@ describe('nws_get_observation_history', () => {
         relativeHumidityPct: null,
         heatIndexC: null,
         windChillC: null,
+        precipitationLastHourMm: null,
+        precipitationLast3HoursMm: null,
+        precipitationLast6HoursMm: null,
         cloudLayers: [],
       });
       expect(text).toContain(
-        `| ${formatTimestamp(ts!, 'America/Los_Angeles')} | — | — | — | — | — | — | — | — | — | — |`,
+        `| ${formatTimestamp(ts!, 'America/Los_Angeles')} | — | — | — | — | — | — | — | — | — | — | — |`,
       );
+    });
+
+    it('renders a reported gust whose sustained speed is null, and — only when no wind is reported (issue #61)', async () => {
+      // Wind groups from KDEN 2026-10-23T04:25Z (a 5-minute record): sustained speed
+      // and direction null, gust 44.46 km/h. The second row carries a direction
+      // alone, which renders with the sustained speed marked not reported, matching
+      // nws_get_observations. A row with no wind component at all renders `—`.
+      const [gustOnly, directionOnly, noWind] = history(3);
+      const nullWind = { value: null, unitCode: 'wmoUnit:km_h-1', qualityControl: 'Z' };
+      http.route(stationRoute(), {
+        match: (request: Request) => new URL(request.url).pathname === LIST_PATH,
+        respond: () =>
+          json({
+            features: [
+              observationFeature(gustOnly!, {
+                windSpeed: nullWind,
+                windDirection: { value: null, unitCode: 'wmoUnit:degree_(angle)' },
+                windGust: { value: 44.46, unitCode: 'wmoUnit:km_h-1', qualityControl: 'S' },
+              }),
+              observationFeature(directionOnly!, {
+                windSpeed: nullWind,
+                windDirection: { value: 180, unitCode: 'wmoUnit:degree_(angle)' },
+                windGust: nullWind,
+              }),
+              observationFeature(noWind!, {
+                windSpeed: nullWind,
+                windDirection: { value: null, unitCode: 'wmoUnit:degree_(angle)' },
+                windGust: nullWind,
+              }),
+            ],
+          }),
+      });
+
+      const { data, text } = successOf(await runToolContract(tool, { station_id: 'KSEA' }));
+
+      expect(data.observations[0]).toMatchObject({
+        windSpeedKmh: null,
+        windDirectionDeg: null,
+        windGustKmh: 44,
+      });
+      expect(data.observations[1]).toMatchObject({
+        windSpeedKmh: null,
+        windDirectionDeg: 180,
+        windGustKmh: null,
+      });
+      const rows = text.split('\n').filter((line) => /^\| [A-Z][a-z]{2}, /.test(line));
+      const windCell = (row: string) => row.split(' | ')[5];
+      expect(windCell(rows[0]!)).toBe('sustained not reported, gusts 27 mph (44 km/h)');
+      expect(windCell(rows[1]!)).toBe('180°, sustained not reported');
+      expect(data.observations[2]).toMatchObject({
+        windSpeedKmh: null,
+        windDirectionDeg: null,
+        windGustKmh: null,
+      });
+      expect(windCell(rows[2]!)).toBe('—');
     });
 
     it('renders offset times and "Not available" when the station record has no time zone', async () => {

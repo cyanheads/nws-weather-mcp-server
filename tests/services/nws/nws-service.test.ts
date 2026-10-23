@@ -6,6 +6,7 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGED_OUT_ALERT_ID,
@@ -14,6 +15,7 @@ import {
   alertTypesResponse,
   ascendingReferencesAlertsResponse,
   CURRENT_ALERT_ID,
+  capParametersAlertsResponse,
   capReference,
   currentAlertFeature,
   duplicateAlertsResponse,
@@ -29,6 +31,8 @@ import {
   observationResponse,
   outOfBoundsPointProblem,
   pointsResponse,
+  RED_FLAG_ALERT_ID,
+  redFlagAlertFeature,
   SUPERSEDED_ALERT_ID,
   stationInfoResponse,
   stationsResponse,
@@ -90,6 +94,19 @@ describe('NwsService', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
+    it('reads a forecast NWS sends without updateTime as updateTime null', async () => {
+      const { updateTime: _omitted, ...properties } = forecastResponse.properties;
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(pointsResponse))
+        .mockResolvedValueOnce(jsonResponse({ properties }));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().getForecast(47.6062, -122.3321, false, ctx);
+
+      expect(result.forecast.updateTime).toBeNull();
+      expect(result.forecast.generatedAt).toBe(forecastResponse.properties.generatedAt);
+    });
+
     it('uses cached points on second call', async () => {
       mockFetch
         .mockResolvedValueOnce(jsonResponse(pointsResponse))
@@ -130,6 +147,179 @@ describe('NwsService', () => {
       expect(result.alerts[0]!.event).toBe('Wind Advisory');
       expect(result.alerts[0]!.severity).toBe('Moderate');
       expect(result.alerts[0]!.ends).toBe('2026-04-03T18:00:00-07:00');
+    });
+
+    describe('CAP parameters (issue #66)', () => {
+      const RIW_PROPERTIES = capParametersAlertsResponse.features[1]!.properties;
+
+      /** One captured alert with its parameters replaced, parsed by a search. */
+      async function parseWithParameters(parameters: unknown) {
+        mockFetch.mockResolvedValueOnce(
+          jsonResponse({ features: [{ properties: { ...RIW_PROPERTIES, parameters } }] }),
+        );
+        const result = await service
+          .getNwsService()
+          .searchAlerts({}, createMockContext({ tenantId: 'test' }));
+        return result.alerts[0]!;
+      }
+
+      it('surfaces office, vtec, nwsHeadline, and hazard from each captured parameters block', async () => {
+        mockFetch.mockResolvedValueOnce(jsonResponse(capParametersAlertsResponse));
+
+        const ctx = createMockContext({ tenantId: 'test' });
+        const result = await service.getNwsService().searchAlerts({}, ctx);
+
+        expect(
+          result.alerts.map(({ event, office, vtec, nwsHeadline, hazard }) => ({
+            event,
+            office,
+            vtec,
+            nwsHeadline,
+            hazard,
+          })),
+        ).toEqual([
+          {
+            event: 'Severe Thunderstorm Warning',
+            office: 'LOX',
+            vtec: ['/O.CON.KLOX.SV.W.0012.000000T0000Z-261022T1745Z/'],
+            nwsHeadline:
+              'A SEVERE THUNDERSTORM WARNING REMAINS IN EFFECT UNTIL 1045 AM PDT FOR CENTRAL LOS ANGELES COUNTY',
+            hazard: {
+              maxHailSize: 'Up to .75',
+              maxWindGust: '60 MPH',
+              hailThreat: 'RADAR INDICATED',
+              windThreat: 'RADAR INDICATED',
+              tornadoDetection: 'POSSIBLE',
+              eventMotionDescription:
+                '2026-10-22T17:17:00-00:00...storm...222DEG...11KT...34.0,-118.1',
+            },
+          },
+          {
+            event: 'Red Flag Warning',
+            office: 'RIW',
+            vtec: ['/O.CON.KRIW.FW.W.0031.261023T1800Z-261024T0200Z/'],
+            nwsHeadline: 'RED FLAG WARNING REMAINS IN EFFECT FROM NOON TO 8 PM MDT FRIDAY',
+            hazard: null,
+          },
+          {
+            // AWIPS identifier CWFALU: "ALU" is a product location code, not an office.
+            event: 'Gale Warning',
+            office: 'AFC',
+            vtec: ['/O.NEW.PAFC.GL.W.1538.261023T1300Z-261024T1300Z/'],
+            nwsHeadline: 'GALE WARNING FRIDAY AND FRIDAY NIGHT',
+            hazard: null,
+          },
+          {
+            event: 'Special Weather Statement',
+            office: 'GUM',
+            vtec: [],
+            nwsHeadline:
+              'INVEST 97W DEVELOPING OVER THE NORTHERN MARSHALL ISLANDS, NOW THE SUBJECT OF A TROPICAL CYCLONE FORMATION ALERT... ...LOCALLY HEAVY SHOWERS, SURGING WEST WINDS AND SWELL EXPECTED',
+            hazard: null,
+          },
+          {
+            event: 'Rip Current Statement',
+            office: 'SJU',
+            vtec: ['/O.CON.TJSJ.RP.S.0023.000000T0000Z-261024T2200Z/'],
+            nwsHeadline:
+              'HIGH RIP CURRENT RISK REMAINS IN EFFECT THROUGH SATURDAY AFTERNOON... ...HIGH SURF ADVISORY REMAINS IN EFFECT UNTIL 6 PM AST THIS EVENING',
+            hazard: null,
+          },
+          {
+            event: 'Tsunami Warning',
+            office: null,
+            vtec: ['/T.NEW.PAAQ.TS.W.9018.261021T1631Z-261021T1731Z/'],
+            nwsHeadline: null,
+            hazard: null,
+          },
+          { event: 'Test Message', office: null, vtec: [], nwsHeadline: null, hazard: null },
+        ]);
+      });
+
+      it('carries none of the parameters it does not surface', async () => {
+        mockFetch.mockResolvedValueOnce(jsonResponse(capParametersAlertsResponse));
+
+        const ctx = createMockContext({ tenantId: 'test' });
+        const serialized = JSON.stringify(await service.getNwsService().searchAlerts({}, ctx));
+
+        for (const key of ['BLOCKCHANNEL', 'EAS-ORG', 'AWIPSidentifier', 'eventEndingTime']) {
+          expect(serialized).not.toContain(key);
+        }
+        expect(serialized).not.toContain('"parameters"');
+      });
+
+      it.each([
+        ['a contiguous-US office', 'WWUS85 KRIW 230445', 'RIW'],
+        ['an Alaska office', 'FZAK52 PAFC 230020', 'AFC'],
+        ['Honolulu', 'FXHW60 PHFO 230706', 'HFO'],
+        ['Guam', 'WWPQ81 PGUM 230232', 'GUM'],
+        ['San Juan, whose AFD location is SJU', 'WHCA42 TJSJ 230740', 'SJU'],
+        // The header of Pago Pago's own AFD; no American Samoa alert was captured.
+        ['Pago Pago, whose AFD location is PPG', 'FXZS60 NSTU 230110', 'PPG'],
+        ['a corrected header with a BBB suffix', 'WGUS75 KTWC 230254 RRA', 'TWC'],
+        ['the National Tsunami Warning Center', 'WEPA41 PAAQ 211631', null],
+        // Same header shape under the Pacific Tsunami Warning Center's centre code.
+        ['the Pacific Tsunami Warning Center', 'WEPA41 PHEB 211631', null],
+        ['the national test message', 'NZUS91 KWBC 230824', null],
+        ['a header with no separators', 'WWUS85KRIW230445', null],
+        ['a header missing its time group', 'WWUS85 KRIW', null],
+        // The heading is the whole field: nothing before it, nothing after the BBB group.
+        ['text before the heading', 'X WWUS85 KRIW 230445', null],
+        ['a time group with a seventh digit', 'WWUS85 KRIW 2304451', null],
+        ['a lowercase centre', 'WWUS85 kriw 230445', null],
+        ['an empty header', '', null],
+      ])('derives office from %s', async (_label, wmo, office) => {
+        const alert = await parseWithParameters({
+          ...RIW_PROPERTIES.parameters,
+          WMOidentifier: [wmo],
+        });
+
+        expect(alert.office).toBe(office);
+      });
+
+      it.each([
+        ['no parameters block', undefined],
+        ['an empty parameters block', {}],
+        ['parameters that are not an object', 'VTEC'],
+        ['none of the surfaced keys', { BLOCKCHANNEL: ['EAS'], 'EAS-ORG': ['WXR'] }],
+        [
+          'values that are not string arrays',
+          { WMOidentifier: 'WWUS85 KRIW 230445', VTEC: [1], NWSheadline: [] },
+        ],
+      ])(
+        'reads %s as no office, no VTEC, no headline, and no hazard',
+        async (_label, parameters) => {
+          const alert = await parseWithParameters(parameters);
+
+          expect(alert).toMatchObject({ office: null, vtec: [], nwsHeadline: null, hazard: null });
+        },
+      );
+
+      it('keeps each hazard tag NWS sent, element 0, verbatim, and no other key', async () => {
+        const alert = await parseWithParameters({
+          ...RIW_PROPERTIES.parameters,
+          waterspoutDetection: ['POSSIBLE'],
+          flashFloodDetection: ['RADAR AND GAUGE INDICATED', 'OBSERVED'],
+          maxWindGust: ['Up to 34 knots'],
+          WEAHandling: ['Imminent Threat'],
+        });
+
+        expect(alert.hazard).toEqual({
+          maxWindGust: 'Up to 34 knots',
+          flashFloodDetection: 'RADAR AND GAUGE INDICATED',
+          waterspoutDetection: 'POSSIBLE',
+        });
+      });
+
+      it('keeps every VTEC string NWS sent, in order', async () => {
+        const vtec = [
+          '/O.EXT.KRIW.FW.W.0031.261023T1800Z-261024T0200Z/',
+          '/O.CAN.KRIW.FW.A.0012.261023T1800Z-261024T0200Z/',
+        ];
+        const alert = await parseWithParameters({ ...RIW_PROPERTIES.parameters, VTEC: vtec });
+
+        expect(alert.vtec).toEqual(vtec);
+      });
     });
 
     it('maps a null ends to null for open-ended hazards (regression: issue #18)', async () => {
@@ -457,6 +647,56 @@ describe('NwsService', () => {
       expect(result.alerts).toHaveLength(0);
     });
 
+    describe('nws_search_alerts continuation over the real service (issue #63)', () => {
+      it('requests the minting query upstream when the cursor is sent alone', async () => {
+        mockFetch.mockImplementation(async () => jsonResponse(duplicateAlertsResponse));
+        const { searchAlertsTool } = await import(
+          '@/mcp-server/tools/definitions/search-alerts.tool.js'
+        );
+
+        const first = await runToolContract(searchAlertsTool, { area: 'wa', limit: 1 });
+        const nextCursor = (first.structuredContent as { nextCursor: string }).nextCursor;
+        const second = await runToolContract(searchAlertsTool, { cursor: nextCursor });
+
+        expect(second.isError).toBeFalsy();
+        expect(second.structuredContent).toMatchObject({
+          alerts: [{ id: 'urn:oid:distinct-wind-advisory' }],
+          totalCount: 2,
+          appliedFilters: 'area=WA',
+        });
+        expect(mockFetch.mock.calls.map(([url]) => String(url))).toEqual([
+          'https://api.weather.gov/alerts/active?area=WA&status=actual',
+          'https://api.weather.gov/alerts/active?area=WA&status=actual',
+        ]);
+      });
+
+      it.each([
+        ['a malformed token', 'not-a-real-cursor'],
+        ['a fractional offset', encodeCursor({ offset: 1.5, limit: 3 })],
+        [
+          'carried filters that fail the area check',
+          encodeCursor({ offset: 3, limit: 3, filters: { area: 'ZZ' } }),
+        ],
+      ])('fails %s as invalid_cursor without a request', async (_label, cursor) => {
+        const { searchAlertsTool } = await import(
+          '@/mcp-server/tools/definitions/search-alerts.tool.js'
+        );
+
+        const result = await runToolContract(searchAlertsTool, { area: 'WA', cursor });
+
+        expect(result.isError).toBe(true);
+        expect(
+          (result.structuredContent as { error: { code: number; data?: { reason?: string } } })
+            .error,
+        ).toMatchObject({
+          code: JsonRpcErrorCode.InvalidParams,
+          data: { reason: 'invalid_cursor' },
+        });
+        // The beforeEach catch-all records and rejects any request, so none went out.
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+    });
+
     it('passes query params to the API and keeps event matching local', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse(emptyAlertsResponse));
 
@@ -655,6 +895,29 @@ describe('NwsService', () => {
           { code: 'NDZ002', type: 'forecast' },
           { code: 'NDZ003', type: 'forecast' },
         ],
+        // This trimmed capture carries no parameters block.
+        office: null,
+        vtec: [],
+        nwsHeadline: null,
+        hazard: null,
+      });
+    });
+
+    it('derives the office of a fetched Red Flag Warning from its parameters (issue #66)', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(redFlagAlertFeature));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const alert = await service.getNwsService().getAlert(RED_FLAG_ALERT_ID, ctx);
+
+      expect(alert).toMatchObject({
+        office: 'BIS',
+        vtec: ['/O.NEW.KBIS.FW.W.0019.261023T1800Z-261024T0200Z/'],
+        nwsHeadline: 'RED FLAG WARNING IN EFFECT FROM NOON TO 8 PM MDT FRIDAY',
+        hazard: null,
+        affectedZones: [
+          { code: 'NDZ040', type: 'fire' },
+          { code: 'NDZ043', type: 'fire' },
+        ],
       });
     });
 
@@ -806,6 +1069,56 @@ describe('NwsService', () => {
       expect(result.observation.timeZone).toBe('America/Los_Angeles');
       expect(result.observation.temperature.value).toBe(14.4);
       expect(result.observation.textDescription).toBe('Mostly Cloudy');
+    });
+
+    it('parses the 1-, 3-, and 6-hour precipitation amounts (issue #65)', async () => {
+      // KSLC 2026-10-23T02:54Z, raw `… P0013 60024 …`.
+      const mm = (value: number | null) => ({
+        unitCode: 'wmoUnit:mm',
+        value,
+        qualityControl: value == null ? 'Z' : 'C',
+      });
+      mockFetch.mockResolvedValueOnce(jsonResponse(stationInfoResponse)).mockResolvedValueOnce(
+        jsonResponse({
+          properties: {
+            ...observationResponse.properties,
+            precipitationLastHour: mm(3.3),
+            precipitationLast3Hours: mm(6.1),
+            precipitationLast6Hours: mm(null),
+          },
+        }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const { observation } = await service
+        .getNwsService()
+        .getObservation({ stationId: 'KSEA' }, ctx);
+
+      expect(observation.precipitationLastHour.value).toBe(3.3);
+      expect(observation.precipitationLast3Hours.value).toBe(6.1);
+      expect(observation.precipitationLast6Hours.value).toBeNull();
+    });
+
+    it('reads absent precipitation keys as no amount reported', async () => {
+      // A 5-minute record (KDEN 2026-10-23T04:25Z) carries precipitationLast3Hours
+      // with a null value and omits the 1- and 6-hour keys entirely.
+      const {
+        precipitationLastHour: _1h,
+        precipitationLast6Hours: _6h,
+        ...fiveMinute
+      } = observationResponse.properties;
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(stationInfoResponse))
+        .mockResolvedValueOnce(jsonResponse({ properties: fiveMinute }));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const { observation } = await service
+        .getNwsService()
+        .getObservation({ stationId: 'KSEA' }, ctx);
+
+      expect(observation.precipitationLastHour.value).toBeNull();
+      expect(observation.precipitationLast3Hours.value).toBeNull();
+      expect(observation.precipitationLast6Hours.value).toBeNull();
     });
 
     it('resolves nearest station from coordinates', async () => {

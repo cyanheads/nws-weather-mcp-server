@@ -16,10 +16,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGED_OUT_ALERT_ID,
   CURRENT_ALERT_ID,
+  capParametersAlertsResponse,
   currentAlertFeature,
   invalidAlertProblem,
   KEEPALIVE_ALERT_ID,
   keepaliveAlertFeature,
+  RED_FLAG_ALERT_ID,
+  redFlagAlertFeature,
   SUPERSEDED_ALERT_ID,
   supersededAlertFeature,
 } from '../fixtures/nws-responses.js';
@@ -103,8 +106,97 @@ describe('nws_get_alert', () => {
     expect(text).toBe(`## Alert Message\n\n${searchedText.slice(blockStart, blockEnd)}`);
     expect(text).toContain(`**Supersedes:** ${SUPERSEDED_ALERT_ID}`);
     expect(text).toContain('**Zones:** NDZ001 (forecast), NDZ002 (forecast), NDZ003 (forecast)');
-    expect(text).toContain('**Recommended Actions:** Take steps now');
+    expect(text).toContain(
+      '**Recommended Actions:**\n```text\nTake steps now to protect sensitive outdoor plants from the cold.\n```',
+    );
     expect(text).toContain('Sub-freezing temperatures as low as 25 expected.');
+  });
+
+  it('fences the multi-line description and instruction on both tools, leaving structuredContent as sent (issue #71)', async () => {
+    http.route(
+      route(`${API}/alerts/${RED_FLAG_ALERT_ID}`, redFlagAlertFeature),
+      route(`${API}/alerts/active?status=actual`, { features: [redFlagAlertFeature] }),
+    );
+    const { description, instruction } = redFlagAlertFeature.properties;
+
+    for (const result of [
+      await runToolContract(tools.getAlertTool, { alert_id: RED_FLAG_ALERT_ID }),
+      await runToolContract(tools.searchAlertsTool, {}),
+    ]) {
+      expect(result.isError).toBeFalsy();
+      const text = textOf(result);
+      expect(text).toContain(
+        `\n\n\`\`\`text\n${description}\n\`\`\`\n\n**Recommended Actions:**\n`,
+      );
+      expect(text).toContain(`**Recommended Actions:**\n\`\`\`text\n${instruction}\n\`\`\``);
+      expect(text.match(/^```/gm)).toHaveLength(4);
+      const structured = result.structuredContent as {
+        alert?: { description: string; instruction: string };
+        alerts?: { description: string; instruction: string }[];
+      };
+      const alert = structured.alert ?? structured.alerts![0]!;
+      expect(alert.description).toBe(description);
+      expect(alert.instruction).toBe(instruction);
+    }
+  });
+
+  it('carries office, vtec, nwsHeadline, and hazard on both surfaces of both tools (issue #66)', async () => {
+    http.route(
+      route(`${API}/alerts/${RED_FLAG_ALERT_ID}`, redFlagAlertFeature),
+      route(`${API}/alerts/active?status=actual`, capParametersAlertsResponse),
+    );
+
+    const fetched = await runToolContract(tools.getAlertTool, { alert_id: RED_FLAG_ALERT_ID });
+    const searched = await runToolContract(tools.searchAlertsTool, {});
+
+    expect(fetched.isError).toBeFalsy();
+    expect((fetched.structuredContent as { alert: unknown }).alert).toMatchObject({
+      office: 'BIS',
+      vtec: ['/O.NEW.KBIS.FW.W.0019.261023T1800Z-261024T0200Z/'],
+      nwsHeadline: 'RED FLAG WARNING IN EFFECT FROM NOON TO 8 PM MDT FRIDAY',
+      hazard: null,
+    });
+    const fetchedText = textOf(fetched);
+    expect(fetchedText).toContain('\n**Office:** BIS\n');
+    expect(fetchedText).toContain('\n**VTEC:** /O.NEW.KBIS.FW.W.0019.261023T1800Z-261024T0200Z/\n');
+    expect(fetchedText).toContain(
+      '\n**NWS headline:** RED FLAG WARNING IN EFFECT FROM NOON TO 8 PM MDT FRIDAY\n',
+    );
+    expect(fetchedText).not.toContain('**Hazard tags:**');
+
+    expect(searched.isError).toBeFalsy();
+    const { alerts } = searched.structuredContent as {
+      alerts: { office: string | null; hazard: Record<string, string> | null }[];
+    };
+    expect(alerts[0]!.hazard).toEqual({
+      maxHailSize: 'Up to .75',
+      maxWindGust: '60 MPH',
+      hailThreat: 'RADAR INDICATED',
+      windThreat: 'RADAR INDICATED',
+      tornadoDetection: 'POSSIBLE',
+      eventMotionDescription: '2026-10-22T17:17:00-00:00...storm...222DEG...11KT...34.0,-118.1',
+    });
+    expect(alerts.map((alert) => alert.office)).toEqual([
+      'LOX',
+      'RIW',
+      'AFC',
+      'GUM',
+      'SJU',
+      null,
+      null,
+    ]);
+    const searchedText = textOf(searched);
+    expect(searchedText).toContain(
+      '\n**Hazard tags:** maxHailSize: Up to .75; maxWindGust: 60 MPH; hailThreat: RADAR INDICATED; windThreat: RADAR INDICATED; tornadoDetection: POSSIBLE; eventMotionDescription: 2026-10-22T17:17:00-00:00...storm...222DEG...11KT...34.0,-118.1\n',
+    );
+    // Every non-null office reaches content[]; a null one renders no line.
+    expect(searchedText.match(/^\*\*Office:\*\* .+$/gm)).toEqual([
+      '**Office:** LOX',
+      '**Office:** RIW',
+      '**Office:** AFC',
+      '**Office:** GUM',
+      '**Office:** SJU',
+    ]);
   });
 
   it('walks a revision chain one call per message, references[0] first', async () => {

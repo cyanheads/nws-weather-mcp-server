@@ -30,6 +30,17 @@ const lifecycle = {
   references: [] as { identifier: string; sent: string }[],
 };
 
+/**
+ * CAP parameters fields (issue #66) as an alert with no `parameters` block reads;
+ * tests that assert on them override the fields they exercise.
+ */
+const capParameters = {
+  office: null as string | null,
+  vtec: [] as string[],
+  nwsHeadline: null as string | null,
+  hazard: null as AlertOutput['hazard'],
+};
+
 const alertResult: AlertSearchResult = {
   alerts: [
     {
@@ -43,6 +54,7 @@ const alertResult: AlertSearchResult = {
       certainty: 'Likely',
       areaDesc: 'King County',
       ...lifecycle,
+      ...capParameters,
       onset: '2026-04-03T12:00:00-07:00',
       ends: '2026-04-03T18:00:00-07:00',
       expires: '2026-04-04T00:00:00-07:00',
@@ -65,6 +77,7 @@ function formatAlert(overrides: Partial<AlertOutput> = {}): AlertOutput {
     ...alert,
     affectedZones: [...alert.affectedZones],
     references: [...alert.references],
+    vtec: [...alert.vtec],
     ...overrides,
   };
 }
@@ -265,6 +278,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Observed',
             areaDesc: 'King County',
             ...lifecycle,
+            ...capParameters,
             onset: '2026-04-03T12:00:00Z',
             ends: '2026-04-03T13:00:00Z',
             expires: '2026-04-03T14:00:00Z',
@@ -398,9 +412,14 @@ describe('nws_search_alerts', () => {
           '**From:** NWS Seattle WA',
           '**Zones:** WAZ558 (forecast)',
           '',
+          '```text',
           'Strong winds expected.',
+          '```',
           '',
-          '**Recommended Actions:** Secure outdoor objects.',
+          '**Recommended Actions:**',
+          '```text',
+          'Secure outdoor objects.',
+          '```',
           '',
           '---',
           '',
@@ -416,6 +435,130 @@ describe('nws_search_alerts', () => {
           '',
         ].join('\n'),
       );
+    });
+
+    it('renders office, NWS headline, VTEC, and hazard tags around the unchanged lines (issue #66)', () => {
+      const blocks = searchAlertsTool.format!({
+        alerts: [
+          formatAlert({
+            office: 'LOX',
+            nwsHeadline: 'A SEVERE THUNDERSTORM WARNING REMAINS IN EFFECT UNTIL 1045 AM PDT',
+            vtec: [
+              '/O.CON.KLOX.SV.W.0012.000000T0000Z-261022T1745Z/',
+              '/O.EXP.KLOX.SV.W.0011.000000T0000Z-261022T1730Z/',
+            ],
+            hazard: {
+              maxHailSize: 'Up to .75',
+              maxWindGust: '60 MPH',
+              eventMotionDescription:
+                '2026-10-22T17:17:00-00:00...storm...222DEG...11KT...34.0,-118.1',
+            },
+          }),
+        ],
+      });
+
+      const pdt = (iso: string) => formatTimestamp(iso, 'America/Los_Angeles');
+      const sent = '2026-04-03T05:00:00-07:00';
+      expect((blocks[0] as { type: 'text'; text: string }).text).toBe(
+        [
+          '## 1 Active Alert\n',
+          '### Wind Advisory',
+          '_ID: urn:oid:2.49.0.1.840.0.abc123_',
+          '**Wind Advisory issued April 3**',
+          '**NWS headline:** A SEVERE THUNDERSTORM WARNING REMAINS IN EFFECT UNTIL 1045 AM PDT',
+          '**Severity:** Moderate | **Urgency:** Expected | **Certainty:** Likely',
+          '**Area:** King County',
+          `**Hazard onset:** ${pdt('2026-04-03T12:00:00-07:00')}`,
+          `**Hazard ends:** ${pdt('2026-04-03T18:00:00-07:00')}`,
+          `**Message valid until:** ${pdt('2026-04-04T00:00:00-07:00')}`,
+          '**Message type:** Alert | **Status:** Actual',
+          `**Message sent:** ${pdt(sent)} | **Message effective:** ${pdt(sent)}`,
+          '**From:** NWS Seattle WA',
+          '**Office:** LOX',
+          '**Zones:** WAZ558 (forecast)',
+          '**VTEC:** /O.CON.KLOX.SV.W.0012.000000T0000Z-261022T1745Z/, /O.EXP.KLOX.SV.W.0011.000000T0000Z-261022T1730Z/',
+          '**Hazard tags:** maxHailSize: Up to .75; maxWindGust: 60 MPH; eventMotionDescription: 2026-10-22T17:17:00-00:00...storm...222DEG...11KT...34.0,-118.1',
+          '',
+          '```text',
+          'Strong winds expected.',
+          '```',
+          '',
+          '**Recommended Actions:**',
+          '```text',
+          'Secure outdoor objects.',
+          '```',
+          '',
+          '---',
+          '',
+        ].join('\n'),
+      );
+    });
+
+    describe('fenced NWS text (issue #71)', () => {
+      // Hard-wrapped NWS text from a captured Severe Thunderstorm Warning: `HAZARD...`
+      // paragraphs and an exclamation, which bare Markdown would re-wrap.
+      const description =
+        'At 1017 AM PDT, a severe thunderstorm was located near Whittier,\nmoving northeast at 15 mph.\n\nHAZARD...60 mph wind gusts.\n\nSOURCE...Radar indicated.';
+      const instruction =
+        'Remain alert for a possible tornado! Tornadoes can develop quickly\nfrom severe thunderstorms.\n\nFor your protection move to an interior room on the lowest floor of a\nbuilding.';
+      // A bulleted NWS description, which bare Markdown reads as a list.
+      const bulleted =
+        '* WHAT...Visibility one quarter mile or less in dense fog.\n\n* WHERE...A portion of southeast Michigan.';
+
+      const render = (overrides: Partial<AlertOutput>) =>
+        (searchAlertsTool.format!({ alerts: [formatAlert(overrides)] })[0] as { text: string })
+          .text;
+
+      it('puts a multi-line description and instruction each in one fenced text block', () => {
+        const text = render({ description, instruction });
+
+        expect(text).toContain(
+          `**Zones:** WAZ558 (forecast)\n\n\`\`\`text\n${description}\n\`\`\`\n\n`,
+        );
+        expect(text).toContain(
+          `\n\n**Recommended Actions:**\n\`\`\`text\n${instruction}\n\`\`\`\n`,
+        );
+        expect(text.match(/^```/gm)).toHaveLength(4);
+      });
+
+      it('fences a bulleted description so no line reads as a list item', () => {
+        const text = render({ description: bulleted, instruction: null });
+
+        expect(text).toContain(`\n\`\`\`text\n${bulleted}\n\`\`\`\n`);
+        expect(text.split('\n').filter((line) => line.startsWith('* WHAT'))).toHaveLength(1);
+        expect(text.indexOf('```text')).toBeLessThan(text.indexOf('* WHAT'));
+      });
+
+      it('lengthens the fence past a backtick run in the value so it stays one block', () => {
+        const withFence = 'Line one\n```\nLine three with a ```` run';
+        const text = render({ description: withFence, instruction: null });
+
+        expect(text).toContain(`\n\`\`\`\`\`text\n${withFence}\n\`\`\`\`\`\n`);
+        // The value's own ``` line sits inside the five-backtick fence, which only a run of five or more closes.
+        expect(text.match(/^`{5}/gm)).toHaveLength(2);
+      });
+
+      it('renders a null instruction as no label and no empty block', () => {
+        const text = render({ description, instruction: null });
+
+        expect(text).not.toContain('Recommended Actions');
+        expect(text.match(/^```/gm)).toHaveLength(2);
+        expect(text).not.toMatch(/```text\n```/);
+      });
+
+      it('leaves structuredContent carrying the text as NWS sent it', async () => {
+        mockSearchAlerts.mockResolvedValueOnce({
+          alerts: [{ ...alertResult.alerts[0]!, description, instruction }],
+        });
+
+        const result = await runToolContract(searchAlertsTool, {});
+        const [alert] = (
+          result.structuredContent as { alerts: { description: string; instruction: string }[] }
+        ).alerts;
+
+        expect(alert!.description).toBe(description);
+        expect(alert!.instruction).toBe(instruction);
+      });
     });
 
     it('keeps the lifecycle lines from displacing the hazard timing block (issues #7, #18, #33)', () => {
@@ -449,6 +592,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Possible',
             areaDesc: 'Green Lake WI',
             ...lifecycle,
+            ...capParameters,
             onset: '2026-04-20T07:00:00-05:00', // Mon 7 AM CDT — hazard begins later
             ends: '2026-04-21T15:00:00-05:00', // Tue 3 PM CDT — hazard ends
             expires: '2026-04-19T18:45:00-05:00', // Sun 6:45 PM CDT — message refreshes earlier
@@ -483,6 +627,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Likely',
             areaDesc: 'King County',
             ...lifecycle,
+            ...capParameters,
             onset: '2026-06-22T11:00:00-07:00', // hazard begins Mon
             ends: '2026-06-24T23:00:00-07:00', // hazard ends Wed — after the message refresh
             expires: '2026-06-22T03:00:00-07:00', // message refresh, before onset
@@ -516,6 +661,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Likely',
             areaDesc: 'King County',
             ...lifecycle,
+            ...capParameters,
             onset: '2026-07-04T15:00:00Z', // 8:00 AM PDT
             ends: '2026-07-04T18:00:00Z', // 11:00 AM PDT
             expires: '2026-07-04T20:00:00Z', // 1:00 PM PDT
@@ -546,6 +692,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Likely',
             areaDesc: 'Open ocean',
             ...lifecycle,
+            ...capParameters,
             onset: '2026-04-19T15:00:00-04:00',
             ends: '2026-04-19T21:00:00-04:00',
             expires: '2026-04-19T21:00:00-04:00',
@@ -574,6 +721,7 @@ describe('nws_search_alerts', () => {
             certainty: 'Observed',
             areaDesc: 'Cleveland County',
             ...lifecycle,
+            ...capParameters,
             onset: '2026-07-04T19:00:00Z', // 2:00 PM CDT
             ends: '2026-07-04T19:30:00Z', // 2:30 PM CDT
             expires: '2026-07-04T20:00:00Z',

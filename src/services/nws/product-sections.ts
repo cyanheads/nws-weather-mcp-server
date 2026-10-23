@@ -1,6 +1,6 @@
 /**
  * @fileoverview Pure partition of an NWS narrative text product into addressable parts.
- * An AFD splits at its `.NAME...` section header lines; ZFP, HWO, and SPS split into
+ * An AFD splits at its `.NAME...` section header lines; ZFP, HWO, SPS, and FWF split into
  * `$$`-terminated UGC segments keyed by every zone their UGC line covers. Text before
  * the first part is the header, text after the last is the trailer. Every scan is a
  * single pass over the product's lines with no backtracking regex, so cost stays

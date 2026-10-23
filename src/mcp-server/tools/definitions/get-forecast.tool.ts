@@ -3,11 +3,13 @@
  * @module mcp-server/tools/definitions/get-forecast
  */
 
-import { tool, z } from '@cyanheads/mcp-ts-core';
+import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
+import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp, fToC } from '../format-utils.js';
+import { composeNotice, invalidCursor } from '../page-limit.js';
+import { unsetIfBlank } from '../unset-if-blank.js';
 
 /**
  * Forecast periods per page. Applied in the handler so `structuredContent` and
@@ -18,6 +20,48 @@ import { cToF, formatTimestamp, fToC } from '../format-utils.js';
  * than dropped.
  */
 const MAX_PERIODS = 48;
+
+/**
+ * Grid age past which the forecast gets a stale notice. Several offices run a
+ * ~12-hour forecast package cycle with gaps reaching ~16.6 h, so a 12 h bound
+ * would fire in normal operation; 24 h is about twice the package cadence (the
+ * ratio nws_get_observations uses against hourly reports) and means a missed
+ * cycle.
+ */
+const STALE_UPDATE_MS = 24 * 3_600_000;
+
+/**
+ * A page of the period array. `hourly` is the mode the token was minted in;
+ * a 0.11.0 token carries none, and the page then reads the `hourly` input.
+ */
+interface PeriodWindow {
+  hourly?: boolean | undefined;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Decode a continuation token, before any request. A token this tool could not
+ * have minted fails as InvalidParams (`invalid_cursor`), the same way a
+ * malformed token fails inside `decodeCursor`. The page size is held to
+ * MAX_PERIODS, as `paginateArray` held it, so a forged larger limit cannot widen
+ * the page. The tool mints its own token (`encodeCursor` in the handler) because
+ * `paginateArray` re-mints `{offset, limit}` only, which would drop the mode.
+ */
+function readCursor(cursor: string, ctx: Context): PeriodWindow {
+  const { offset, limit, hourly } = decodeCursor(cursor, ctx);
+  if (
+    !Number.isInteger(offset) ||
+    !Number.isInteger(limit) ||
+    (hourly !== undefined && typeof hourly !== 'boolean')
+  ) {
+    throw invalidCursor(
+      cursor,
+      'Omit `cursor` to start from the first period, or pass the `nextCursor` from the previous response unchanged.',
+    );
+  }
+  return { offset, limit: Math.min(limit, MAX_PERIODS), hourly };
+}
 
 /**
  * Derive a period label from startTime when name is empty (hourly periods).
@@ -84,13 +128,13 @@ export const getForecastTool = tool('nws_get_forecast', {
       .boolean()
       .default(false)
       .describe(
-        `If true, returns hourly forecast (${MAX_PERIODS} one-hour periods per page, ~156 available) instead of 12-hour named periods (14 periods). Hourly includes dewpoint and relative humidity.`,
+        `If true, returns hourly forecast (${MAX_PERIODS} one-hour periods per page, ~156 available) instead of 12-hour named periods (14 periods). Hourly includes dewpoint and relative humidity. Sets the mode of the first page; a cursor carries its own mode, so this is ignored when cursor is set.`,
       ),
     cursor: z
       .string()
       .optional()
       .describe(
-        `Opaque continuation token from a previous response's nextCursor, to retrieve the next ${MAX_PERIODS} periods. Omit for the first page. Every call re-fetches the forecast, so consecutive periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated period array.`,
+        `Opaque continuation token from a previous response's nextCursor, to retrieve the next ${MAX_PERIODS} periods. Omit for the first page. The token carries the mode it was issued in (hourly or 7-day), so the next page stays in that mode whatever hourly is set to. Every call re-fetches the forecast, so consecutive periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated period array.`,
       ),
   }),
 
@@ -105,7 +149,17 @@ export const getForecastTool = tool('nws_get_forecast', {
         county: z.string().describe('County zone code for chaining to nws_search_alerts'),
       })
       .describe('Resolved location metadata'),
-    generatedAt: z.string().describe('When the forecast was generated (ISO 8601)'),
+    generatedAt: z
+      .string()
+      .describe(
+        'When NWS generated this response (ISO 8601). It advances whenever NWS regenerates the response, even when the underlying data is unchanged; see updateTime for the data age.',
+      ),
+    updateTime: z
+      .string()
+      .nullable()
+      .describe(
+        'When the data this forecast was generated from was last updated (ISO 8601, as NWS sends it). A grid that stops updating keeps this time while generatedAt keeps advancing. Null when NWS omits it.',
+      ),
     periods: z
       .array(
         z
@@ -140,8 +194,8 @@ export const getForecastTool = tool('nws_get_forecast', {
 
   // Result-set context for the agent — shown/total period counts and mode echo
   // so agents know forecast granularity and whether the period set was capped,
-  // without re-deriving from the array. generatedAt already lives in output;
-  // not duplicated here.
+  // without re-deriving from the array. generatedAt and updateTime already live
+  // in output; not duplicated here.
   enrichment: {
     totalCount: z
       .number()
@@ -154,13 +208,13 @@ export const getForecastTool = tool('nws_get_forecast', {
       .string()
       .optional()
       .describe(
-        'Opaque token for the next page of periods — pass it back as `cursor`. Omitted when this is the last page.',
+        'Opaque token for the next page of periods — pass it back as `cursor`; it carries this forecast mode (hourly or 7-day). Omitted when this is the last page.',
       ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Set when periods remain beyond this page, or when the supplied cursor points past the end of the period array.',
+        'Set when the forecast data was last updated more than 24 hours ago (giving its age in hours), when periods remain beyond this page, or when the supplied cursor points past the end of the period array.',
       ),
   },
 
@@ -172,46 +226,68 @@ export const getForecastTool = tool('nws_get_forecast', {
   },
 
   async handler(input, ctx) {
-    const result = await getNwsService().getForecast(
-      input.latitude,
-      input.longitude,
-      input.hourly,
-      ctx,
-    );
+    // A blank cursor (form clients) is the first page. A token minted in one mode
+    // continues in it whatever `hourly` says; a 0.11.0 token has no mode and reads
+    // `hourly`.
+    const token = unsetIfBlank(input.cursor);
+    const cursor = token === undefined ? undefined : readCursor(token, ctx);
+    const hourly = cursor?.hourly ?? input.hourly;
+    const mode = hourly ? 'hourly' : '7-day';
 
-    const allPeriods = [...result.forecast.periods];
+    const result = await getNwsService().getForecast(input.latitude, input.longitude, hourly, ctx);
+
+    const allPeriods = result.forecast.periods;
     const totalCount = allPeriods.length;
 
     // One window over the fetched array feeds both the returned `periods`
     // (structuredContent) and format() — a single slice through the single
     // MAX_PERIODS constant, per issue #23. The cursor reaches the periods past
-    // it (issue #27) and carries its own page size, so the window stays
-    // MAX_PERIODS on every page.
-    const page = paginateArray(allPeriods, input.cursor, MAX_PERIODS, MAX_PERIODS, ctx);
+    // it (issue #27) and carries its own page size, held to MAX_PERIODS.
+    const offset = cursor?.offset ?? 0;
+    const limit = cursor?.limit ?? MAX_PERIODS;
+    const items = allPeriods.slice(offset, offset + limit);
+    const nextCursor =
+      offset + limit < totalCount
+        ? encodeCursor({ offset: offset + limit, limit, hourly })
+        : undefined;
 
     ctx.enrich({
       totalCount,
-      shown: page.items.length,
-      mode: input.hourly ? 'hourly' : '7-day',
-      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      shown: items.length,
+      mode,
+      ...(nextCursor ? { nextCursor } : {}),
     });
-    if (page.nextCursor) {
-      const lead = input.cursor
-        ? `Returning ${page.items.length} more of ${totalCount} forecast periods.`
-        : `Returning the first ${page.items.length} of ${totalCount} forecast periods to bound response size.`;
-      ctx.enrich.notice(
-        `${lead} Pass nextCursor back as cursor for the next window. Periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated array.`,
-      );
-    } else if (input.cursor && page.items.length === 0) {
-      ctx.enrich.notice(
-        `The cursor points past the end of this forecast's ${totalCount} periods. Call again without a cursor to restart from the first period.`,
-      );
+
+    // A grid whose office stops updating keeps its updateTime while generatedAt
+    // keeps advancing, so only updateTime tells a stale forecast apart.
+    const { updateTime } = result.forecast;
+    const updateAgeMs = updateTime === null ? undefined : Date.now() - Date.parse(updateTime);
+    const staleNotice =
+      updateAgeMs !== undefined && updateAgeMs > STALE_UPDATE_MS
+        ? `Forecast data was last updated ${Math.round(updateAgeMs / 360_000) / 10}h ago — NWS may have stopped updating this grid, so these periods may be out of date.`
+        : undefined;
+
+    let pagingNotice: string | undefined;
+    if (nextCursor) {
+      const lead = cursor
+        ? `Returning ${items.length} more of ${totalCount} forecast periods.`
+        : `Returning the first ${items.length} of ${totalCount} forecast periods to bound response size.`;
+      pagingNotice = `${lead} Pass nextCursor back as cursor for the next window. Periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated array.`;
+    } else if (cursor && items.length === 0) {
+      const restart = hourly
+        ? 'Call again with hourly: true and no cursor to restart from the first hourly period.'
+        : 'Call again with no cursor and hourly omitted or false to restart from the first 7-day period.';
+      pagingNotice = `The cursor points past the end of this ${mode} forecast's ${totalCount} periods. ${restart}`;
     }
+
+    const notice = composeNotice(staleNotice, pagingNotice);
+    if (notice) ctx.enrich.notice(notice);
 
     return {
       location: result.location,
       generatedAt: result.forecast.generatedAt,
-      periods: page.items.map((p) => ({
+      updateTime,
+      periods: items.map((p) => ({
         name: periodLabel(p.name, p.startTime, result.location.timeZone),
         startTime: p.startTime,
         endTime: p.endTime,
@@ -234,7 +310,7 @@ export const getForecastTool = tool('nws_get_forecast', {
     const lines = [
       `## Forecast for ${loc.city}, ${loc.state}`,
       `**Office:** ${loc.office} | **Time Zone:** ${loc.timeZone} | **Forecast Zone:** ${loc.forecastZone} | **County Zone:** ${loc.county}`,
-      `**Generated:** ${formatTimestamp(result.generatedAt, loc.timeZone)}`,
+      `**Generated:** ${formatTimestamp(result.generatedAt, loc.timeZone)} | **Updated:** ${result.updateTime === null ? 'not reported' : formatTimestamp(result.updateTime, loc.timeZone)}`,
       '',
     ];
 

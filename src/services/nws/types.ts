@@ -72,7 +72,8 @@ export interface ForecastPeriod {
 export interface ForecastResponse {
   readonly generatedAt: string;
   readonly periods: readonly ForecastPeriod[];
-  readonly updateTime: string;
+  /** Null when NWS omits it; the OpenAPI spec marks it optional. */
+  readonly updateTime: string | null;
 }
 
 /**
@@ -99,6 +100,26 @@ export interface AlertReference {
   readonly sent: string;
 }
 
+/** The CAP `parameters` hazard tags an alert can carry, under their NWS key names. */
+export const ALERT_HAZARD_KEYS = [
+  'maxHailSize',
+  'maxWindGust',
+  'hailThreat',
+  'windThreat',
+  'tornadoDetection',
+  'tornadoDamageThreat',
+  'thunderstormDamageThreat',
+  'flashFloodDetection',
+  'flashFloodDamageThreat',
+  'waterspoutDetection',
+  'eventMotionDescription',
+] as const;
+
+/** Hazard tags NWS sent, values verbatim; a key NWS did not send is absent, never null. */
+export type AlertHazard = {
+  readonly [K in (typeof ALERT_HAZARD_KEYS)[number]]?: string | undefined;
+};
+
 /** Active alert from /alerts/active. */
 export interface Alert {
   readonly affectedZones: readonly AffectedZone[];
@@ -110,10 +131,20 @@ export interface Alert {
   readonly ends: string | null;
   readonly event: string;
   readonly expires: string | null;
+  /** Null when NWS sends none of the hazard keys. */
+  readonly hazard: AlertHazard | null;
   readonly headline: string | null;
   readonly id: string;
   readonly instruction: string | null;
   readonly messageType: string;
+  /** CAP `NWSheadline`, distinct from `headline`. */
+  readonly nwsHeadline: string | null;
+  /**
+   * Issuing office code (`RIW`) from the WMO header's issuing centre — the code
+   * `nws_get_office_discussion` takes. Null for a centre with no office
+   * discussion, or a missing or malformed header.
+   */
+  readonly office: string | null;
   readonly onset: string | null;
   readonly references: readonly AlertReference[];
   readonly senderName: string;
@@ -121,6 +152,8 @@ export interface Alert {
   readonly severity: string;
   readonly status: string;
   readonly urgency: string;
+  /** Raw P-VTEC strings; empty when NWS sends none. */
+  readonly vtec: readonly string[];
 }
 
 /**
@@ -144,6 +177,12 @@ export interface Observation {
   readonly cloudLayers: readonly CloudLayer[];
   readonly dewpoint: NwsValue;
   readonly heatIndex: NwsValue;
+  /** mm, from the METAR 6-group on the 03/09/15/21 UTC reports; 0 is a trace, null no amount. */
+  readonly precipitationLast3Hours: NwsValue;
+  /** mm, from the METAR 6-group on the 00/06/12/18 UTC reports; 0 is a trace, null no amount. */
+  readonly precipitationLast6Hours: NwsValue;
+  /** mm, from the METAR P group; 0 is a trace, null no amount (the group is omitted when dry). */
+  readonly precipitationLastHour: NwsValue;
   readonly relativeHumidity: NwsValue;
   readonly stationId: string;
   readonly stationName: string;

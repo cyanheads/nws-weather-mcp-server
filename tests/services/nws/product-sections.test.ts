@@ -173,6 +173,53 @@ describe('partitionProduct — UGC segments', () => {
   });
 });
 
+describe('partitionProduct — FWF zone segments (issue #67)', () => {
+  it('splits an FWF into one segment per fire weather zone line, the discussion in the header', () => {
+    const { header, parts, trailer } = partitionFixture('riw-fwf');
+    expect(parts).toHaveLength(19);
+    expect(header.split('\n').slice(0, 10)).toEqual([
+      '',
+      '000',
+      'FNUS55 KRIW 230731',
+      'FWFRIW',
+      '',
+      'Fire Weather Planning Forecast for Western and Central Wyoming',
+      'National Weather Service Riverton WY',
+      '131 AM MDT Fri Oct 23 2026',
+      '',
+      '.DISCUSSION...',
+    ]);
+    expect(header).toContain('***RED FLAG WARNING FOR ZONE 281 ON FRIDAY FROM 12 PM TO 8 PM***');
+    expect(header).not.toMatch(/^WYZ\d{3}-/m);
+
+    const redFlag = parts.filter((part) => partMatches(part, 'WYZ281'));
+    expect(redFlag).toHaveLength(1);
+    expect(redFlag[0]).toMatchObject({ name: 'WYZ281', label: 'Johnson County/Casper BLM' });
+    expect(redFlag[0]?.text.split('\n')[0]).toBe('WYZ281-240945-');
+    expect(redFlag[0]?.text.endsWith('\n$$')).toBe(true);
+    expect(redFlag[0]?.text.match(/^\$\$/gm)).toHaveLength(1);
+    expect(trailer).toBe('');
+  });
+
+  it('keys an FWF range segment on every zone it covers', () => {
+    const { parts } = partitionFixture('bis-fwf');
+    expect(parts).toHaveLength(14);
+    const range = parts.filter((part) => partMatches(part, 'NDZ012'));
+    expect(range.map((part) => part.name)).toEqual(['NDZ003>005, NDZ011>013']);
+    expect(range[0]?.label).toBe('Renville-Bottineau-Rolette-Ward-McHenry-Pierce');
+    for (const code of ['NDZ003', 'NDZ004', 'NDZ005', 'NDZ011', 'NDZ013']) {
+      expect(partMatches(range[0] as ProductPart, code), code).toBe(true);
+    }
+    for (const code of ['NDZ006', 'NDZ010', 'NDZ014']) {
+      expect(partMatches(range[0] as ProductPart, code), code).toBe(false);
+    }
+    // NDZ010 sits in its own two-zone segment.
+    expect(parts.filter((part) => partMatches(part, 'NDZ010')).map((part) => part.name)).toEqual([
+      'NDZ009, NDZ010',
+    ]);
+  });
+});
+
 describe('partMatches — AFD names', () => {
   it('matches section names case- and spacing-insensitively', () => {
     const { parts } = partitionFixture('box-afd');
@@ -187,13 +234,16 @@ describe('partitionProduct — lossless over real products', () => {
   it.each([
     'afc-afd',
     'akq-zfp',
+    'bis-fwf',
     'box-afd',
     'key-zfp',
     'lot-hwo',
     'lox-afd',
     'otx-zfp',
+    'riw-fwf',
     'sew-zfp',
     'slc-afd',
+    'twc-fwf',
   ])('%s: header, parts, and trailer hold every non-blank line in order', (name) => {
     const product = loadProduct(name);
     const { header, parts, trailer } = partitionProduct(product.productText, product.productCode);

@@ -1,8 +1,11 @@
 /**
  * @fileoverview Serves a `limit` past a tool's per-page cap up to that cap and
- * discloses the clamp, for the tools that page a collection.
+ * discloses the clamp, and builds the rejection for a continuation token a tool
+ * did not mint, for the tools that page a collection.
  * @module mcp-server/tools/page-limit
  */
+
+import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
 
 /**
  * Hard ceiling on any `limit` input. It clears every collection these tools serve
@@ -34,6 +37,17 @@ export function clampPageLimit(requestedLimit: number, cap: number): PageLimit {
       notice: `Requested limit ${requestedLimit} exceeds the per-page cap of ${cap}; this page holds up to ${cap}.`,
     },
   };
+}
+
+/**
+ * The InvalidParams (`invalid_cursor`) a continuation token the tool would never
+ * mint fails with; `hint` tells the caller how to restart.
+ */
+export function invalidCursor(cursor: string, hint: string) {
+  return invalidParams(
+    'Invalid pagination cursor. The cursor may be corrupted or from a different tool.',
+    { cursor, reason: 'invalid_cursor', recovery: { hint } },
+  );
 }
 
 /** Join the notices a page owes into the one `notice` it carries, in order. */

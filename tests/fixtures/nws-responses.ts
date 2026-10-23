@@ -500,6 +500,337 @@ export const invalidAlertProblem = {
 export const AGED_OUT_ALERT_ID =
   'urn:oid:2.49.0.1.840.0.bdf719324e5ca7bfb4eaf558f9a6f22ccdc99157.001.1';
 
+/**
+ * `/alerts/active` features carrying the CAP `parameters` block NWS sends, one per
+ * issuing-centre case, captured 2026-10-21 to 2026-10-23 and trimmed (zones, long
+ * descriptions, area lists). In order: a Los Angeles/Oxnard Severe Thunderstorm
+ * Warning update with hazard tags and multi-line text (KLOX), a Riverton Red Flag
+ * Warning on a fire zone (KRIW), an Anchorage Gale Warning whose AWIPS suffix
+ * (`CWFALU`) is a product location code, not the office (PAFC), a Guam Special
+ * Weather Statement with no VTEC (PGUM), a San Juan Rip Current Statement (TJSJ),
+ * a National Tsunami Warning Center test warning (PAAQ), and the national
+ * heartbeat Test Message (KWBC). Every `parameters` value is an array of strings,
+ * as upstream sends it.
+ */
+export const capParametersAlertsResponse = {
+  features: [
+    {
+      properties: {
+        id: 'urn:oid:2.49.0.1.840.0.cab4a344f118cf1e73a7d5d40ac74841f2451c4f.001.1',
+        event: 'Severe Thunderstorm Warning',
+        headline:
+          'Severe Thunderstorm Warning issued October 22 at 10:17AM PDT until October 22 at 10:45AM PDT by NWS Los Angeles/Oxnard CA',
+        description:
+          'At 1017 AM PDT, a severe thunderstorm was located near Whittier,\nmoving northeast at 15 mph.\n\nHAZARD...60 mph wind gusts.\n\nSOURCE...Radar indicated.\n\nIMPACT...Expect damage to roofs, siding, and trees.\n\nLocations impacted include...\nAlhambra...\nSan Gabriel...\nMontebello...\nEl Monte...\nPico Rivera...\nMonterey Park...\nCommerce...\nand Temple City.',
+        instruction:
+          'Remain alert for a possible tornado! Tornadoes can develop quickly\nfrom severe thunderstorms. If you spot a tornado go at once into the\nbasement or small central room in a sturdy structure.\n\nFor your protection move to an interior room on the lowest floor of a\nbuilding.\n\nTorrential rainfall is occurring with this storm, and may lead to\nflash flooding. Do not drive your vehicle through flooded roadways.',
+        severity: 'Severe',
+        urgency: 'Immediate',
+        certainty: 'Observed',
+        areaDesc: 'Los Angeles, CA',
+        sent: '2026-10-22T10:17:00-07:00',
+        effective: '2026-10-22T10:17:00-07:00',
+        onset: '2026-10-22T10:17:00-07:00',
+        ends: '2026-10-22T10:45:00-07:00',
+        expires: '2026-10-22T10:45:00-07:00',
+        status: 'Actual',
+        messageType: 'Update',
+        references: [
+          capReference(
+            'urn:oid:2.49.0.1.840.0.88e383bb920de554bed73480eee0b8130f13d7c3.001.1',
+            '2026-10-22T10:00:00-07:00',
+          ),
+          capReference(
+            'urn:oid:2.49.0.1.840.0.59d0e7c6e80c1dede5c0c162ecfce2fea01c2b14.001.1',
+            '2026-10-22T10:11:00-07:00',
+          ),
+        ],
+        senderName: 'NWS Los Angeles/Oxnard CA',
+        affectedZones: ['https://api.weather.gov/zones/county/CAC037'],
+        parameters: {
+          AWIPSidentifier: ['SVSLOX'],
+          WMOidentifier: ['WWUS56 KLOX 221717'],
+          NWSheadline: [
+            'A SEVERE THUNDERSTORM WARNING REMAINS IN EFFECT UNTIL 1045 AM PDT FOR CENTRAL LOS ANGELES COUNTY',
+          ],
+          eventMotionDescription: [
+            '2026-10-22T17:17:00-00:00...storm...222DEG...11KT...34.0,-118.1',
+          ],
+          windThreat: ['RADAR INDICATED'],
+          maxWindGust: ['60 MPH'],
+          hailThreat: ['RADAR INDICATED'],
+          maxHailSize: ['Up to .75'],
+          tornadoDetection: ['POSSIBLE'],
+          BLOCKCHANNEL: ['EAS', 'NWEM', 'CMAS'],
+          'EAS-ORG': ['WXR'],
+          VTEC: ['/O.CON.KLOX.SV.W.0012.000000T0000Z-261022T1745Z/'],
+          eventEndingTime: ['2026-10-22T10:45:00-07:00'],
+        },
+      },
+    },
+    {
+      properties: {
+        id: 'urn:oid:2.49.0.1.840.0.2ce4fcc514bec93a5b6624623bc0eb5a6c6c2a88.001.1',
+        event: 'Red Flag Warning',
+        headline:
+          'Red Flag Warning issued October 22 at 10:45PM MDT until October 23 at 8:00PM MDT by NWS Riverton WY',
+        description:
+          '* IMPACTS: Low Humidities...Unseasonably Warm Temperatures...\nStrong Gusty Winds...and Wind Shift with a Cold Front could\ncause erratic fire behavior.\n\n* AFFECTED AREA:\nIn North Central WY...Fire Weather Zone 281.\n\n* COUNTIES AFFECTED:\nIn North Central WY...Johnson.\n\n* COLD FRONT: Moves in after 6 PM MDT Friday, with northwesterly 20\nto 30 mph winds and gusts up to 40 mph.\n\n* WIND: Southwest 30 to 40 mph with gusts up to 55 mph.\n\n* HUMIDITY: As low as 20 percent.\n\n* TEMPERATURES: Highs in the upper 60s.',
+        instruction:
+          'A Red Flag Warning means that critical fire weather conditions are\neither occurring now....or will shortly. A combination of strong\nwinds...low relative humidity...and warm temperatures can\ncontribute to extreme fire behavior.',
+        severity: 'Severe',
+        urgency: 'Expected',
+        certainty: 'Likely',
+        areaDesc: 'Johnson County/Casper BLM',
+        sent: '2026-10-22T22:45:00-06:00',
+        effective: '2026-10-22T22:45:00-06:00',
+        onset: '2026-10-23T12:00:00-06:00',
+        ends: '2026-10-23T20:00:00-06:00',
+        expires: '2026-10-23T20:00:00-06:00',
+        status: 'Actual',
+        messageType: 'Update',
+        references: [
+          capReference(
+            'urn:oid:2.49.0.1.840.0.df4580455977900e0a0e8e0a209e72dc934daefd.001.1',
+            '2026-10-22T11:31:00-06:00',
+          ),
+        ],
+        senderName: 'NWS Riverton WY',
+        affectedZones: ['https://api.weather.gov/zones/fire/WYZ281'],
+        parameters: {
+          AWIPSidentifier: ['RFWRIW'],
+          WMOidentifier: ['WWUS85 KRIW 230445'],
+          NWSheadline: ['RED FLAG WARNING REMAINS IN EFFECT FROM NOON TO 8 PM MDT FRIDAY'],
+          BLOCKCHANNEL: ['EAS', 'NWEM', 'CMAS'],
+          VTEC: ['/O.CON.KRIW.FW.W.0031.261023T1800Z-261024T0200Z/'],
+          eventEndingTime: ['2026-10-23T20:00:00-06:00'],
+        },
+      },
+    },
+    {
+      properties: {
+        id: 'urn:oid:2.49.0.1.840.0.2cb28f3aa95880d0ef96dba70f5851dd87ab8d56.007.1',
+        event: 'Gale Warning',
+        headline:
+          'Gale Warning issued October 22 at 4:20PM AKDT until October 24 at 5:00AM AKDT by NWS Anchorage AK',
+        description:
+          'Coastal Waters Forecast for Southwest Alaska+Bristol Bay+The\nAlaska Peninsula Waters and the Aleutian Islands up to 100 nm out.',
+        instruction: null,
+        severity: 'Moderate',
+        urgency: 'Expected',
+        certainty: 'Likely',
+        areaDesc: 'Cape Tolstoi to Unalga Pass from 15 to 100 NM',
+        sent: '2026-10-22T16:20:00-08:00',
+        effective: '2026-10-22T16:20:00-08:00',
+        onset: '2026-10-23T05:00:00-08:00',
+        ends: '2026-10-24T05:00:00-08:00',
+        expires: '2026-10-23T05:00:00-08:00',
+        status: 'Actual',
+        messageType: 'Alert',
+        references: [],
+        senderName: 'NWS Anchorage AK',
+        affectedZones: ['https://api.weather.gov/zones/forecast/PKZ755'],
+        parameters: {
+          AWIPSidentifier: ['CWFALU'],
+          WMOidentifier: ['FZAK52 PAFC 230020'],
+          NWSheadline: ['GALE WARNING FRIDAY AND FRIDAY NIGHT'],
+          BLOCKCHANNEL: ['EAS', 'NWEM', 'CMAS'],
+          VTEC: ['/O.NEW.PAFC.GL.W.1538.261023T1300Z-261024T1300Z/'],
+          eventEndingTime: ['2026-10-24T05:00:00-08:00'],
+        },
+      },
+    },
+    {
+      properties: {
+        id: 'urn:oid:2.49.0.1.840.0.9c3310fec5c93b7d3cd8f1a12adeeb235ec92683.001.1',
+        event: 'Special Weather Statement',
+        headline: 'Special Weather Statement issued October 23 at 12:32PM ChST by NWS Tiyan GU',
+        description:
+          'Invest 97W continues to develop over the northern Marshall Islands,\ncentered near 11N166E in the vicinity of Bikini and Rongelap Atolls.',
+        instruction: null,
+        severity: 'Moderate',
+        urgency: 'Expected',
+        certainty: 'Observed',
+        areaDesc: 'Majuro Coastal Waters',
+        sent: '2026-10-23T12:32:00+10:00',
+        effective: '2026-10-23T12:32:00+10:00',
+        onset: '2026-10-23T12:32:00+10:00',
+        ends: null,
+        expires: '2026-10-24T12:45:00+10:00',
+        status: 'Actual',
+        messageType: 'Alert',
+        references: [],
+        senderName: 'NWS Tiyan GU',
+        affectedZones: ['https://api.weather.gov/zones/forecast/PMZ181'],
+        parameters: {
+          AWIPSidentifier: ['SPSPQ1'],
+          WMOidentifier: ['WWPQ81 PGUM 230232'],
+          NWSheadline: [
+            'INVEST 97W DEVELOPING OVER THE NORTHERN MARSHALL ISLANDS, NOW THE SUBJECT OF A TROPICAL CYCLONE FORMATION ALERT... ...LOCALLY HEAVY SHOWERS, SURGING WEST WINDS AND SWELL EXPECTED',
+          ],
+          BLOCKCHANNEL: ['EAS', 'NWEM', 'CMAS'],
+          'EAS-ORG': ['WXR'],
+        },
+      },
+    },
+    {
+      properties: {
+        id: 'urn:oid:2.49.0.1.840.0.616e50a11b003bb49e6b0fbe4fd5c3d62207a090.001.2',
+        event: 'Rip Current Statement',
+        headline:
+          'Rip Current Statement issued October 23 at 3:40AM AST until October 24 at 6:00PM AST by NWS San Juan PR',
+        description:
+          '* WHAT...For the High Surf Advisory, large breaking waves of 8 to\n12 feet. For the HIGH RIP CURRENT RISK, life-threatening rip\ncurrent.',
+        instruction:
+          'A High Surf Advisory means that high surf will affect beaches in\nthe advisory area, producing localized beach erosion and\ndangerous swimming conditions.',
+        severity: 'Moderate',
+        urgency: 'Expected',
+        certainty: 'Likely',
+        areaDesc: 'San Juan and Vicinity; Northeast',
+        sent: '2026-10-23T03:40:00-04:00',
+        effective: '2026-10-23T03:40:00-04:00',
+        onset: '2026-10-23T03:40:00-04:00',
+        ends: '2026-10-24T18:00:00-04:00',
+        expires: '2026-10-23T11:45:00-04:00',
+        status: 'Actual',
+        messageType: 'Update',
+        references: [
+          capReference(
+            'urn:oid:2.49.0.1.840.0.3be72587a8cbc8b9f87ff357b4707721a099222e.001.2',
+            '2026-10-22T21:44:00-04:00',
+          ),
+        ],
+        senderName: 'NWS San Juan PR',
+        affectedZones: [
+          'https://api.weather.gov/zones/forecast/PRZ001',
+          'https://api.weather.gov/zones/forecast/PRZ002',
+        ],
+        parameters: {
+          AWIPSidentifier: ['CFWSJU'],
+          WMOidentifier: ['WHCA42 TJSJ 230740'],
+          NWSheadline: [
+            'HIGH RIP CURRENT RISK REMAINS IN EFFECT THROUGH SATURDAY AFTERNOON... ...HIGH SURF ADVISORY REMAINS IN EFFECT UNTIL 6 PM AST THIS EVENING',
+          ],
+          BLOCKCHANNEL: ['EAS', 'NWEM', 'CMAS'],
+          VTEC: ['/O.CON.TJSJ.RP.S.0023.000000T0000Z-261024T2200Z/'],
+          eventEndingTime: ['2026-10-24T18:00:00-04:00'],
+        },
+      },
+    },
+    {
+      properties: {
+        id: 'urn:oid:2.49.0.1.840.0.e44842d243e6e042fdae8d0d467b041c4c4f98fc.001.1',
+        event: 'Tsunami Warning',
+        headline:
+          'TEST Tsunami Warning issued October 21 at 9:31AM PDT until October 21 at 10:31AM PDT by NWS National Tsunami Warning Center',
+        description:
+          '/T.NEW.PAAQ.TS.W.9018.261021T1631Z-261021T1731Z/\nAlaska, British Columbia, Washington, Oregon and California\ncoastal areas',
+        instruction: null,
+        severity: 'Extreme',
+        urgency: 'Immediate',
+        certainty: 'Likely',
+        areaDesc:
+          'San Pablo Bay, Suisun Bay, the West Delta and  the San Francisco Bay north of the Bay Bridge; San Francisco Bay South of the Bay Bridge',
+        sent: '2026-10-21T09:31:00-07:00',
+        effective: '2026-10-21T09:31:00-07:00',
+        onset: '2026-10-21T09:31:00-07:00',
+        ends: '2026-10-21T10:31:00-07:00',
+        expires: '2026-10-21T10:31:00-07:00',
+        status: 'Test',
+        messageType: 'Alert',
+        references: [],
+        senderName: 'NWS National Tsunami Warning Center',
+        affectedZones: [
+          'https://api.weather.gov/zones/forecast/PZZ530',
+          'https://api.weather.gov/zones/forecast/PZZ531',
+        ],
+        parameters: {
+          AWIPSidentifier: ['TSUWCA'],
+          WMOidentifier: ['WEPA41 PAAQ 211631'],
+          BLOCKCHANNEL: ['EAS', 'NWEM', 'CMAS'],
+          'EAS-ORG': ['WXR'],
+          VTEC: ['/T.NEW.PAAQ.TS.W.9018.261021T1631Z-261021T1731Z/'],
+          eventEndingTime: ['2026-10-21T10:31:00-07:00'],
+        },
+      },
+    },
+    {
+      properties: {
+        id: 'urn:oid:2.49.0.1.840.0-KEEPALIVE-38770',
+        event: 'Test Message',
+        headline: null,
+        description: 'Monitoring message only. Please disregard.',
+        instruction: 'Monitoring message only. Please disregard.',
+        severity: 'Unknown',
+        urgency: 'Unknown',
+        certainty: 'Unknown',
+        areaDesc: 'Montgomery',
+        sent: '2026-10-23T08:24:58+00:00',
+        effective: '2026-10-23T08:24:58+00:00',
+        onset: null,
+        ends: null,
+        expires: '2026-10-23T08:34:58+00:00',
+        status: 'Test',
+        messageType: 'Alert',
+        references: [],
+        senderName: 'NWS',
+        affectedZones: ['https://api.weather.gov/zones/county/MDC031'],
+        parameters: {
+          AWIPSidentifier: ['KEPWBC'],
+          WMOidentifier: ['NZUS91 KWBC 230824'],
+          BLOCKCHANNEL: ['CMAS', 'EAS', 'NWEM'],
+        },
+      },
+    },
+  ],
+};
+
+/** A Bismarck Red Flag Warning on two fire zones, live on /alerts/active when captured (2026-10-23). */
+export const RED_FLAG_ALERT_ID =
+  'urn:oid:2.49.0.1.840.0.de4732c59e7bc6d4d632cd8dab12abda0c0ee86b.001.1';
+
+/** `/alerts/{RED_FLAG_ALERT_ID}` — the single GeoJSON Feature, description trimmed. */
+export const redFlagAlertFeature = {
+  id: `https://api.weather.gov/alerts/${RED_FLAG_ALERT_ID}`,
+  type: 'Feature',
+  geometry: null,
+  properties: {
+    id: RED_FLAG_ALERT_ID,
+    event: 'Red Flag Warning',
+    headline:
+      'Red Flag Warning issued October 23 at 1:03AM CDT until October 23 at 9:00PM CDT by NWS Bismarck ND',
+    description:
+      '...RED FLAG WARNING IN EFFECT FROM NOON TO 8 PM MDT FRIDAY DUE TO\nWIND AND LOW RELATIVE HUMIDITY FOR SLOPE AND BOWMAN COUNTIES...\n\n* AFFECTED AREA...Slope and Bowman.\n\n* TIMING...From noon to 8 PM MDT Friday.',
+    instruction:
+      'A Red Flag Warning means that critical fire weather conditions are\neither occurring now, or will shortly. A combination of strong winds,\nlow relative humidity and warm temperatures can contribute to extreme\nfire behavior.',
+    severity: 'Severe',
+    urgency: 'Expected',
+    certainty: 'Likely',
+    areaDesc: 'Slope; Bowman',
+    sent: '2026-10-23T01:03:00-05:00',
+    effective: '2026-10-23T01:03:00-05:00',
+    onset: '2026-10-23T13:00:00-05:00',
+    ends: '2026-10-23T21:00:00-05:00',
+    expires: '2026-10-23T09:15:00-05:00',
+    status: 'Actual',
+    messageType: 'Alert',
+    references: [],
+    senderName: 'NWS Bismarck ND',
+    affectedZones: [
+      'https://api.weather.gov/zones/fire/NDZ040',
+      'https://api.weather.gov/zones/fire/NDZ043',
+    ],
+    parameters: {
+      AWIPSidentifier: ['RFWBIS'],
+      WMOidentifier: ['WWUS83 KBIS 230603'],
+      NWSheadline: ['RED FLAG WARNING IN EFFECT FROM NOON TO 8 PM MDT FRIDAY'],
+      BLOCKCHANNEL: ['EAS', 'NWEM', 'CMAS'],
+      VTEC: ['/O.NEW.KBIS.FW.W.0019.261023T1800Z-261024T0200Z/'],
+      eventEndingTime: ['2026-10-23T21:00:00-05:00'],
+    },
+  },
+};
+
 /** Mock /alerts/types response */
 export const alertTypesResponse = {
   '@context': [],
@@ -554,6 +885,10 @@ export const observationResponse = {
     heatIndex: { value: null, unitCode: 'wmoUnit:degC' },
     windChill: { value: null, unitCode: 'wmoUnit:degC' },
     cloudLayers: [{ base: { value: 1524, unitCode: 'wmoUnit:m' }, amount: 'BKN' }],
+    // A dry hourly METAR carries all three amounts with a null value (no P or 6-group).
+    precipitationLastHour: { value: null, unitCode: 'wmoUnit:mm' },
+    precipitationLast3Hours: { value: null, unitCode: 'wmoUnit:mm' },
+    precipitationLast6Hours: { value: null, unitCode: 'wmoUnit:mm' },
   },
 };
 

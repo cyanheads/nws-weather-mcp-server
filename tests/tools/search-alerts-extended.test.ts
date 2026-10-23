@@ -7,11 +7,15 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
+import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AlertSearchResult } from '@/services/nws/nws-service.js';
+import type { AlertSearchResult, NwsService } from '@/services/nws/nws-service.js';
 
-const mockSearchAlerts = vi.fn<() => Promise<AlertSearchResult>>();
+/** The filters the tool hands the service, as the service declares them. */
+type SearchParams = Parameters<NwsService['searchAlerts']>[0];
+
+const mockSearchAlerts =
+  vi.fn<(params: SearchParams, ctx: unknown) => Promise<AlertSearchResult>>();
 
 vi.mock('@/services/nws/nws-service.js', () => ({
   getNwsService: () => ({ searchAlerts: mockSearchAlerts }),
@@ -46,6 +50,10 @@ function makeAlert(overrides: Partial<AlertOutput> = {}): AlertOutput {
     references: [],
     senderName: 'NWS Norman OK',
     affectedZones: [{ code: 'OKZ027', type: 'forecast' }],
+    office: null,
+    vtec: [],
+    nwsHeadline: null,
+    hazard: null,
     ...overrides,
   };
 }
@@ -427,7 +435,6 @@ describe('nws_search_alerts extended', () => {
           urgency: undefined,
           certainty: undefined,
           status: 'Actual',
-          limit: 25,
         },
         ctx,
       );
@@ -1080,12 +1087,13 @@ describe('nws_search_alerts extended', () => {
       expect(enrichment.shown).toBe(25);
     });
 
-    it('keeps cursor out of the applied-filters echo (it shapes the response, not the query)', async () => {
+    it('keeps cursor out of the applied-filters echo (it carries the query, and the echo names that query)', async () => {
       mockSearchAlerts.mockResolvedValue(alertList(73));
 
       const first = await page(25);
       const second = await page(25, first.enrichment.nextCursor as string);
 
+      // The continued page echoes the national query the token carries, never the token itself.
       expect(second.enrichment.appliedFilters).toBe('national (no filters)');
     });
 
@@ -1127,6 +1135,281 @@ describe('nws_search_alerts extended', () => {
       expect(text).toContain('urn:test:049');
       expect(text).not.toContain('urn:test:024');
       expect(text).not.toContain('urn:test:050');
+    });
+  });
+
+  describe('query-carrying cursor (issue #63)', () => {
+    type Surfaces = {
+      data: Record<string, unknown> & { alerts: { id: string }[] };
+      text: string;
+    };
+
+    /** `count` distinguishable alerts whose ids carry `prefix`. */
+    function alertSet(prefix: string, count: number): AlertSearchResult {
+      return {
+        alerts: Array.from({ length: count }, (_, index) =>
+          makeAlert({ id: `urn:${prefix}:${String(index).padStart(3, '0')}` }),
+        ),
+      };
+    }
+
+    const PA = alertSet('pa', 29);
+    const AK = alertSet('ak', 31);
+    const NATIONAL = alertSet('us', 47);
+
+    /** Answer each query with its own match set, as /alerts/active does. */
+    function serveByQuery() {
+      mockSearchAlerts.mockImplementation(async (params) => {
+        if (params.region?.includes('PA')) return PA;
+        if (params.area === 'AK') return AK;
+        return NATIONAL;
+      });
+    }
+
+    /** One call through the production parse, returning both client surfaces. */
+    async function call(args: Record<string, unknown>): Promise<Surfaces> {
+      const result = await runToolContract(searchAlertsTool, args);
+      expect(result.isError).toBeFalsy();
+      return {
+        data: result.structuredContent as Surfaces['data'],
+        text: result.content.map((block) => (block as { text: string }).text).join('\n'),
+      };
+    }
+
+    const ids = (surfaces: Surfaces) => surfaces.data.alerts.map((alert) => alert.id);
+    const lastParams = () => mockSearchAlerts.mock.calls.at(-1)?.[0];
+
+    it('mints a token carrying the normalized filters with the next offset and applied page size', async () => {
+      serveByQuery();
+
+      const first = await call({ region: ['PA'], event: [' wind ', ''], limit: 3 });
+
+      expect(first.data).toMatchObject({
+        totalCount: 29,
+        shown: 3,
+        appliedFilters: 'region=PA, event=wind',
+      });
+      const token = decodeCursor(first.data.nextCursor as string, createMockContext());
+      expect(token).toEqual({
+        offset: 3,
+        limit: 3,
+        filters: { region: ['PA'], event: ['wind'], status: 'Actual' },
+      });
+    });
+
+    it('continues the minting query when the cursor is sent alone', async () => {
+      serveByQuery();
+
+      const first = await call({ region: ['PA'], limit: 3 });
+      const second = await call({ cursor: first.data.nextCursor });
+
+      expect(ids(second)).toEqual(['urn:pa:003', 'urn:pa:004', 'urn:pa:005']);
+      expect(second.data).toMatchObject({
+        totalCount: first.data.totalCount,
+        appliedFilters: first.data.appliedFilters,
+        shown: 3,
+      });
+      expect(second.data.appliedFilters).toBe('region=PA');
+      expect(lastParams()).toMatchObject({ region: ['PA'], status: 'Actual' });
+      expect(second.text).toContain('**Filters:** region=PA');
+    });
+
+    it('ignores filter inputs sent with a query-carrying cursor', async () => {
+      serveByQuery();
+
+      const first = await call({ region: ['PA'], limit: 3 });
+      const second = await call({ area: 'AK', severity: ['Minor'], cursor: first.data.nextCursor });
+
+      expect(ids(second)).toEqual(['urn:pa:003', 'urn:pa:004', 'urn:pa:005']);
+      expect(second.data.appliedFilters).toBe('region=PA');
+      expect(second.data.totalCount).toBe(29);
+      const params = lastParams();
+      expect(params).toMatchObject({ region: ['PA'] });
+      expect(params?.area).toBeUndefined();
+      expect(params?.severity).toBeUndefined();
+    });
+
+    it('returns the same page as before when the same filters are resent with the cursor (regression)', async () => {
+      serveByQuery();
+
+      const first = await call({ region: ['PA'], limit: 3 });
+      const alone = await call({ cursor: first.data.nextCursor });
+      const resent = await call({ region: ['PA'], cursor: first.data.nextCursor });
+
+      expect(ids(resent)).toEqual(['urn:pa:003', 'urn:pa:004', 'urn:pa:005']);
+      expect(resent.data).toEqual(alone.data);
+    });
+
+    it('walks every page of a filtered query with the cursor alone, with no overlap and no gaps', async () => {
+      serveByQuery();
+
+      const seen: string[] = [];
+      const sizes: number[] = [];
+      let surfaces = await call({ region: ['PA'], limit: 10 });
+      for (;;) {
+        seen.push(...ids(surfaces));
+        sizes.push(surfaces.data.alerts.length);
+        expect(surfaces.data.appliedFilters).toBe('region=PA');
+        const next = surfaces.data.nextCursor as string | undefined;
+        if (!next) break;
+        surfaces = await call({ cursor: next });
+      }
+
+      expect(sizes).toEqual([10, 10, 9]);
+      expect(seen).toEqual(PA.alerts.map((alert) => alert.id));
+    });
+
+    it('resumes a 0.11.0 {offset, limit} token against the filters sent with it (regression)', async () => {
+      serveByQuery();
+      const legacy = encodeCursor({ offset: 3, limit: 3 });
+
+      const withFilters = await call({ region: ['PA'], cursor: legacy });
+      const otherQuery = await call({ area: 'AK', cursor: legacy });
+      const alone = await call({ cursor: legacy });
+
+      expect(ids(withFilters)).toEqual(['urn:pa:003', 'urn:pa:004', 'urn:pa:005']);
+      expect(withFilters.data.appliedFilters).toBe('region=PA');
+      expect(ids(otherQuery)).toEqual(['urn:ak:003', 'urn:ak:004', 'urn:ak:005']);
+      expect(otherQuery.data.appliedFilters).toBe('area=AK');
+      expect(ids(alone)).toEqual(['urn:us:003', 'urn:us:004', 'urn:us:005']);
+      expect(alone.data.appliedFilters).toBe('national (no filters)');
+      // A legacy token's next page is minted in the new shape, carrying the sent filters.
+      expect(decodeCursor(withFilters.data.nextCursor as string, createMockContext())).toEqual({
+        offset: 6,
+        limit: 3,
+        filters: { region: ['PA'], status: 'Actual' },
+      });
+    });
+
+    it('serves a carried page size above the cap as 25 (regression)', async () => {
+      serveByQuery();
+
+      const surfaces = await call({
+        cursor: encodeCursor({
+          offset: 0,
+          limit: 1000,
+          filters: { region: ['PA'], status: 'Actual' },
+        }),
+      });
+
+      expect(surfaces.data.alerts).toHaveLength(25);
+      expect(surfaces.data.appliedFilters).toBe('region=PA');
+      expect(surfaces.data).not.toHaveProperty('requestedLimit');
+      expect(decodeCursor(surfaces.data.nextCursor as string, createMockContext())).toMatchObject({
+        offset: 25,
+        limit: 25,
+      });
+    });
+
+    it('names the cursor’s filters in the past-end notice, with a restart that resends them', async () => {
+      serveByQuery();
+
+      const surfaces = await call({
+        area: 'AK',
+        cursor: encodeCursor({
+          offset: 500,
+          limit: 3,
+          filters: { region: ['PA'], status: 'Actual' },
+        }),
+      });
+
+      expect(surfaces.data.alerts).toHaveLength(0);
+      expect(surfaces.data).not.toHaveProperty('nextCursor');
+      const notice =
+        'The cursor points past the end of the 29 alerts matching: region=PA. To restart from the first match, call again with those filters, limit 3, and no cursor.';
+      expect(surfaces.data.notice).toBe(notice);
+      expect(surfaces.text).toContain(notice);
+    });
+
+    it('keeps the national past-end restart to a call without a cursor', async () => {
+      serveByQuery();
+
+      const surfaces = await call({ cursor: encodeCursor({ offset: 500, limit: 3 }) });
+
+      expect(surfaces.data.notice).toBe(
+        'The cursor points past the end of the 47 alerts matching: national (no filters). Call again with limit 3 and no cursor to restart from the first match.',
+      );
+    });
+
+    it('normalizes carried filters the way it normalizes the inputs', async () => {
+      serveByQuery();
+
+      const surfaces = await call({
+        cursor: encodeCursor({
+          offset: 0,
+          limit: 3,
+          filters: { area: ' ak ', point: '', event: ['', ' wind '] },
+        }),
+      });
+
+      expect(ids(surfaces)).toEqual(['urn:ak:000', 'urn:ak:001', 'urn:ak:002']);
+      expect(surfaces.data.appliedFilters).toBe('area=AK, event=wind');
+      expect(lastParams()).toMatchObject({ area: 'AK', event: ['wind'], status: 'Actual' });
+      expect(lastParams()?.point).toBeUndefined();
+    });
+
+    it.each([
+      ['an empty string', ''],
+      ['whitespace only', '   '],
+    ])('treats a cursor that is %s as the first page', async (_label, cursor) => {
+      serveByQuery();
+
+      const surfaces = await call({ region: ['PA'], limit: 3, cursor });
+
+      expect(ids(surfaces)).toEqual(['urn:pa:000', 'urn:pa:001', 'urn:pa:002']);
+      expect(surfaces.data.appliedFilters).toBe('region=PA');
+    });
+
+    const filters = (carried: Record<string, unknown>) =>
+      encodeCursor({ offset: 3, limit: 3, filters: carried });
+
+    it.each([
+      ['a malformed token', 'not-a-real-cursor'],
+      ['a fractional offset', encodeCursor({ offset: 1.5, limit: 3 })],
+      ['a fractional limit', encodeCursor({ offset: 3, limit: 0.5 })],
+      ['a fractional limit with filters', encodeCursor({ offset: 3, limit: 2.5, filters: {} })],
+      [
+        'filters that are not an object',
+        encodeCursor({ offset: 3, limit: 3, filters: 'region=PA' }),
+      ],
+      ['filters that are an array', encodeCursor({ offset: 3, limit: 3, filters: ['PA'] })],
+      ['two location filters', filters({ area: 'WA', point: '47.6,-122.3' })],
+      ['region_type beside region', filters({ region_type: 'Land', region: ['PA'] })],
+      ['an unknown area code', filters({ area: 'ZZ' })],
+      ['a malformed point', filters({ point: '47.6,' })],
+      ['a point out of bounds', filters({ point: '91,0' })],
+      ['a zone with an unknown prefix', filters({ zone: 'QQZ123' })],
+      ['an unknown severity', filters({ severity: ['Bogus'] })],
+      ['an unknown marine region', filters({ region: ['XX'] })],
+      ['an unknown status', filters({ status: 'Nope' })],
+      ['an event that is not a list', filters({ event: 'tornado' })],
+      // The filter inputs reject an unknown key, so a carried one is refused too.
+      ['an unknown filter key', filters({ region: ['PA'], constructor: 'x' })],
+      [
+        'a __proto__ filter key',
+        Buffer.from('{"offset":3,"limit":3,"filters":{"__proto__":{"zone":".."}}}').toString(
+          'base64url',
+        ),
+      ],
+    ])('rejects %s as invalid_cursor before any NWS request', async (_label, cursor) => {
+      serveByQuery();
+
+      const result = await runToolContract(searchAlertsTool, { region: ['PA'], cursor });
+      const { error } = result.structuredContent as {
+        error: { code: number; data?: { reason?: string } };
+      };
+
+      expect(result.isError).toBe(true);
+      expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(error.data?.reason).toBe('invalid_cursor');
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('says in the cursor description that the token carries the query and page size', () => {
+      const { description } = searchAlertsTool.input.shape.cursor;
+
+      expect(description).toMatch(/carries (?:the|that) query's filters and page size/);
+      expect(description).toMatch(/first page only/);
     });
   });
 

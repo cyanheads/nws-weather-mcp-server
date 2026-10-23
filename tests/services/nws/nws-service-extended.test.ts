@@ -114,9 +114,20 @@ describe('NwsService extended', () => {
       const ctx = createMockContext({ tenantId: 'test' });
       const result = service.getNwsService().getOfficeDiscussion('BOGUS', 'AFD', ctx);
 
-      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
-      await expect(result).rejects.toThrow('No AFD products found for office "BOGUS"');
-      await expect(result).rejects.toThrow('Verify the 3-letter WFO code');
+      await expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        data: {
+          reason: 'no_products',
+          recovery: {
+            hint: 'Use nws_get_forecast with coordinates to find the office code (the "office" field in the location object), then retry with that value.',
+          },
+        },
+      });
+      // The message names the field nws_get_forecast actually returns (issue #69).
+      const { message } = (await result.catch((e: unknown) => e)) as Error;
+      expect(message).toBe(
+        'No AFD products found for office "BOGUS". Verify the 3-letter WFO code (e.g., "SEW" for Seattle). The office code is the "location.office" field of nws_get_forecast output.',
+      );
     });
 
     it('throws no-current-product when an empty @graph follows a 200 office probe', async () => {
@@ -198,6 +209,59 @@ describe('NwsService extended', () => {
           );
         },
       );
+
+      it('says an office with no FWF on file issues none, naming no alternate location code (issue #67)', async () => {
+        routeEmptyList('AFC', 'FWF');
+        const ctx = createMockContext({ tenantId: 'test' });
+        const error = (await service
+          .getNwsService()
+          .getOfficeDiscussion('AFC', 'FWF', ctx)
+          .catch((e: unknown) => e)) as { message: string; data: Record<string, unknown> };
+
+        expect(error).toMatchObject({
+          code: JsonRpcErrorCode.NotFound,
+          data: { reason: 'no_products', office: 'AFC', productType: 'FWF' },
+        });
+        expect(error.message).toBe(
+          'Office "AFC" has no FWF (Fire Weather Planning Forecast) on file — not every Weather Forecast Office issues one.',
+        );
+        // Unlike the AFD/ZFP hint above, it names no alternate location code.
+        expect((error.data.recovery as { hint: string }).hint).toBe(
+          'Retry with product_type "AFD" for this office\'s forecast discussion. For a fire zone from an alert, use the office in that alert\'s "office" field with product_type "FWF".',
+        );
+      });
+    });
+
+    it('fetches the latest FWF from the office product list (issue #67)', async () => {
+      mockFetch.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === 'https://api.weather.gov/products/types/FWF/locations/RIW') {
+          return jsonResponse({ '@graph': [{ id: 'fwf-riw-1', productCode: 'FWF' }] });
+        }
+        if (url === 'https://api.weather.gov/products/fwf-riw-1') {
+          return jsonResponse({
+            ...productDetailResponse,
+            issuingOffice: 'KRIW',
+            productCode: 'FWF',
+            productName: 'Routine Fire Wx Fcst (With/Without 6-10 Day Outlook)',
+            productText: 'FNUS55 KRIW 230731\nFWFRIW\n\n.DISCUSSION...',
+            wmoCollectiveId: 'FNUS55',
+          });
+        }
+        throw new Error(`unmocked fetch: ${url}`);
+      });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = await service.getNwsService().getOfficeDiscussion('RIW', 'FWF', ctx);
+      expect(result).toMatchObject({
+        productCode: 'FWF',
+        issuingOffice: 'KRIW',
+        productText: 'FNUS55 KRIW 230731\nFWFRIW\n\n.DISCUSSION...',
+      });
+      expect(mockFetch.mock.calls.map(([url]) => String(url))).toEqual([
+        'https://api.weather.gov/products/types/FWF/locations/RIW',
+        'https://api.weather.gov/products/fwf-riw-1',
+      ]);
     });
 
     it('treats a missing @graph key the same as an empty one (probes the office)', async () => {
@@ -362,6 +426,24 @@ describe('NwsService extended', () => {
       expect(error.data?.recovery?.hint).toMatch(/type.*forecast/i);
       // The message names the same discriminator, for clients that read only it.
       expect(error.message).toMatch(/type "forecast"/i);
+    });
+
+    it('routes a fire zone code to the office FWF in its message (issue #67)', async () => {
+      const { getZoneForecastTool } = await import(
+        '@/mcp-server/tools/definitions/get-zone-forecast.tool.js'
+      );
+      mockFetch.mockImplementation(async () => jsonResponse({}, 404));
+
+      const result = await runToolContract(getZoneForecastTool, { zone_id: 'WYZ281' });
+      const { error } = result.structuredContent as {
+        error: { data?: { reason?: string }; message: string };
+      };
+
+      expect(result.isError).toBe(true);
+      expect(error.data?.reason).toBe('zone_not_found');
+      expect(error.message).toBe(
+        'Zone "WYZ281" is not an NWS forecast zone. Provide a forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county zones have no text forecast product. A fire zone from an alert has its forecast in a segment of the office\'s Fire Weather Planning Forecast: call nws_get_office_discussion with office set to the alert\'s "office" field, product_type "FWF", and sections set to the zone code.',
+      );
     });
 
     it('retries on transient 500 and succeeds', async () => {

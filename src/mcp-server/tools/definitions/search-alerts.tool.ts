@@ -3,12 +3,18 @@
  * @module mcp-server/tools/definitions/search-alerts
  */
 
-import { tool, z } from '@cyanheads/mcp-ts-core';
+import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
+import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { alertMarkdownLines, alertOutputSchema, toAlertOutput } from '../alert-output.js';
-import { clampPageLimit, composeNotice, LIMIT_CEILING, type PageLimit } from '../page-limit.js';
+import {
+  clampPageLimit,
+  composeNotice,
+  invalidCursor,
+  LIMIT_CEILING,
+  type PageLimit,
+} from '../page-limit.js';
 import { unsetIfBlank } from '../unset-if-blank.js';
 
 /**
@@ -149,23 +155,26 @@ const VALID_AREA_CODES = new Set([
   'SL',
 ]);
 
+/** The applied-filters echo of a search with no filters. */
+const NATIONAL_SEARCH = 'national (no filters)';
+
 /**
  * Build a human-readable summary of the applied search filters from the
- * normalized input, where a blank string or empty array is already unset.
+ * normalized filters, where a blank string or empty array is already unset.
  */
-function describeFilters(input: SearchAlertsInput): string {
+function describeFilters(filters: SearchFilters): string {
   const parts: string[] = [];
-  if (input.area) parts.push(`area=${input.area}`);
-  if (input.point) parts.push(`point=${input.point}`);
-  if (input.zone) parts.push(`zone=${input.zone}`);
-  if (input.region_type) parts.push(`region_type=${input.region_type}`);
-  if (input.region) parts.push(`region=${input.region.join(', ')}`);
-  if (input.event) parts.push(`event=${input.event.join(', ')}`);
-  if (input.severity) parts.push(`severity=${input.severity.join(', ')}`);
-  if (input.urgency) parts.push(`urgency=${input.urgency.join(', ')}`);
-  if (input.certainty) parts.push(`certainty=${input.certainty.join(', ')}`);
-  if (input.status && input.status !== 'Actual') parts.push(`status=${input.status}`);
-  return parts.length > 0 ? parts.join(', ') : 'national (no filters)';
+  if (filters.area) parts.push(`area=${filters.area}`);
+  if (filters.point) parts.push(`point=${filters.point}`);
+  if (filters.zone) parts.push(`zone=${filters.zone}`);
+  if (filters.region_type) parts.push(`region_type=${filters.region_type}`);
+  if (filters.region) parts.push(`region=${filters.region.join(', ')}`);
+  if (filters.event) parts.push(`event=${filters.event.join(', ')}`);
+  if (filters.severity) parts.push(`severity=${filters.severity.join(', ')}`);
+  if (filters.urgency) parts.push(`urgency=${filters.urgency.join(', ')}`);
+  if (filters.certainty) parts.push(`certainty=${filters.certainty.join(', ')}`);
+  if (filters.status && filters.status !== 'Actual') parts.push(`status=${filters.status}`);
+  return parts.length > 0 ? parts.join(', ') : NATIONAL_SEARCH;
 }
 
 /** An empty array filters nothing, so it is unset like an omitted one (issue #46). */
@@ -183,23 +192,92 @@ function normalizeEventFilter(events: string[] | undefined): string[] | undefine
 }
 
 /**
- * Reduce blank filters to unset and normalize the rest; mutex and shape checks
- * happen in the handler. `point` also drops internal whitespace so "47.6, -122.3"
- * salvages to the NWS-accepted "47.6,-122.3"; `zone` is upper-cased like `area` and
- * the sibling zone tools so "waz315" doesn't trip the upstream zone-code regex (issue #20).
+ * Reduce blank filters to unset and normalize the rest, keeping only the filter
+ * fields; mutex and shape checks come after. `point` also drops internal whitespace
+ * so "47.6, -122.3" salvages to the NWS-accepted "47.6,-122.3"; `zone` is upper-cased
+ * like `area` and the sibling zone tools so "waz315" doesn't trip the upstream
+ * zone-code regex (issue #20).
  */
-function normalizeSearchAlertsInput(input: SearchAlertsInput): SearchAlertsInput {
+function normalizeFilters(filters: SearchFilters): SearchFilters {
   return {
-    ...input,
-    area: unsetIfBlank(input.area)?.toUpperCase(),
-    point: unsetIfBlank(input.point)?.replace(/\s+/g, ''),
-    zone: unsetIfBlank(input.zone)?.toUpperCase(),
-    region: nonEmpty(input.region),
-    event: normalizeEventFilter(input.event),
-    severity: nonEmpty(input.severity),
-    urgency: nonEmpty(input.urgency),
-    certainty: nonEmpty(input.certainty),
+    area: unsetIfBlank(filters.area)?.toUpperCase(),
+    point: unsetIfBlank(filters.point)?.replace(/\s+/g, ''),
+    zone: unsetIfBlank(filters.zone)?.toUpperCase(),
+    region_type: filters.region_type,
+    region: nonEmpty(filters.region),
+    event: normalizeEventFilter(filters.event),
+    severity: nonEmpty(filters.severity),
+    urgency: nonEmpty(filters.urgency),
+    certainty: nonEmpty(filters.certainty),
+    status: filters.status,
   };
+}
+
+/** The location filters that carry a value; NWS accepts at most one. */
+function locationFiltersSet(filters: SearchFilters): string[] {
+  return LOCATION_FILTER_FIELDS.filter((fieldName) => filters[fieldName] !== undefined);
+}
+
+/** A normalized point NWS accepts: "lat,lon" within coordinate bounds. */
+function isValidPoint(point: string): boolean {
+  const match = NWS_POINT_PATTERN.exec(point);
+  if (!match) return false;
+  const lat = Number(match[1]);
+  const lon = Number(match[2]);
+  return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+}
+
+/** A normalized zone code in the NWS zone-code shape, with a real area prefix. */
+function isValidZone(zone: string): boolean {
+  const [, areaPrefix] = NWS_ZONE_PATTERN.exec(zone) ?? [];
+  return areaPrefix !== undefined && VALID_AREA_CODES.has(areaPrefix);
+}
+
+/**
+ * Whether normalized filters pass every check the handler applies to the filter
+ * inputs: one location filter at most, and a valid area, point, and zone.
+ */
+function passesFilterChecks(filters: SearchFilters): boolean {
+  return (
+    locationFiltersSet(filters).length <= 1 &&
+    (filters.area === undefined || VALID_AREA_CODES.has(filters.area)) &&
+    (filters.point === undefined || isValidPoint(filters.point)) &&
+    (filters.zone === undefined || isValidZone(filters.zone))
+  );
+}
+
+/**
+ * Where a continued page resumes. A token this tool mints carries the normalized
+ * filters of the query that minted it; a token from before the query was carried
+ * (`{ offset, limit }` alone) has no `filters` and resumes against the filters
+ * sent with it.
+ */
+interface Continuation {
+  filters?: SearchFilters | undefined;
+  limit: number;
+  offset: number;
+}
+
+const INVALID_CURSOR_HINT =
+  'Omit `cursor` and send the filters to start from the first page, or pass the `nextCursor` from the previous response unchanged.';
+
+/**
+ * Decode a continuation token before any request. Fails as InvalidParams
+ * (`invalid_cursor`) for a token that does not decode, carries a non-integer
+ * offset or limit, or carries filters that fail the input schema or the checks
+ * the filter inputs get.
+ */
+function readCursor(cursor: string, ctx: Context): Continuation {
+  const { offset, limit, filters } = decodeCursor(cursor, ctx);
+  if (!Number.isInteger(offset) || !Number.isInteger(limit)) {
+    throw invalidCursor(cursor, INVALID_CURSOR_HINT);
+  }
+  if (filters === undefined) return { offset, limit };
+  const parsed = carriedFiltersSchema.safeParse(filters);
+  if (!parsed.success) throw invalidCursor(cursor, INVALID_CURSOR_HINT);
+  const carried = normalizeFilters(parsed.data);
+  if (!passesFilterChecks(carried)) throw invalidCursor(cursor, INVALID_CURSOR_HINT);
+  return { offset, limit, filters: carried };
 }
 
 /**
@@ -277,11 +355,17 @@ const searchAlertsInputSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Opaque continuation token from a previous response's nextCursor. Omit for the first page. The token carries its own page size, so limit applies to the first page only. Every call re-fetches the active-alert feed, so alerts are contiguous within one response but not across calls — the active set changes continuously as alerts are issued and expire, so a continued page covers the collection as it stands at that moment.",
+      "Opaque continuation token from a previous response's nextCursor; send it on its own. Omit for the first page. It carries that query's filters and page size, so the filter inputs and limit apply to the first page only. Every call re-fetches the active-alert feed, so alerts are contiguous within one response but not across calls — the active set changes continuously as alerts are issued and expire, so a continued page covers the collection as it stands at that moment.",
     ),
 });
 
-type SearchAlertsInput = z.infer<typeof searchAlertsInputSchema>;
+/**
+ * The filter fields of the input, which a continuation token carries. Strict, as
+ * the input is: a carried key that is not a filter is refused, not stripped.
+ */
+const carriedFiltersSchema = searchAlertsInputSchema.omit({ limit: true, cursor: true }).strict();
+
+type SearchFilters = z.infer<typeof carriedFiltersSchema>;
 
 export const searchAlertsTool = tool('nws_search_alerts', {
   description:
@@ -352,7 +436,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       .string()
       .optional()
       .describe(
-        'Opaque token for the next page of matches — pass it back as `cursor`. Omitted when this is the last page.',
+        "Opaque token for the next page of matches — pass it back as `cursor` on its own; it carries this query's filters and page size. Omitted when this is the last page.",
       ),
     requestedLimit: z
       .number()
@@ -384,13 +468,17 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   },
 
   async handler(input, ctx) {
+    // The token is decoded before any request, so one this tool never minted
+    // costs no fetch. A token it minted carries its query, which governs the
+    // continued page: the filter inputs, like limit, shape the first page only.
+    // A token without filters resumes against the filter inputs.
+    const cursor = unsetIfBlank(input.cursor);
+    const continuation = cursor === undefined ? undefined : readCursor(cursor, ctx);
     // Blanks are unset from here on, so only filters that carry a value count
     // toward mutual exclusion and reach the shape checks below (issue #46).
-    const normalizedInput = normalizeSearchAlertsInput(input);
+    const filters = continuation?.filters ?? normalizeFilters(input);
 
-    const activeLocationFilters = LOCATION_FILTER_FIELDS.filter(
-      (fieldName) => normalizedInput[fieldName] !== undefined,
-    );
+    const activeLocationFilters = locationFiltersSet(filters);
     if (activeLocationFilters.length > 1) {
       throw ctx.fail(
         'mutually_exclusive_filters',
@@ -398,72 +486,72 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       );
     }
 
-    if (normalizedInput.area && !VALID_AREA_CODES.has(normalizedInput.area)) {
+    if (filters.area && !VALID_AREA_CODES.has(filters.area)) {
       throw ctx.fail(
         'invalid_area_code',
-        `Invalid area code "${normalizedInput.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
+        `Invalid area code "${filters.area}". Use a 2-letter US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM").`,
       );
     }
 
-    if (normalizedInput.point) {
-      const match = NWS_POINT_PATTERN.exec(normalizedInput.point);
-      const lat = match ? Number(match[1]) : Number.NaN;
-      const lon = match ? Number(match[2]) : Number.NaN;
-      if (!match || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-        throw ctx.fail(
-          'invalid_point',
-          `Invalid point "${normalizedInput.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
-        );
-      }
+    if (filters.point && !isValidPoint(filters.point)) {
+      throw ctx.fail(
+        'invalid_point',
+        `Invalid point "${filters.point}". Provide "lat,lon" with latitude -90 to 90 and longitude -180 to 180 (e.g., "47.6,-122.3").`,
+      );
     }
 
-    if (normalizedInput.zone) {
-      const [, areaPrefix] = NWS_ZONE_PATTERN.exec(normalizedInput.zone) ?? [];
-      if (areaPrefix == null || !VALID_AREA_CODES.has(areaPrefix)) {
-        throw ctx.fail(
-          'invalid_zone',
-          `Invalid zone "${normalizedInput.zone}". Provide a 2-letter state/territory or marine code, then C or Z, then 3 digits (e.g., "WAZ558", "WAC033").`,
-        );
-      }
+    if (filters.zone && !isValidZone(filters.zone)) {
+      throw ctx.fail(
+        'invalid_zone',
+        `Invalid zone "${filters.zone}". Provide a 2-letter state/territory or marine code, then C or Z, then 3 digits (e.g., "WAZ558", "WAC033").`,
+      );
     }
 
     // The service collapses upstream duplicates on id (issue #36), so this is a
     // distinct-alert count, which is what `totalCount` reports.
-    const result = await getNwsService().searchAlerts(normalizedInput, ctx);
-    const allAlerts = [...result.alerts];
-    const total = allAlerts.length;
-    const appliedFilters = describeFilters(normalizedInput);
+    const result = await getNwsService().searchAlerts(filters, ctx);
+    const total = result.alerts.length;
+    const appliedFilters = describeFilters(filters);
 
     // The fetched, filtered match set is windowed here — `/alerts/active` takes
     // no upstream limit or cursor, so continuation is local to this array. The
-    // cursor carries its own page size, so `limit` shapes the first page only,
-    // and only there is it held to the cap.
-    const { effectiveLimit, clamp }: PageLimit = normalizedInput.cursor
-      ? { effectiveLimit: normalizedInput.limit }
-      : clampPageLimit(normalizedInput.limit, MAX_ALERTS);
-    const page = paginateArray(allAlerts, normalizedInput.cursor, effectiveLimit, MAX_ALERTS, ctx);
+    // cursor carries its own page size, held to the cap; a first page holds
+    // `limit` to the cap and discloses the clamp.
+    const { effectiveLimit, clamp }: PageLimit = continuation
+      ? { effectiveLimit: Math.min(continuation.limit, MAX_ALERTS) }
+      : clampPageLimit(input.limit, MAX_ALERTS);
+    const offset = continuation?.offset ?? 0;
+    const items = result.alerts.slice(offset, offset + effectiveLimit);
+    const nextCursor =
+      offset + effectiveLimit < total
+        ? encodeCursor({ offset: offset + effectiveLimit, limit: effectiveLimit, filters })
+        : undefined;
 
-    ctx.log.info('Alerts search completed', { total, shown: page.items.length, appliedFilters });
+    ctx.log.info('Alerts search completed', { total, shown: items.length, appliedFilters });
 
     ctx.enrich({
       totalCount: total,
-      shown: page.items.length,
+      shown: items.length,
       appliedFilters,
-      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      ...(nextCursor ? { nextCursor } : {}),
       ...clamp?.fields,
     });
     let pageNotice: string | undefined;
     if (total === 0) {
       pageNotice = `No active alerts matched: ${appliedFilters}. Try a broader area, remove severity or event filters, or use nws_list_alert_types to verify event names.`;
-    } else if (page.nextCursor) {
-      pageNotice = `Returning ${page.items.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift entries across the page boundary. Duplicate alerts are collapsed on id within each fetch, so the same id arriving on two pages means the active set moved between calls, not that one alert was returned twice.`;
-    } else if (normalizedInput.cursor && page.items.length === 0) {
-      pageNotice = `The cursor points past the end of the ${total} alerts matching: ${appliedFilters}. Call again without a cursor to restart from the first match.`;
+    } else if (nextCursor) {
+      pageNotice = `Returning ${items.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift entries across the page boundary. Duplicate alerts are collapsed on id within each fetch, so the same id arriving on two pages means the active set moved between calls, not that one alert was returned twice.`;
+    } else if (continuation && items.length === 0) {
+      const restart =
+        appliedFilters === NATIONAL_SEARCH
+          ? `Call again with limit ${effectiveLimit} and no cursor to restart from the first match.`
+          : `To restart from the first match, call again with those filters, limit ${effectiveLimit}, and no cursor.`;
+      pageNotice = `The cursor points past the end of the ${total} alerts matching: ${appliedFilters}. ${restart}`;
     }
     const notice = composeNotice(clamp?.notice, pageNotice);
     if (notice) ctx.enrich.notice(notice);
 
-    return { alerts: page.items.map(toAlertOutput) };
+    return { alerts: items.map(toAlertOutput) };
   },
 
   format: (result) => {

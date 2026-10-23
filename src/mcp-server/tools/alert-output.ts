@@ -6,8 +6,55 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import type { Alert } from '@/services/nws/types.js';
+import { markdown } from '@cyanheads/mcp-ts-core/utils';
+import type { ALERT_HAZARD_KEYS, Alert } from '@/services/nws/types.js';
 import { formatTimestamp, zoneCodeToTimeZone } from './format-utils.js';
+
+/** One schema per NWS hazard tag, keyed by the NWS key name. */
+const hazardTagSchemas = {
+  maxHailSize: z
+    .string()
+    .optional()
+    .describe('Maximum hail size in inches, as NWS states it (e.g., "1.00", "Up to .75")'),
+  maxWindGust: z
+    .string()
+    .optional()
+    .describe('Maximum wind gust, as NWS states it (e.g., "60 MPH", "34 knots")'),
+  hailThreat: z
+    .string()
+    .optional()
+    .describe('How the hail is known (e.g., "RADAR INDICATED", "OBSERVED")'),
+  windThreat: z
+    .string()
+    .optional()
+    .describe('How the wind is known (e.g., "RADAR INDICATED", "OBSERVED")'),
+  tornadoDetection: z
+    .string()
+    .optional()
+    .describe('Tornado detection (e.g., "RADAR INDICATED", "POSSIBLE")'),
+  tornadoDamageThreat: z.string().optional().describe('Tornado damage-threat tag'),
+  thunderstormDamageThreat: z
+    .string()
+    .optional()
+    .describe('Thunderstorm damage-threat tag (e.g., "CONSIDERABLE")'),
+  flashFloodDetection: z
+    .string()
+    .optional()
+    .describe(
+      'Flash flood detection (e.g., "RADAR INDICATED", "OBSERVED", "RADAR AND GAUGE INDICATED")',
+    ),
+  flashFloodDamageThreat: z
+    .string()
+    .optional()
+    .describe('Flash flood damage-threat tag (e.g., "CONSIDERABLE")'),
+  waterspoutDetection: z.string().optional().describe('Waterspout detection (e.g., "POSSIBLE")'),
+  eventMotionDescription: z
+    .string()
+    .optional()
+    .describe(
+      'Storm time, motion, and position in NWS encoding (e.g., "2026-10-22T17:17:00-00:00...storm...222DEG...11KT...34.0,-118.1")',
+    ),
+} satisfies Record<(typeof ALERT_HAZARD_KEYS)[number], z.ZodOptional<z.ZodString>>;
 
 /** One NWS alert message: event, severity, area, hazard timing, and CAP lifecycle. */
 export const alertOutputSchema = z
@@ -80,7 +127,34 @@ export const alertOutputSchema = z
       .describe(
         'Prior alert messages this one supersedes, newest first by sent instant; messages sent at the same instant keep the order NWS lists them in, and one whose sent time does not parse comes last. Empty for an original issuance — never inferred when NWS reports none. nws_get_alert fetches any of them by identifier. Every reference sharing the newest sent time is an immediate predecessor (an update can merge several earlier segments); the first is one of them.',
       ),
-    senderName: z.string().describe('Issuing office'),
+    senderName: z
+      .string()
+      .describe(
+        'Issuing office name (e.g., "NWS Riverton WY"); the office code nws_get_office_discussion takes is in office',
+      ),
+    office: z
+      .string()
+      .nullable()
+      .describe(
+        'Issuing forecast office code (e.g., "RIW"), from the issuing centre in the message\'s WMO header; pass it as office to nws_get_office_discussion. Null for tsunami warning centres and national test messages, which have no office discussion, and when NWS sends no usable WMO header.',
+      ),
+    vtec: z
+      .array(z.string().describe('One P-VTEC string, verbatim'))
+      .describe(
+        'Raw P-VTEC strings NWS attaches (e.g., "/O.CON.KRIW.FW.W.0031.261023T1800Z-261024T0200Z/"), the key that tracks one event across its updates; empty when NWS sends none (e.g., Special Weather Statements).',
+      ),
+    nwsHeadline: z
+      .string()
+      .nullable()
+      .describe(
+        'The NWS product headline (e.g., "RED FLAG WARNING IN EFFECT FROM NOON TO 8 PM MDT FRIDAY"), distinct from headline; null when NWS sends none.',
+      ),
+    hazard: z
+      .object(hazardTagSchemas)
+      .nullable()
+      .describe(
+        'Severe-weather tags NWS attaches, under NWS key names with values verbatim (free text such as "Up to .75" or "34 knots"). Only the tags NWS sent are present; null when it sent none.',
+      ),
     affectedZones: z
       .array(
         z
@@ -89,7 +163,7 @@ export const alertOutputSchema = z
             type: z
               .string()
               .describe(
-                'NWS zone type: "forecast", "county", or "fire" ("unknown" when upstream reports a shape this server cannot type). Only "forecast" codes have a zone text forecast — pass those to nws_get_zone_forecast. All types are valid values for the nws_search_alerts zone filter.',
+                'NWS zone type: "forecast", "county", or "fire" ("unknown" when upstream reports a shape this server cannot type). A "forecast" code has a zone text forecast: pass it to nws_get_zone_forecast. A "fire" code has a segment in its office\'s Fire Weather Planning Forecast: call nws_get_office_discussion with office from this alert\'s office field, product_type "FWF", and sections [code]. All types are valid values for the nws_search_alerts zone filter.',
               ),
           })
           .describe('Affected zone with its NWS zone type'),
@@ -107,6 +181,8 @@ export function toAlertOutput(alert: Alert): AlertOutput {
     ...alert,
     affectedZones: [...alert.affectedZones],
     references: [...alert.references],
+    vtec: [...alert.vtec],
+    hazard: alert.hazard && { ...alert.hazard },
   };
 }
 
@@ -121,6 +197,7 @@ export function alertMarkdownLines(alert: AlertOutput): string[] {
   const lines = [`### ${alert.event}`, `_ID: ${alert.id}_`];
 
   if (alert.headline) lines.push(`**${alert.headline}**`);
+  if (alert.nwsHeadline) lines.push(`**NWS headline:** ${alert.nwsHeadline}`);
   lines.push(
     `**Severity:** ${alert.severity} | **Urgency:** ${alert.urgency} | **Certainty:** ${alert.certainty}`,
   );
@@ -141,10 +218,26 @@ export function alertMarkdownLines(alert: AlertOutput): string[] {
     lines.push(`**Supersedes:** ${priors}`);
   }
   lines.push(`**From:** ${alert.senderName}`);
+  if (alert.office) lines.push(`**Office:** ${alert.office}`);
   if (alert.affectedZones.length > 0) {
     lines.push(`**Zones:** ${alert.affectedZones.map((z) => `${z.code} (${z.type})`).join(', ')}`);
   }
-  if (alert.description) lines.push('', alert.description);
-  if (alert.instruction) lines.push('', `**Recommended Actions:** ${alert.instruction}`);
+  if (alert.vtec.length > 0) lines.push(`**VTEC:** ${alert.vtec.join(', ')}`);
+  if (alert.hazard) {
+    const tags = Object.entries(alert.hazard).map(([key, value]) => `${key}: ${value}`);
+    lines.push(`**Hazard tags:** ${tags.join('; ')}`);
+  }
+  // NWS hard-wraps both texts, with `* WHAT...` bullets and Markdown
+  // metacharacters, so each goes in a fenced block a CommonMark parse reads back
+  // verbatim; the fence outgrows any backtick run in the text.
+  if (alert.description) lines.push('', fencedText(alert.description));
+  if (alert.instruction) {
+    lines.push('', '**Recommended Actions:**', fencedText(alert.instruction));
+  }
   return lines;
+}
+
+/** NWS text as one fenced `text` code block. */
+function fencedText(value: string): string {
+  return markdown().codeBlock(value, 'text').build();
 }

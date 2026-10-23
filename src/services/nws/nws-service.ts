@@ -26,6 +26,7 @@ import type {
   AffectedZone,
   Alert,
   AlertCounts,
+  AlertHazard,
   AlertReference,
   ForecastPeriod,
   ForecastResponse,
@@ -36,6 +37,7 @@ import type {
   Station,
   ZoneForecastPeriod,
 } from './types.js';
+import { ALERT_HAZARD_KEYS } from './types.js';
 
 const BASE_URL = 'https://api.weather.gov';
 const POINTS_CACHE_TTL_MS = 3_600_000; // 1 hour — grid cells rarely change
@@ -519,7 +521,7 @@ function parseForecastPeriods(data: Record<string, unknown>): ForecastResponse {
 
   return {
     generatedAt: props.generatedAt as string,
-    updateTime: props.updateTime as string,
+    updateTime: (props.updateTime as string | undefined) ?? null,
     periods,
   };
 }
@@ -542,9 +544,68 @@ function newestReferencesFirst(references: AlertReference[]): AlertReference[] {
     .map(({ reference }) => reference);
 }
 
+/**
+ * A WMO abbreviated heading — `TTAAii CCCC YYGGgg`, then an optional `BBB`
+ * amendment group (`WWUS85 KRIW 230445`, `WGUS75 KTWC 230254 RRA`) — capturing the
+ * issuing centre. Anchored, fixed-width groups over a one-line field.
+ */
+const WMO_HEADING_PATTERN = /^[A-Z]{4}\d{2} ([A-Z]{4}) \d{6}(?: [A-Z]{3})?$/;
+
+/**
+ * Issuing centres whose office code is not the centre minus its leading letter:
+ * San Juan's and Pago Pago's AFD locations are SJU and PPG, and the tsunami
+ * warning centres and the national test-message centre have no office
+ * discussion at all.
+ */
+const CENTRE_OFFICE_EXCEPTIONS = new Map<string, string | null>([
+  ['TJSJ', 'SJU'],
+  ['NSTU', 'PPG'],
+  ['PAAQ', null],
+  ['PHEB', null],
+  ['KWBC', null],
+]);
+
+/**
+ * Element 0 of a CAP parameter. NWS sends every parameter as an array of strings;
+ * anything else reads as not sent.
+ */
+function firstParameter(value: unknown): string | undefined {
+  const [first] = Array.isArray(value) ? value : [];
+  return typeof first === 'string' ? first : undefined;
+}
+
+/**
+ * The office code an alert names in its WMO header's issuing centre (`KRIW` →
+ * `RIW`). The AWIPS identifier's suffix is a product location code, not the
+ * office (`CWFALU` is Anchorage's), so it is never consulted.
+ */
+function officeFromWmoHeading(heading: string | undefined): string | null {
+  const centre = heading === undefined ? undefined : WMO_HEADING_PATTERN.exec(heading)?.[1];
+  if (centre === undefined) return null;
+  const exception = CENTRE_OFFICE_EXCEPTIONS.get(centre);
+  return exception === undefined ? centre.slice(1) : exception;
+}
+
+/** The hazard tags among an alert's CAP parameters, or null when NWS sent none. */
+function parseHazard(parameters: Record<string, unknown>): AlertHazard | null {
+  const hazard: { -readonly [K in keyof AlertHazard]: AlertHazard[K] } = {};
+  for (const key of ALERT_HAZARD_KEYS) {
+    const value = firstParameter(parameters[key]);
+    if (value !== undefined) hazard[key] = value;
+  }
+  return Object.keys(hazard).length > 0 ? hazard : null;
+}
+
 /** Parse a single alert from GeoJSON feature. */
 function parseAlert(feature: Record<string, unknown>): Alert {
   const p = feature.properties as Record<string, unknown>;
+  // NWS keys `parameters` by name, every value an array of strings; anything
+  // else reads as no parameters.
+  const parameters =
+    typeof p.parameters === 'object' && p.parameters !== null && !Array.isArray(p.parameters)
+      ? (p.parameters as Record<string, unknown>)
+      : {};
+  const vtec: unknown[] = Array.isArray(parameters.VTEC) ? parameters.VTEC : [];
   return {
     id: p.id as string,
     event: p.event as string,
@@ -572,6 +633,10 @@ function parseAlert(feature: Record<string, unknown>): Alert {
     ),
     senderName: p.senderName as string,
     affectedZones: ((p.affectedZones as string[]) ?? []).map(parseAffectedZone),
+    office: officeFromWmoHeading(firstParameter(parameters.WMOidentifier)),
+    vtec: vtec.filter((entry): entry is string => typeof entry === 'string'),
+    nwsHeadline: firstParameter(parameters.NWSheadline) ?? null,
+    hazard: parseHazard(parameters),
   };
 }
 
@@ -601,6 +666,10 @@ function parseObservation(
     relativeHumidity: (props.relativeHumidity as NwsValue) ?? nullValue,
     heatIndex: (props.heatIndex as NwsValue) ?? nullValue,
     windChill: (props.windChill as NwsValue) ?? nullValue,
+    // Absent, not just null, on most 5-minute records.
+    precipitationLastHour: (props.precipitationLastHour as NwsValue) ?? nullValue,
+    precipitationLast3Hours: (props.precipitationLast3Hours as NwsValue) ?? nullValue,
+    precipitationLast6Hours: (props.precipitationLast6Hours as NwsValue) ?? nullValue,
     cloudLayers: ((props.cloudLayers as Record<string, unknown>[]) ?? []).map((l) => ({
       base: (l.base as NwsValue) ?? nullValue,
       amount: (l.amount as string) ?? 'CLR',
@@ -1147,7 +1216,8 @@ export class NwsService {
    * probe /offices/{officeId} (200 = valid, no product; 404 = unknown office) to branch
    * the error message. Episodic types (SPS, HWO) are commonly empty for valid offices;
    * routine types (AFD, ZFP) are empty when the office files them under another location
-   * code (Anchorage's ZFP lives under AER and ALU, not AFC).
+   * code (Anchorage's ZFP lives under AER and ALU, not AFC). FWF is filed only under WFO
+   * codes, so an empty FWF list means the office issues none (e.g., AFC).
    */
   async getOfficeDiscussion(
     office: string,
@@ -1156,7 +1226,7 @@ export class NwsService {
   ): Promise<OfficeDiscussionResult> {
     const unknownOffice = () =>
       notFound(
-        `No ${productType} products found for office "${office}". Verify the 3-letter WFO code (e.g., "SEW" for Seattle). The office code is the "office" or "cwa" field returned by nws_get_forecast.`,
+        `No ${productType} products found for office "${office}". Verify the 3-letter WFO code (e.g., "SEW" for Seattle). The office code is the "location.office" field of nws_get_forecast output.`,
         {
           office,
           productType,
@@ -1186,6 +1256,19 @@ export class NwsService {
             reason: 'no_products',
             recovery: {
               hint: `${productType} products are issued only when conditions warrant. Retry with product_type "AFD" for the always-available forecast discussion.`,
+            },
+          },
+        );
+      }
+      if (productType === 'FWF') {
+        throw notFound(
+          `Office "${office}" has no FWF (Fire Weather Planning Forecast) on file — not every Weather Forecast Office issues one.`,
+          {
+            office,
+            productType,
+            reason: 'no_products',
+            recovery: {
+              hint: `Retry with product_type "AFD" for this office's forecast discussion. For a fire zone from an alert, use the office in that alert's "office" field with product_type "FWF".`,
             },
           },
         );
@@ -1253,7 +1336,7 @@ export class NwsService {
     // is zone_forecast_unavailable with a point inside the zone, whose hint names it.
     const zoneNotFound = () =>
       notFound(
-        `Zone "${zoneId}" is not an NWS forecast zone. Provide a forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county and fire zones have no text forecast product.`,
+        `Zone "${zoneId}" is not an NWS forecast zone. Provide a forecast zone code (e.g., "WAZ315"). Forecast zone codes are returned by nws_get_forecast (the "forecastZone" field), nws_find_stations (the "forecastZone" column), and nws_search_alerts as "affectedZones" entries with type "forecast" — county zones have no text forecast product. A fire zone from an alert has its forecast in a segment of the office's Fire Weather Planning Forecast: call nws_get_office_discussion with office set to the alert's "office" field, product_type "FWF", and sections set to the zone code.`,
         { zoneId, reason: 'zone_not_found' },
       );
     const marineZoneUnsupported = () =>

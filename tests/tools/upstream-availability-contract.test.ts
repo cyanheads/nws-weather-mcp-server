@@ -1324,6 +1324,11 @@ describe('upstream availability contract', () => {
         expect(station.error.data?.reason).toBe('station_not_found');
         expect(office.error.data?.reason).toBe('no_products');
         expect(office.error.message).toContain('Verify the 3-letter WFO code');
+        // Issue #69: the field nws_get_forecast actually returns.
+        expect(office.error.message).toContain(
+          'The office code is the "location.office" field of nws_get_forecast output.',
+        );
+        expect(office.error.message).not.toContain('cwa');
         expect(alert.error.data?.reason).toBe('alert_not_found');
         expect(http.calls).toHaveLength(0);
       },

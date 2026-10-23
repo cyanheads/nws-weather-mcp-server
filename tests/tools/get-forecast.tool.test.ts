@@ -4,10 +4,17 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  createFetchMock,
+  createMockContext,
+  type FetchMockHarness,
+  getEnrichment,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
+import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ForecastResult } from '@/services/nws/nws-service.js';
+import { pointsResponse } from '../fixtures/nws-responses.js';
 
 const mockGetForecast = vi.fn<() => Promise<ForecastResult>>();
 
@@ -140,9 +147,22 @@ async function runForecast(result: ForecastResult, hourly: boolean) {
 /** Escape a literal for use inside a RegExp. */
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * The clock the mocked-service cases run at: one hour after `forecastResult`'s
+ * `updateTime`, so a grid-age notice appears only where a case sets one up.
+ */
+const FIXTURE_NOW = '2026-04-03T13:00:00Z';
+
 describe('nws_get_forecast', () => {
   beforeEach(() => {
     mockGetForecast.mockReset();
+    // Only Date is faked: promise scheduling and setTimeout stay real.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(FIXTURE_NOW));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe('surface parity (issue #52)', () => {
@@ -536,10 +556,13 @@ describe('nws_get_forecast', () => {
       });
     });
 
-    it('treats an empty-string cursor as the first page (form-based clients)', async () => {
+    it.each([
+      ['an empty-string', ''],
+      ['a whitespace-only', '  \t'],
+    ])('treats %s cursor as the first page (form-based clients)', async (_label, cursor) => {
       mockGetForecast.mockResolvedValue(hourlyForecast(156));
 
-      const { result, enrichment } = await page('');
+      const { result, enrichment } = await page(cursor);
 
       expect(result.periods[0]!.shortForecast).toBe('Hour 1 conditions');
       expect(enrichment.shown).toBe(48);
@@ -558,6 +581,216 @@ describe('nws_get_forecast', () => {
       expect(text).not.toContain('Hour 48 conditions');
       expect(text).not.toContain('Hour 97 conditions');
     });
+
+    it('words the first-page and continued-page paging notices exactly', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const first = await page();
+      const second = await page(first.enrichment.nextCursor as string);
+      const third = await page(second.enrichment.nextCursor as string);
+      const last = await page(third.enrichment.nextCursor as string);
+
+      expect(first.enrichment.notice).toBe(
+        'Returning the first 48 of 156 forecast periods to bound response size. Pass nextCursor back as cursor for the next window. Periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated array.',
+      );
+      expect(second.enrichment.notice).toBe(
+        'Returning 48 more of 156 forecast periods. Pass nextCursor back as cursor for the next window. Periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated array.',
+      );
+      expect(last.result.periods).toHaveLength(12);
+      expect(last.enrichment.notice).toBeUndefined();
+    });
+  });
+
+  describe('grid updateTime and stale-forecast notice (issue #68)', () => {
+    const HOUR_MS = 3_600_000;
+    const PAGING_FIRST =
+      'Returning the first 48 of 156 forecast periods to bound response size. Pass nextCursor back as cursor for the next window. Periods are contiguous within one response; NWS reissues forecasts through the day, so a later call can window a regenerated array.';
+
+    /** Set the clock `hours` after `forecastResult`'s updateTime. */
+    function hoursAfterUpdate(hours: number) {
+      vi.setSystemTime(new Date(Date.parse(forecastResult.forecast.updateTime!) + hours * HOUR_MS));
+    }
+
+    async function run(result: ForecastResult, args: Record<string, unknown> = {}) {
+      mockGetForecast.mockResolvedValue(result);
+      const contract = await runToolContract(getForecastTool, {
+        latitude: 47.6062,
+        longitude: -122.3321,
+        ...args,
+      });
+      return {
+        data: contract.structuredContent as {
+          updateTime: string | null;
+          generatedAt: string;
+          notice?: string;
+        },
+        text: contentText(contract),
+      };
+    }
+
+    it('returns updateTime beside generatedAt on both surfaces', async () => {
+      const { data, text } = await run({
+        ...forecastResult,
+        forecast: { ...forecastResult.forecast, updateTime: '2026-04-03T11:15:00Z' },
+      });
+
+      expect(data.updateTime).toBe('2026-04-03T11:15:00Z');
+      expect(data.generatedAt).toBe('2026-04-03T12:00:00Z');
+      // Both instants in Seattle time. ICU joins date and time with ", " on Node and
+      // " at " on Bun, so the pattern takes either.
+      expect(text).toMatch(
+        /^\*\*Generated:\*\* Fri, Apr 3(?:,| at) 5:00\sAM PDT \| \*\*Updated:\*\* Fri, Apr 3(?:,| at) 4:15\sAM PDT$/m,
+      );
+    });
+
+    it('gives no stale notice 23.9 hours after the update', async () => {
+      hoursAfterUpdate(23.9);
+
+      const { data, text } = await run(forecastResult);
+
+      expect(data.notice).toBeUndefined();
+      expect(text).not.toContain('last updated');
+    });
+
+    it('flags a grid not updated for 24.1 hours, with its age, on both surfaces', async () => {
+      hoursAfterUpdate(24.1);
+
+      const { data, text } = await run(forecastResult);
+
+      const stale =
+        'Forecast data was last updated 24.1h ago — NWS may have stopped updating this grid, so these periods may be out of date.';
+      expect(data.notice).toBe(stale);
+      expect(text).toContain(stale);
+    });
+
+    it('serves a grid NWS sent without updateTime, with updateTime null and no stale notice', async () => {
+      hoursAfterUpdate(48);
+
+      const { data, text } = await run({
+        ...forecastResult,
+        forecast: { ...forecastResult.forecast, updateTime: null },
+      });
+
+      expect(data.updateTime).toBeNull();
+      expect(data.notice).toBeUndefined();
+      expect(text).toContain('| **Updated:** not reported');
+    });
+
+    it('composes the stale sentence with the paging sentence on an hourly page with nextCursor', async () => {
+      hoursAfterUpdate(30);
+
+      const { data } = await run(hourlyForecast(156), { hourly: true });
+
+      expect(data.notice).toBe(
+        `Forecast data was last updated 30h ago — NWS may have stopped updating this grid, so these periods may be out of date. ${PAGING_FIRST}`,
+      );
+    });
+
+    it('composes the stale sentence with the past-end sentence', async () => {
+      hoursAfterUpdate(48.25);
+
+      const { data } = await run(hourlyForecast(156), {
+        cursor: encodeCursor({ offset: 156, limit: 48, hourly: true }),
+      });
+
+      expect(data.notice).toBe(
+        "Forecast data was last updated 48.3h ago — NWS may have stopped updating this grid, so these periods may be out of date. The cursor points past the end of this hourly forecast's 156 periods. Call again with hourly: true and no cursor to restart from the first hourly period.",
+      );
+    });
+
+    it('describes generatedAt, updateTime, and notice by what NWS defines them as', () => {
+      const output = getForecastTool.output.shape;
+      expect(output.generatedAt.description).toMatch(/when NWS generated this response/i);
+      expect(output.updateTime.description).toMatch(
+        /when the data this forecast was generated from was last updated/i,
+      );
+      expect(getForecastTool.enrichment?.notice?.description).toMatch(/more than 24 hours ago/);
+    });
+  });
+
+  describe('cursor mode (issue #70)', () => {
+    /** One page with `hourly` sent as given (omitted when undefined). */
+    async function pageIn(hourly: boolean | undefined, cursor: string) {
+      const ctx = createMockContext({ tenantId: 'test', errors: getForecastTool.errors });
+      const input = getForecastTool.input.parse({
+        latitude: 47.6,
+        longitude: -122.3,
+        cursor,
+        ...(hourly === undefined ? {} : { hourly }),
+      });
+      const result = await getForecastTool.handler(input, ctx);
+      return { result, enrichment: getEnrichment(ctx) };
+    }
+
+    it('continues a 0.11.0 token ({offset, limit}) in the mode the hourly input names', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const { result, enrichment } = await pageIn(true, encodeCursor({ offset: 48, limit: 48 }));
+
+      expect(mockGetForecast).toHaveBeenCalledWith(47.6, -122.3, true, expect.anything());
+      expect(result.periods.map((p) => p.shortForecast)).toEqual(
+        Array.from({ length: 48 }, (_, index) => `Hour ${index + 49} conditions`),
+      );
+      expect(enrichment).toMatchObject({ mode: 'hourly', shown: 48, totalCount: 156 });
+      // The re-minted token names the mode the page was served in, so the next page
+      // stays hourly even if the caller drops hourly.
+      expect(decodeCursor(enrichment.nextCursor as string, createMockContext())).toEqual({
+        offset: 96,
+        limit: 48,
+        hourly: true,
+      });
+    });
+
+    it('reads a 0.11.0 token sent without hourly against the 7-day forecast, as 0.11.0 did', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(14));
+
+      const { result, enrichment } = await pageIn(
+        undefined,
+        encodeCursor({ offset: 2, limit: 48 }),
+      );
+
+      expect(mockGetForecast).toHaveBeenCalledWith(47.6, -122.3, false, expect.anything());
+      expect(result.periods.map((p) => p.shortForecast)[0]).toBe('Hour 3 conditions');
+      expect(enrichment).toMatchObject({ mode: '7-day', shown: 12, totalCount: 14 });
+    });
+
+    it('holds a page past the end of an hourly forecast to an hourly restart', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(156));
+
+      const { result, enrichment } = await pageIn(
+        undefined,
+        encodeCursor({ offset: 156, limit: 48, hourly: true }),
+      );
+
+      expect(mockGetForecast).toHaveBeenCalledWith(47.6, -122.3, true, expect.anything());
+      expect(result.periods).toHaveLength(0);
+      expect(enrichment).toMatchObject({ mode: 'hourly', shown: 0, totalCount: 156 });
+      expect(enrichment).not.toHaveProperty('nextCursor');
+      expect(enrichment.notice).toBe(
+        "The cursor points past the end of this hourly forecast's 156 periods. Call again with hourly: true and no cursor to restart from the first hourly period.",
+      );
+    });
+
+    it('holds a page past the end of a 7-day forecast to a 7-day restart', async () => {
+      mockGetForecast.mockResolvedValue(hourlyForecast(14));
+
+      const { enrichment } = await pageIn(
+        true,
+        encodeCursor({ offset: 14, limit: 48, hourly: false }),
+      );
+
+      expect(mockGetForecast).toHaveBeenCalledWith(47.6, -122.3, false, expect.anything());
+      expect(enrichment).toMatchObject({ mode: '7-day', shown: 0, totalCount: 14 });
+      expect(enrichment.notice).toBe(
+        "The cursor points past the end of this 7-day forecast's 14 periods. Call again with no cursor and hourly omitted or false to restart from the first 7-day period.",
+      );
+    });
+
+    it('describes the cursor as carrying its mode', () => {
+      const shape = getForecastTool.input.shape;
+      expect(shape.cursor.description).toMatch(/carries the mode/i);
+      expect(shape.hourly.description).toMatch(/cursor/i);
+    });
   });
 
   describe('format', () => {
@@ -574,6 +807,7 @@ describe('nws_get_forecast', () => {
           county: 'WAC033',
         },
         generatedAt: '2026-04-03T12:00:00Z',
+        updateTime: '2026-04-03T11:15:00Z',
         periods: [
           {
             name: 'Today',
@@ -614,6 +848,7 @@ describe('nws_get_forecast', () => {
           county: 'WAC033',
         },
         generatedAt: '2026-04-03T12:00:00Z',
+        updateTime: '2026-04-03T11:15:00Z',
         periods: [],
       };
 
@@ -636,6 +871,7 @@ describe('nws_get_forecast', () => {
           county: 'WAC033',
         },
         generatedAt: '2026-04-03T12:00:00Z',
+        updateTime: '2026-04-03T11:15:00Z',
         periods: [
           {
             name: 'Tonight',
@@ -670,6 +906,7 @@ describe('nws_get_forecast', () => {
           county: 'WAC033',
         },
         generatedAt: '2026-04-03T12:00:00Z',
+        updateTime: '2026-04-03T11:15:00Z',
         periods: Array.from({ length: 49 }, (_, index) => ({
           name: `Period ${index + 1}`,
           startTime: '2026-04-03T06:00:00-07:00',
@@ -692,5 +929,280 @@ describe('nws_get_forecast', () => {
       expect(text).toContain('Short forecast 49');
       expect(text).not.toContain('more periods');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real NWS service over a strict fetch fake: which grid URL a page requests,
+// and whether a cursor fails before any request.
+// ---------------------------------------------------------------------------
+
+const API = 'https://api.weather.gov';
+const POINTS_URL = `${API}/points/47.6062,-122.3321`;
+const DAILY_URL = pointsResponse.properties.forecast;
+const HOURLY_URL = pointsResponse.properties.forecastHourly;
+
+/** Seattle's grid timestamps as `/gridpoints/SEW/125,68/forecast{,/hourly}` sent them on 2026-10-23. */
+const SEATTLE_UPDATE_TIME = '2026-10-23T07:28:59+00:00';
+
+/**
+ * The hourly feed for that grid: 156 periods shaped like the first one captured
+ * (2026-10-23T00:00-07:00, 49°F, NE 3 mph), each an hour after the last.
+ */
+const seattleHourlyResponse = {
+  properties: {
+    generatedAt: '2026-10-23T07:45:06+00:00',
+    updateTime: SEATTLE_UPDATE_TIME,
+    periods: Array.from({ length: 156 }, (_, index) => {
+      const startMs = Date.parse('2026-10-23T07:00:00Z') + index * 3_600_000;
+      return {
+        number: index + 1,
+        name: '',
+        startTime: new Date(startMs).toISOString(),
+        endTime: new Date(startMs + 3_600_000).toISOString(),
+        isDaytime: false,
+        temperature: 49,
+        temperatureUnit: 'F',
+        probabilityOfPrecipitation: { unitCode: 'wmoUnit:percent', value: 0 },
+        dewpoint: { unitCode: 'wmoUnit:degC', value: 7.222222222222222 },
+        relativeHumidity: { unitCode: 'wmoUnit:percent', value: 86 },
+        windSpeed: '3 mph',
+        windDirection: 'NE',
+        shortForecast: 'Mostly Clear',
+        detailedForecast: '',
+      };
+    }),
+  },
+};
+
+/** The same grid's 7-day feed, trimmed to its first three captured periods. */
+const seattleDailyResponse = {
+  properties: {
+    generatedAt: '2026-10-23T07:38:44+00:00',
+    updateTime: SEATTLE_UPDATE_TIME,
+    periods: [
+      {
+        number: 1,
+        name: 'Overnight',
+        startTime: '2026-10-23T00:00:00-07:00',
+        endTime: '2026-10-23T06:00:00-07:00',
+        isDaytime: false,
+        temperature: 46,
+        temperatureUnit: 'F',
+        probabilityOfPrecipitation: { unitCode: 'wmoUnit:percent', value: 6 },
+        windSpeed: '0 to 3 mph',
+        windDirection: 'NE',
+        shortForecast: 'Mostly Clear',
+        detailedForecast: 'Mostly clear, with a low around 46. Northeast wind 0 to 3 mph.',
+      },
+      {
+        number: 2,
+        name: 'Friday',
+        startTime: '2026-10-23T06:00:00-07:00',
+        endTime: '2026-10-23T18:00:00-07:00',
+        isDaytime: true,
+        temperature: 56,
+        temperatureUnit: 'F',
+        probabilityOfPrecipitation: { unitCode: 'wmoUnit:percent', value: 2 },
+        windSpeed: '5 mph',
+        windDirection: 'NW',
+        shortForecast: 'Mostly Sunny',
+        detailedForecast: 'Mostly sunny, with a high near 56. Northwest wind around 5 mph.',
+      },
+      {
+        number: 3,
+        name: 'Friday Night',
+        startTime: '2026-10-23T18:00:00-07:00',
+        endTime: '2026-10-24T06:00:00-07:00',
+        isDaytime: false,
+        temperature: 42,
+        temperatureUnit: 'F',
+        probabilityOfPrecipitation: { unitCode: 'wmoUnit:percent', value: 2 },
+        windSpeed: '3 mph',
+        windDirection: 'E',
+        shortForecast: 'Mostly Clear',
+        detailedForecast:
+          'Mostly clear. Low around 42, with temperatures rising to around 44 overnight. East wind around 3 mph.',
+      },
+    ],
+  },
+};
+
+function geoJson(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/geo+json' },
+  });
+}
+
+type ForecastSuccess = {
+  mode: string;
+  shown: number;
+  totalCount: number;
+  generatedAt: string;
+  updateTime: string;
+  periods: { startTime: string; name: string }[];
+  nextCursor?: string;
+  notice?: string;
+};
+
+describe('nws_get_forecast over the real NWS service', () => {
+  let tool: typeof import('@/mcp-server/tools/definitions/get-forecast.tool.js')['getForecastTool'];
+  let http: FetchMockHarness;
+
+  beforeEach(async () => {
+    vi.doUnmock('@/services/nws/nws-service.js');
+    // Fresh module graph per test: the service's /points cache is module state.
+    vi.resetModules();
+    const service = await import('@/services/nws/nws-service.js');
+    service.initNwsService();
+    ({ getForecastTool: tool } = await import(
+      '@/mcp-server/tools/definitions/get-forecast.tool.js'
+    ));
+    // Strict: an unrouted URL rejects, so no test can reach live NWS.
+    http = createFetchMock();
+    http.install();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // One hour after the captured updateTime.
+    vi.setSystemTime(new Date('2026-10-23T08:28:59Z'));
+  });
+
+  afterEach(() => {
+    http.restore();
+    vi.useRealTimers();
+  });
+
+  function routeSeattle() {
+    http.route(
+      { match: POINTS_URL, respond: () => geoJson(pointsResponse) },
+      { match: HOURLY_URL, respond: () => geoJson(seattleHourlyResponse) },
+      { match: DAILY_URL, respond: () => geoJson(seattleDailyResponse) },
+    );
+  }
+
+  async function call(args: Record<string, unknown>) {
+    const run = await runToolContract(tool, { latitude: 47.6062, longitude: -122.3321, ...args });
+    return { data: run.structuredContent as ForecastSuccess, text: contentText(run) };
+  }
+
+  const gridUrls = () => http.calls.map((c) => c.request.url).filter((url) => url !== POINTS_URL);
+
+  it('returns the grid updateTime on every hourly page and on the 7-day forecast (issue #68)', async () => {
+    routeSeattle();
+    // 07:28:59Z in Seattle time; ICU joins date and time with ", " on Node, " at " on Bun.
+    const updated = /\| \*\*Updated:\*\* Fri, Oct 23(?:,| at) 12:28\sAM PDT$/m;
+    const pages: { data: ForecastSuccess; text: string }[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await call(cursor ? { cursor } : { hourly: true });
+      pages.push(page);
+      cursor = page.data.nextCursor;
+    } while (cursor);
+    const daily = await call({});
+
+    expect(pages).toHaveLength(4);
+    for (const { data, text } of [...pages, daily]) {
+      expect(data.updateTime).toBe(SEATTLE_UPDATE_TIME);
+      expect(text).toMatch(updated);
+      // Fresh grid (1 h old): no stale sentence on any page.
+      expect(data.notice ?? '').not.toContain('last updated');
+    }
+    expect(pages[0]!.data.generatedAt).toBe(seattleHourlyResponse.properties.generatedAt);
+    expect(daily.data.generatedAt).toBe(seattleDailyResponse.properties.generatedAt);
+    expect(daily.data.mode).toBe('7-day');
+  });
+
+  describe('continuation cursor carries its mode (issue #70)', () => {
+    it.each([
+      ['omitted', undefined],
+      ['false', false],
+      ['true', true],
+    ])('resumes an hourly cursor in hourly mode with hourly %s', async (_label, hourly) => {
+      routeSeattle();
+      const first = await call({ hourly: true });
+      expect(first.data.nextCursor).toEqual(expect.any(String));
+
+      const second = await call({
+        cursor: first.data.nextCursor,
+        ...(hourly === undefined ? {} : { hourly }),
+      });
+
+      expect(second.data.mode).toBe('hourly');
+      expect(second.data.shown).toBe(48);
+      expect(second.data.totalCount).toBe(156);
+      expect(second.data.periods[0]!.startTime).toBe(
+        seattleHourlyResponse.properties.periods[48]!.startTime,
+      );
+      expect(second.data.periods[47]!.startTime).toBe(
+        seattleHourlyResponse.properties.periods[95]!.startTime,
+      );
+      expect(gridUrls()).toEqual([HOURLY_URL, HOURLY_URL]);
+    });
+
+    it('walks the hourly forecast to its last page with hourly omitted after the first', async () => {
+      routeSeattle();
+      const sizes: number[] = [];
+      const starts: string[] = [];
+      let cursor: string | undefined;
+      let notices: (string | undefined)[] = [];
+      do {
+        const { data } = await call(cursor ? { cursor } : { hourly: true });
+        sizes.push(data.shown);
+        starts.push(...data.periods.map((p) => p.startTime));
+        notices = [...notices, data.notice];
+        cursor = data.nextCursor;
+      } while (cursor);
+
+      expect(sizes).toEqual([48, 48, 48, 12]);
+      expect(starts).toEqual(seattleHourlyResponse.properties.periods.map((p) => p.startTime));
+      expect(notices[3]).toBeUndefined();
+      expect(gridUrls()).toEqual(Array(4).fill(HOURLY_URL));
+    });
+
+    it('resumes a 7-day cursor in 7-day mode under hourly: true', async () => {
+      routeSeattle();
+
+      const { data } = await call({
+        hourly: true,
+        cursor: encodeCursor({ offset: 1, limit: 48, hourly: false }),
+      });
+
+      expect(data.mode).toBe('7-day');
+      expect(data.periods.map((p) => p.name)).toEqual(['Friday', 'Friday Night']);
+      expect(gridUrls()).toEqual([DAILY_URL]);
+    });
+
+    it.each([
+      ['not base64 JSON', '!!not-a-cursor!!'],
+      ['a fractional offset', encodeCursor({ offset: 1.5, limit: 48 })],
+      ['a fractional limit', encodeCursor({ offset: 0, limit: 2.5 })],
+      ['a zero limit', encodeCursor({ offset: 0, limit: 0 })],
+      ['a string mode', encodeCursor({ offset: 48, limit: 48, hourly: 'true' })],
+      ['a null mode', encodeCursor({ offset: 48, limit: 48, hourly: null })],
+    ])(
+      'rejects a cursor that is %s as InvalidParams (invalid_cursor) with no request',
+      async (_label, cursor) => {
+        // Catch-all: an attempted request is recorded rather than rejected unseen.
+        http.route({ match: /.*/, respond: () => geoJson({}, 404) });
+
+        const run = await runToolContract(tool, {
+          latitude: 47.6062,
+          longitude: -122.3321,
+          hourly: true,
+          cursor,
+        });
+
+        expect(run.isError).toBe(true);
+        const error = (
+          run.structuredContent as {
+            error: { code: number; data?: { reason?: string; recovery?: { hint?: string } } };
+          }
+        ).error;
+        expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+        expect(error.data?.reason).toBe('invalid_cursor');
+        expect(error.data?.recovery?.hint).toContain('nextCursor');
+        expect(http.calls).toHaveLength(0);
+      },
+    );
   });
 });

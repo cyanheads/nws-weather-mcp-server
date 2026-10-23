@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-10-16 15:47:24
+Generated on: 2026-10-23 09:12:34
 
 ```text
 nws-weather-mcp-server/
@@ -179,14 +179,17 @@ nws-weather-mcp-server/
 │   │   ├── products/
 │   │   │   ├── afc-afd.json
 │   │   │   ├── akq-zfp.json
+│   │   │   ├── bis-fwf.json
 │   │   │   ├── box-afd.json
 │   │   │   ├── key-zfp.json
 │   │   │   ├── lot-hwo.json
 │   │   │   ├── lox-afd.json
 │   │   │   ├── otx-zfp.json
+│   │   │   ├── riw-fwf.json
 │   │   │   ├── sew-afd.wire.json
 │   │   │   ├── sew-zfp.json
-│   │   │   └── slc-afd.json
+│   │   │   ├── slc-afd.json
+│   │   │   └── twc-fwf.json
 │   │   └── nws-responses.ts
 │   ├── http/
 │   │   └── error-contract.test.ts

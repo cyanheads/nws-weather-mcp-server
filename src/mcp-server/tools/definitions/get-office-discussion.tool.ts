@@ -7,7 +7,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { DEFAULT_OUTLINE_BUDGET_BYTES } from '@cyanheads/mcp-ts-core/utils';
+import { DEFAULT_OUTLINE_BUDGET_BYTES, markdown } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import {
   type ProductPart,
@@ -39,12 +39,19 @@ interface DiscussionView {
   wmoCollectiveId: string;
 }
 
+/**
+ * The `content[0]` text, and the rendered surface the outline budget measures. Product
+ * text goes in one `text` code block whose backtick fence outgrows any run inside it,
+ * so a CommonMark client keeps NWS's fixed-width columns and indents verbatim.
+ */
 function renderText(result: DiscussionView): string {
   const lines = [
     `## ${result.productName} (${result.productCode})`,
     `**Office:** ${result.issuingOffice} | **Issued:** ${result.issuanceTime} | **WMO ID:** ${result.wmoCollectiveId}`,
   ];
-  if (result.productText !== undefined) lines.push('', result.productText);
+  if (result.productText !== undefined) {
+    lines.push('', markdown().codeBlock(result.productText, 'text').build());
+  }
   if (result.outline) {
     lines.push('', `**${result.outline.length} sections** (largest first):`, '');
     for (const row of result.outline) {
@@ -62,15 +69,15 @@ function selectorFor(part: ProductPart): string {
 
 export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
   description:
-    'Get the latest narrative forecast product from a Weather Forecast Office (WFO). The default product is AFD (Area Forecast Discussion), which explains the meteorological reasoning behind the forecast — synoptic setup, model guidance, and forecaster confidence. Other types: HWO (Hazardous Weather Outlook, 1-7 day severe/flood/winter outlook), ZFP (Zone Forecast Product, zone-by-zone text), SPS (Special Weather Statement, short-fuse advisory). The office code is the 3-letter WFO identifier returned as the "office" field by nws_get_forecast. A product over 24,000 bytes (most ZFPs) comes back as an outline of its sections — AFD section names, or ZFP/HWO/SPS zone segments with their area names — with each section\'s size, instead of the text; re-call with sections to get the ones you need. sections also works on a product of any size, to read one AFD section or one zone\'s forecast.',
+    'Get the latest narrative forecast product from a Weather Forecast Office (WFO). The default product is AFD (Area Forecast Discussion), which explains the meteorological reasoning behind the forecast — synoptic setup, model guidance, and forecaster confidence. Other types: HWO (Hazardous Weather Outlook, 1-7 day severe/flood/winter outlook), ZFP (Zone Forecast Product, zone-by-zone text), SPS (Special Weather Statement, short-fuse advisory), FWF (Fire Weather Planning Forecast, one segment per fire weather zone). The office code is the 3-letter WFO identifier returned as the "office" field by nws_get_forecast. A product over 24,000 bytes (most ZFPs and FWFs) comes back as an outline of its sections — AFD section names, or ZFP/HWO/SPS/FWF zone segments with their area names — with each section\'s size, instead of the text; re-call with sections to get the ones you need. sections also works on a product of any size, to read one AFD section or one zone\'s forecast. For an alert zone typed "fire" (Red Flag Warning, Fire Weather Watch), pass the alert\'s "office" field as office, product_type "FWF", and the zone code in sections.',
   annotations: { readOnlyHint: true },
   errors: [
     {
       reason: 'no_products',
       code: JsonRpcErrorCode.NotFound,
-      when: 'Office code is unknown, or no product of the requested type is filed under it: episodic types (SPS, HWO) are commonly empty, and some offices file AFD or ZFP under other location codes',
+      when: 'Office code is unknown, or no product of the requested type is filed under it: episodic types (SPS, HWO) are commonly empty, some offices file AFD or ZFP under other location codes, and some offices issue no FWF',
       recovery:
-        'For SPS or HWO, retry with product_type "AFD" — episodic types are issued only when conditions warrant. For ZFP, retry with the location code the office files under (Anchorage: "AER" or "ALU"; San Juan: "PR"), or use nws_get_zone_forecast for one zone\'s text forecast. If the code may be wrong, find the WFO code in the "office" field of nws_get_forecast output.',
+        'For SPS or HWO, retry with product_type "AFD" — episodic types are issued only when conditions warrant. For ZFP, retry with the location code the office files under (Anchorage: "AER" or "ALU"; San Juan: "PR"), or use nws_get_zone_forecast for one zone\'s text forecast. For FWF, retry with product_type "AFD", or with the office in a fire weather alert\'s "office" field. If the code may be wrong, find the WFO code in the "office" field of nws_get_forecast output.',
       // An unknown office or no current product is an answer, not a fault.
       severity: 'notice',
       // Raised by the NWS service layer, which branches the hint on whether the
@@ -101,17 +108,17 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
     product_type: z
       .preprocess(
         (value) => (value === '' ? undefined : value),
-        z.enum(['AFD', 'HWO', 'ZFP', 'SPS']).default('AFD'),
+        z.enum(['AFD', 'HWO', 'ZFP', 'SPS', 'FWF']).default('AFD'),
       )
       .describe(
-        'Product type code. AFD (Area Forecast Discussion) — meteorological reasoning, model analysis, forecaster confidence. HWO (Hazardous Weather Outlook) — 1-7 day outlook for severe weather, flooding, winter weather. ZFP (Zone Forecast Product) — detailed zone-by-zone text forecast. SPS (Special Weather Statement) — short-fuse advisory for notable non-warning weather.',
+        'Product type code. AFD (Area Forecast Discussion) — meteorological reasoning, model analysis, forecaster confidence. HWO (Hazardous Weather Outlook) — 1-7 day outlook for severe weather, flooding, winter weather. ZFP (Zone Forecast Product) — detailed zone-by-zone text forecast. SPS (Special Weather Statement) — short-fuse advisory for notable non-warning weather. FWF (Fire Weather Planning Forecast) — fire weather discussion plus a forecast segment per fire weather zone (e.g., humidity and wind); select a zone with sections.',
       ),
     sections: z
       .array(z.string().max(200))
       .max(100)
       .optional()
       .describe(
-        'Sections to return instead of the whole product: AFD section names, case-insensitive (e.g., "DISCUSSION", "AVIATION"), or zone codes for ZFP/HWO/SPS (e.g., "WAZ315"; a code inside a listed range such as FLZ076>078 selects that segment). Take names from the outline. Returns the product header plus every matching section verbatim, in product order, followed by the product\'s closing lines (forecaster credits, links). Omit for the whole product, or its outline when it is too large.',
+        'Sections to return instead of the whole product: AFD section names, case-insensitive (e.g., "DISCUSSION", "AVIATION"), or zone codes for ZFP/HWO/SPS/FWF (e.g., "WAZ315"; a code inside a listed range such as FLZ076>078 selects that segment). Take names from the outline. Returns the product header plus every matching section verbatim, in product order, followed by the product\'s closing lines (forecaster credits, links). Omit for the whole product, or its outline when it is too large.',
       ),
   }),
 

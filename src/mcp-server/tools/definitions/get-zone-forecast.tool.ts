@@ -17,7 +17,7 @@ export const ZONE_ID_INPUT_PATTERN = /^\s*[A-Za-z]{2}[Zz]\d{3}\s*$/;
 
 export const getZoneForecastTool = tool('nws_get_zone_forecast', {
   description:
-    'Get the text forecast for an NWS forecast zone. Returns named forecast periods (e.g., "Today", "Tonight", "Monday") with detailed narrative text — the human-readable, zone-level forecast written by local forecasters. Completes the alert-to-forecast chain: nws_search_alerts returns each affected zone in "affectedZones" as a code plus a type, and nws_find_stations returns codes in the "forecastZone" column. Only affectedZones entries with type "forecast" work here; entries typed "county" or "fire" have no text forecast upstream and will not resolve. Marine forecast zones vary: many coastal zones serve a text forecast of wind and seas (e.g., "PZZ251"), while offshore zones (e.g., "GMZ056") and some coastal ones have none. Zone codes follow the pattern XXZ### (e.g., "WAZ315" for the City of Seattle).',
+    'Get the text forecast for an NWS forecast zone. Returns named forecast periods (e.g., "Today", "Tonight", "Monday") with detailed narrative text — the human-readable, zone-level forecast written by local forecasters. Completes the alert-to-forecast chain: nws_search_alerts returns each affected zone in "affectedZones" as a code plus a type, and nws_find_stations returns codes in the "forecastZone" column. Only affectedZones entries with type "forecast" work here; entries typed "county" have no text forecast upstream and will not resolve. An entry typed "fire" has its forecast in a segment of the office\'s Fire Weather Planning Forecast: call nws_get_office_discussion with office set to the alert\'s "office" field, product_type "FWF", and sections set to the zone code; a fire zone code that is also a public zone code (e.g., "NDZ040") returns that public zone\'s forecast here, not the fire weather forecast. Marine forecast zones vary: many coastal zones serve a text forecast of wind and seas (e.g., "PZZ251"), while offshore zones (e.g., "GMZ056") and some coastal ones have none. Zone codes follow the pattern XXZ### (e.g., "WAZ315" for the City of Seattle).',
   annotations: { readOnlyHint: true },
   // Every reason below is raised by the NWS service layer carrying only the
   // reason, not by a `ctx.fail` in this handler; the framework fills the hint.
@@ -28,7 +28,7 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
       code: JsonRpcErrorCode.NotFound,
       when: 'Zone code is not a valid NWS forecast zone',
       recovery:
-        'Use an affectedZones entry from nws_search_alerts whose type is "forecast" (entries typed "county" or "fire" have no forecast product), the "forecastZone" field from nws_get_forecast, or the "forecastZone" column from nws_find_stations. Zone codes follow the pattern XXZ### (e.g., "WAZ315").',
+        'Use an affectedZones entry from nws_search_alerts whose type is "forecast" (entries typed "county" have no forecast product), the "forecastZone" field from nws_get_forecast, or the "forecastZone" column from nws_find_stations. Zone codes follow the pattern XXZ### (e.g., "WAZ315"). For an entry typed "fire", call nws_get_office_discussion with office set to the alert\'s "office" field, product_type "FWF", and sections set to the zone code.',
       severity: 'notice',
       thrownBy: 'service',
     },

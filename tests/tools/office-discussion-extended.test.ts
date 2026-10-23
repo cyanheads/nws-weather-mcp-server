@@ -65,7 +65,7 @@ describe('nws_get_office_discussion extended', () => {
     });
 
     it('passes all valid product_type values to service', async () => {
-      for (const type of ['AFD', 'HWO', 'ZFP', 'SPS'] as const) {
+      for (const type of ['AFD', 'HWO', 'ZFP', 'SPS', 'FWF'] as const) {
         mockGetOfficeDiscussion.mockResolvedValueOnce({ ...baseResult, productCode: type });
 
         const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
@@ -120,10 +120,47 @@ describe('nws_get_office_discussion extended', () => {
           'FXUS66 KSEW 301033\nAFDSEW\n\nArea Forecast Discussion\nNWS Seattle WA\n.SYNOPSIS...\nDry pattern continues.',
         wmoCollectiveId: 'FXUS66',
       });
+      // The product text sits in one fenced block after the heading and metadata
+      // lines, so a CommonMark client renders it verbatim (issue #62).
       expect(result.content).toEqual([
         {
           type: 'text',
-          text: '## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\nFXUS66 KSEW 301033\nAFDSEW\n\nArea Forecast Discussion\nNWS Seattle WA\n.SYNOPSIS...\nDry pattern continues.',
+          text: '## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\n```text\nFXUS66 KSEW 301033\nAFDSEW\n\nArea Forecast Discussion\nNWS Seattle WA\n.SYNOPSIS...\nDry pattern continues.\n```',
+        },
+      ]);
+    });
+  });
+
+  describe('wire output — sections selection', () => {
+    it('fences the selected text and keeps the notice as its own block', async () => {
+      mockGetOfficeDiscussion.mockResolvedValueOnce(baseResult);
+
+      const result = await runToolContract(getOfficeDiscussionTool, {
+        office: 'SEW',
+        sections: ['synopsis'],
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        issuanceTime: '2026-05-30T10:33:00+00:00',
+        issuingOffice: 'KSEW',
+        productCode: 'AFD',
+        productName: 'Area Forecast Discussion',
+        productText:
+          'FXUS66 KSEW 301033\nAFDSEW\n\nArea Forecast Discussion\nNWS Seattle WA\n\n.SYNOPSIS...\nDry pattern continues.',
+        wmoCollectiveId: 'FXUS66',
+        notice:
+          'Returned 1 of 1 sections with the product header: SYNOPSIS. Omit sections for the whole product.',
+      });
+      expect(result.content).toEqual([
+        {
+          type: 'text',
+          text: '## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\n```text\nFXUS66 KSEW 301033\nAFDSEW\n\nArea Forecast Discussion\nNWS Seattle WA\n\n.SYNOPSIS...\nDry pattern continues.\n```',
+        },
+        // The enrichment notice block is the framework's, unchanged by the fence.
+        {
+          type: 'text',
+          text: '\n\n> Returned 1 of 1 sections with the product header: SYNOPSIS. Omit sections for the whole product.',
         },
       ]);
     });
@@ -186,15 +223,48 @@ describe('nws_get_office_discussion extended', () => {
       const t = (getOfficeDiscussionTool.format!(selection)[0] as { type: 'text'; text: string })
         .text;
       expect(t).toBe(
-        '## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\nAFDSEW\n\n.SYNOPSIS...\nDry pattern continues.',
+        '## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\n```text\nAFDSEW\n\n.SYNOPSIS...\nDry pattern continues.\n```',
       );
     });
 
-    it('handles empty product text without crashing', () => {
+    it('sizes the fence one past the longest backtick run, so nothing inside closes it', () => {
+      const productText =
+        'AFDSEW\n```\n.SYNOPSIS...\nRun of seven: ```````.\n~~~\n   ```\nDry pattern continues.';
+      const t = (
+        getOfficeDiscussionTool.format!({ ...baseResult, productText })[0] as {
+          type: 'text';
+          text: string;
+        }
+      ).text;
+      const fence = '`'.repeat(8);
+      expect(t).toBe(
+        `## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\n${fence}text\n${productText}\n${fence}`,
+      );
+      // Only the opening and closing lines are fences of that length.
+      expect(t.split('\n').filter((line) => line.startsWith(fence))).toEqual([
+        `${fence}text`,
+        fence,
+      ]);
+    });
+
+    it('renders empty product text as an empty fenced block', () => {
       const emptyText: OfficeDiscussionResult = { ...baseResult, productText: '' };
       const blocks = getOfficeDiscussionTool.format!(emptyText);
       const t = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(t).toContain('Area Forecast Discussion');
+      expect(t).toBe(
+        '## Area Forecast Discussion (AFD)\n**Office:** KSEW | **Issued:** 2026-05-30T10:33:00+00:00 | **WMO ID:** FXUS66\n\n```text\n\n```',
+      );
+    });
+
+    it('keeps NWS "$$" and "&&" terminators verbatim inside the fence', () => {
+      const productText = 'AFDSEW\n.SYNOPSIS...\nDry.\n\n&&\n\n$$\n\n$&$1';
+      const t = (
+        getOfficeDiscussionTool.format!({ ...baseResult, productText })[0] as {
+          type: 'text';
+          text: string;
+        }
+      ).text;
+      expect(t.endsWith(`\`\`\`text\n${productText}\n\`\`\``)).toBe(true);
     });
   });
 

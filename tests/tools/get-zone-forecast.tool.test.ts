@@ -106,6 +106,20 @@ describe('nws_get_zone_forecast', () => {
     expect(getZoneForecastTool.description).toMatch(/type.*forecast/i);
   });
 
+  it('routes fire-typed affectedZones entries to the office FWF (issue #67)', () => {
+    const zoneNotFound = getZoneForecastTool.errors!.find((e) => e.reason === 'zone_not_found')!;
+
+    for (const text of [zoneNotFound.recovery, getZoneForecastTool.description]) {
+      expect(text).toContain('nws_get_office_discussion');
+      expect(text).toContain('product_type "FWF"');
+      expect(text).toContain('the alert\'s "office" field');
+      // County entries still have no zone forecast; fire entries are no longer called product-less.
+      expect(text).toMatch(/"county" have no (text )?forecast/);
+      expect(text).not.toMatch(/"fire" have no/);
+      expect(text).not.toContain('cwa');
+    }
+  });
+
   it('propagates zone_not_found error for invalid zone', async () => {
     mockGetZoneForecast.mockRejectedValueOnce(
       new Error('Zone "WAZ999" not found or has no forecast'),

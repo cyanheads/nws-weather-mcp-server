@@ -41,7 +41,7 @@ describe('nws_get_office_discussion', () => {
   });
 
   it('accepts valid product_type values', () => {
-    for (const type of ['AFD', 'HWO', 'ZFP', 'SPS'] as const) {
+    for (const type of ['AFD', 'HWO', 'ZFP', 'SPS', 'FWF'] as const) {
       const input = getOfficeDiscussionTool.input.parse({ office: 'SEW', product_type: type });
       expect(input.product_type).toBe(type);
     }
@@ -371,7 +371,7 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
     expect(text).toContain(message);
   });
 
-  it('returns an under-budget AFD byte-identical to the pre-outline output', async () => {
+  it('returns an under-budget AFD matching the wire fixture on both surfaces', async () => {
     const wire = JSON.parse(
       readFileSync(new URL('../fixtures/products/sew-afd.wire.json', import.meta.url), 'utf8'),
     ) as { structuredContent: OfficeDiscussionResult; content: unknown[] };
@@ -391,6 +391,145 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
     const zfp = await call(loadProduct('sew-zfp'), { sections });
     expect(zfp.structured.outline).toHaveLength(34);
     expect(zfp.structured.productText).toBeUndefined();
+  });
+
+  it.each([
+    ['afc-afd', 'whole'],
+    ['akq-zfp', 'outline'],
+    ['box-afd', 'whole'],
+    ['key-zfp', 'whole'],
+    ['lot-hwo', 'whole'],
+    ['lox-afd', 'whole'],
+    ['otx-zfp', 'whole'],
+    ['sew-zfp', 'outline'],
+    ['slc-afd', 'whole'],
+    ['bis-fwf', 'outline'],
+    ['riw-fwf', 'outline'],
+    ['twc-fwf', 'whole'],
+  ])('serves fixture %s as %s', async (name, arm) => {
+    const product = loadProduct(name);
+    const { structured, text } = await call(product, {});
+    if (arm === 'whole') {
+      expect(structured.productText).toBe(product.productText);
+      expect(structured.outline).toBeUndefined();
+      expect(structured.notice).toBeUndefined();
+    } else {
+      expect(structured.productText).toBeUndefined();
+      expect((structured.outline as unknown[]).length).toBeGreaterThan(1);
+      expect(text).toContain(structured.notice as string);
+    }
+  });
+
+  describe('FWF — fire weather zone segments (issue #67)', () => {
+    it('outlines an over-budget FWF with a row per fire weather zone line', async () => {
+      const riw = loadProduct('riw-fwf');
+      const { structured, text } = await call(riw, {});
+
+      expect(structured.productText).toBeUndefined();
+      expect(structured).toMatchObject({ productCode: 'FWF', issuingOffice: 'KRIW' });
+      const outline = structured.outline as { name: string; label?: string; bytes: number }[];
+      expect(outline).toHaveLength(19);
+      // A segment's size is its UGC line through its closing $$, measured from the fixture.
+      const start = riw.productText.indexOf('WYZ281-240945-');
+      const segmentBytes = bytes(
+        riw.productText.slice(start, riw.productText.indexOf('$$', start) + 2),
+      );
+      expect(outline).toContainEqual({
+        name: 'WYZ281',
+        label: 'Johnson County/Casper BLM',
+        bytes: segmentBytes,
+      });
+      expect(outline[0]).toEqual({
+        name: 'WYZ416',
+        label: 'West Wind River Mountains/East Zone Bridger Teton NF',
+        bytes: 3459,
+      });
+      expect(structured.notice).toBe(
+        'This FWF is 61685 bytes, over the 24000-byte response budget, so its 19 sections are outlined instead of returned. Re-call with the same office and product_type plus sections:["WYZ416"] to get that section (3459 bytes) with the product header. A selection returns the 1968-byte product header and closing lines plus every section it names whole, so add up the listed sizes before naming several.',
+      );
+      expect(text).toContain(structured.notice as string);
+      expect(text).toContain(`- \`WYZ281\` — Johnson County/Casper BLM — ${segmentBytes} bytes\n`);
+      expect(bytes(JSON.stringify(structured))).toBeLessThanOrEqual(BUDGET);
+      expect(bytes(text)).toBeLessThanOrEqual(BUDGET);
+    });
+
+    it("returns exactly the segment the FWF outline notice's worked re-call names", async () => {
+      const riw = loadProduct('riw-fwf');
+      const outlined = await call(riw, {});
+      const notice = outlined.structured.notice as string;
+      const named = /sections:\["([^"]+)"\]/.exec(notice)?.[1] as string;
+      const row = (outlined.structured.outline as { name: string; bytes: number }[]).find(
+        (entry) => entry.name === named,
+      );
+      const frame = Number(/returns the (\d+)-byte product header/.exec(notice)?.[1]);
+
+      const selected = await call(riw, { sections: [named] });
+      const productText = selected.structured.productText as string;
+      expect(bytes(productText)).toBe(frame + (row?.bytes ?? Number.NaN));
+      expect(ugcLines(productText)).toEqual([`${named}-240945-`]);
+      expect(bytes(JSON.stringify(selected.structured))).toBeLessThanOrEqual(BUDGET);
+    });
+
+    it('selects the Red Flag zone: header with its discussion, then that segment through $$', async () => {
+      const riw = loadProduct('riw-fwf');
+      const { structured, text } = await call(riw, { sections: ['wyz281'] });
+      const productText = structured.productText as string;
+
+      const header = riw.productText.slice(0, riw.productText.indexOf('WYZ280-240945-')).trimEnd();
+      expect(header).toContain('.DISCUSSION...');
+      expect(header).toContain('RED FLAG WARNING FOR ZONE 281');
+      const start = riw.productText.indexOf('WYZ281-240945-');
+      const segment = riw.productText.slice(start, riw.productText.indexOf('$$', start) + 2);
+      expect(productText).toBe(`${header}\n\n${segment}`);
+      expect(ugcLines(productText)).toEqual(['WYZ281-240945-']);
+      expect(structured.outline).toBeUndefined();
+      expect(structured.notice).toBe(
+        'Returned 1 of 19 sections with the product header: WYZ281. Omit sections for the whole product.',
+      );
+      expect(text).toContain(`\`\`\`text\n${productText}\n\`\`\``);
+    });
+
+    it('selects an FWF segment by a zone inside a UGC range', async () => {
+      const { structured } = await call(loadProduct('bis-fwf'), { sections: ['NDZ012'] });
+      expect(ugcLines(structured.productText as string)).toEqual(['NDZ003>005-011>013-231015-']);
+      expect(structured.notice).toBe(
+        'Returned 1 of 14 sections with the product header: NDZ003>005, NDZ011>013. Omit sections for the whole product.',
+      );
+    });
+
+    it('returns an under-budget FWF whole', async () => {
+      const twc = loadProduct('twc-fwf');
+      const { structured, text } = await call(twc, {});
+      expect(structured.productText).toBe(twc.productText);
+      expect(structured.outline).toBeUndefined();
+      expect(structured.notice).toBeUndefined();
+      expect(text).toContain(`\`\`\`text\n${twc.productText}\n\`\`\``);
+    });
+  });
+
+  it('measures the fenced content[0] against the budget, not just the JSON', async () => {
+    // A long backtick run lengthens both fences but costs the JSON nothing, so only
+    // the rendered surface (fence included) crosses the budget here.
+    const box = loadProduct('box-afd');
+    const run = '`'.repeat(3_000);
+    const productText = `FXUS61 KBOX 161159\nAFDBOX\n\n.DISCUSSION...\n${run}\n\n&&\n\n.AVIATION...\n${'Forecast reasoning text. '.repeat(800)}\n\n$$`;
+    const product: OfficeDiscussionResult = { ...box, productText };
+    const fence = '`'.repeat(3_001);
+    const rendered = `## ${box.productName} (AFD)\n**Office:** ${box.issuingOffice} | **Issued:** ${box.issuanceTime} | **WMO ID:** ${box.wmoCollectiveId}\n\n${fence}text\n${productText}\n${fence}`;
+    expect(bytes(JSON.stringify(product))).toBeLessThanOrEqual(BUDGET);
+    expect(bytes(rendered)).toBeGreaterThan(BUDGET);
+
+    const { structured, text } = await call(product, {});
+    expect(structured.productText).toBeUndefined();
+    expect(structured.outline).toEqual([
+      { name: 'AVIATION', bytes: 20_013 },
+      { name: 'DISCUSSION', bytes: 3_019 },
+    ]);
+    expect(structured.notice).toContain(
+      `This AFD is ${bytes(rendered)} bytes, over the 24000-byte`,
+    );
+    // The outline arm renders no fence.
+    expect(text).not.toContain('```');
   });
 
   it('returns a product with fewer than two sections whole at any size', async () => {

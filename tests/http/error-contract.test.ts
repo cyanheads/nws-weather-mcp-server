@@ -1367,7 +1367,7 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
         description: expect.any(String),
         default: 'AFD',
         type: 'string',
-        enum: ['AFD', 'HWO', 'ZFP', 'SPS'],
+        enum: ['AFD', 'HWO', 'ZFP', 'SPS', 'FWF'],
       });
       expect(discussion?.required).toEqual(['office']);
 

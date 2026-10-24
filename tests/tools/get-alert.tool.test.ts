@@ -260,8 +260,8 @@ describe('nws_get_alert', () => {
     expect(error.data?.recovery?.hint).toBe(RECOVERY);
     expect(error.message).toBe(message);
     const text = textOf(result);
-    expect(text).toContain(message);
-    expect(text).toContain(`Recovery: ${RECOVERY}`);
+    expect(text).toContain(message.replace('~7', '\\~7'));
+    expect(text).toContain(`Recovery: ${RECOVERY.replace('[]', '\\[\\]')}`);
     expect(http.calls).toHaveLength(1);
   });
 

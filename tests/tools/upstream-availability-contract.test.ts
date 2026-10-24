@@ -1355,7 +1355,7 @@ describe('upstream availability contract', () => {
       expect(error.data?.recovery?.hint).toBe(hint);
       expect(error.message).toBe(message);
       expect(text).toContain(message);
-      expect(text).toContain(`Recovery: ${hint}`);
+      expect(text).toContain(`Recovery: ${hint.replace('[]', '\\[\\]')}`);
       expect(http.calls).toHaveLength(0);
     });
 

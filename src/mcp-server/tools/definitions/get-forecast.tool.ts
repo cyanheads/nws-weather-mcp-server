@@ -5,10 +5,10 @@
 
 import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
+import { decodeCursor, encodeCursor, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { cToF, formatTimestamp, fToC } from '../format-utils.js';
-import { composeNotice, invalidCursor } from '../page-limit.js';
+import { composeNotice, invalidCursor, validatePageWindow } from '../page-limit.js';
 import { unsetIfBlank } from '../unset-if-blank.js';
 
 /**
@@ -50,11 +50,13 @@ interface PeriodWindow {
  */
 function readCursor(cursor: string, ctx: Context): PeriodWindow {
   const { offset, limit, hourly } = decodeCursor(cursor, ctx);
-  if (
-    !Number.isInteger(offset) ||
-    !Number.isInteger(limit) ||
-    (hourly !== undefined && typeof hourly !== 'boolean')
-  ) {
+  validatePageWindow(
+    offset,
+    limit,
+    cursor,
+    'Omit `cursor` to start from the first period, or pass the `nextCursor` from the previous response unchanged.',
+  );
+  if (hourly !== undefined && typeof hourly !== 'boolean') {
     throw invalidCursor(
       cursor,
       'Omit `cursor` to start from the first period, or pass the `nextCursor` from the previous response unchanged.',
@@ -118,6 +120,12 @@ export const getForecastTool = tool('nws_get_forecast', {
   ],
 
   input: z.object({
+    include_amounts: z
+      .boolean()
+      .default(false)
+      .describe(
+        'Include every native quantitativePrecipitation, snowfallAmount, and iceAccumulation interval from the NWS grid. Applies to this call only, including cursor pages; units and interval strings remain as NWS sends them. Unavailable amounts are explained in notice while the forecast remains available.',
+      ),
     latitude: z.number().min(-90).max(90).describe('Latitude in decimal degrees (e.g., 47.6062).'),
     longitude: z
       .number()
@@ -139,6 +147,40 @@ export const getForecastTool = tool('nws_get_forecast', {
   }),
 
   output: z.object({
+    precipitationAmounts: z
+      .array(
+        z
+          .object({
+            layer: z
+              .enum(['quantitativePrecipitation', 'snowfallAmount', 'iceAccumulation'])
+              .describe('Native grid amount layer name'),
+            uom: z.string().nullable().describe('Native NWS layer unit, or null when omitted'),
+            values: z
+              .array(
+                z
+                  .object({
+                    validTime: z.string().describe('Native ISO 8601 interval string, unchanged'),
+                    value: z.number().nullable().describe('Native amount, or null when unreported'),
+                  })
+                  .describe('One native accumulation interval'),
+              )
+              .describe(
+                'Every interval in this layer, including null measurements; empty when NWS publishes no intervals',
+              ),
+          })
+          .describe('One present quantitative amount layer'),
+      )
+      .optional()
+      .describe(
+        'Present grid amount layers when requested and fetched successfully; missing layers are named in notice',
+      ),
+    amountsUpdateTime: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        'Native grid updateTime, distinct from forecast updateTime; null when omitted upstream and absent when amounts were not fetched',
+      ),
     location: z
       .object({
         city: z.string().describe('City name'),
@@ -214,7 +256,7 @@ export const getForecastTool = tool('nws_get_forecast', {
       .string()
       .optional()
       .describe(
-        'Set when the forecast data was last updated more than 24 hours ago (giving its age in hours), when periods remain beyond this page, or when the supplied cursor points past the end of the period array.',
+        'Guidance when forecast data was last updated more than 24 hours ago, periods remain or the cursor points past the end, or requested amount data or layers are unavailable.',
       ),
   },
 
@@ -234,7 +276,10 @@ export const getForecastTool = tool('nws_get_forecast', {
     const hourly = cursor?.hourly ?? input.hourly;
     const mode = hourly ? 'hourly' : '7-day';
 
-    const result = await getNwsService().getForecast(input.latitude, input.longitude, hourly, ctx);
+    const service = getNwsService();
+    const result = input.include_amounts
+      ? await service.getForecast(input.latitude, input.longitude, hourly, ctx, true)
+      : await service.getForecast(input.latitude, input.longitude, hourly, ctx);
 
     const allPeriods = result.forecast.periods;
     const totalCount = allPeriods.length;
@@ -280,10 +325,16 @@ export const getForecastTool = tool('nws_get_forecast', {
       pagingNotice = `The cursor points past the end of this ${mode} forecast's ${totalCount} periods. ${restart}`;
     }
 
-    const notice = composeNotice(staleNotice, pagingNotice);
+    const notice = composeNotice(staleNotice, pagingNotice, result.amountsNotice);
     if (notice) ctx.enrich.notice(notice);
 
     return {
+      ...(result.precipitationAmounts !== undefined
+        ? {
+            precipitationAmounts: result.precipitationAmounts,
+            amountsUpdateTime: result.amountsUpdateTime,
+          }
+        : {}),
       location: result.location,
       generatedAt: result.forecast.generatedAt,
       updateTime,
@@ -308,15 +359,14 @@ export const getForecastTool = tool('nws_get_forecast', {
   format: (result) => {
     const loc = result.location;
     const lines = [
-      `## Forecast for ${loc.city}, ${loc.state}`,
-      `**Office:** ${loc.office} | **Time Zone:** ${loc.timeZone} | **Forecast Zone:** ${loc.forecastZone} | **County Zone:** ${loc.county}`,
+      `## Forecast for ${escapeMarkdownInline(loc.city)}, ${escapeMarkdownInline(loc.state)}`,
+      `**Office:** ${escapeMarkdownInline(loc.office)} | **Time Zone:** ${escapeMarkdownInline(loc.timeZone)} | **Forecast Zone:** ${escapeMarkdownInline(loc.forecastZone)} | **County Zone:** ${escapeMarkdownInline(loc.county)}`,
       `**Generated:** ${formatTimestamp(result.generatedAt, loc.timeZone)} | **Updated:** ${result.updateTime === null ? 'not reported' : formatTimestamp(result.updateTime, loc.timeZone)}`,
       '',
     ];
 
     if (result.periods.length === 0) {
       lines.push('No forecast periods available for this location.');
-      return [{ type: 'text', text: lines.join('\n') }];
     }
 
     for (const p of result.periods) {
@@ -327,21 +377,41 @@ export const getForecastTool = tool('nws_get_forecast', {
         p.dewpointC != null ? ` | **Dewpoint:** ${cToF(p.dewpointC)}°F (${p.dewpointC}°C)` : '';
 
       const timeRange = `${formatTimestamp(p.startTime, loc.timeZone)} → ${formatTimestamp(p.endTime, loc.timeZone)}`;
-      lines.push(`### ${p.name} — ${p.shortForecast}`);
+      lines.push(`### ${escapeMarkdownInline(p.name)} — ${escapeMarkdownInline(p.shortForecast)}`);
       lines.push(`_${timeRange}_`);
       const tempDual =
         p.temperatureUnit === 'F'
-          ? `${p.temperature}°${p.temperatureUnit} (${fToC(p.temperature)}°C)`
-          : `${cToF(p.temperature)}°F (${p.temperature}°${p.temperatureUnit})`;
+          ? `${p.temperature}°${escapeMarkdownInline(p.temperatureUnit)} (${fToC(p.temperature)}°C)`
+          : `${cToF(p.temperature)}°F (${p.temperature}°${escapeMarkdownInline(p.temperatureUnit)})`;
       lines.push(
-        `**${tempDual}** | **Wind:** ${p.windSpeed} ${p.windDirection}${precip}${humidity}${dew}`,
+        `**${tempDual}** | **Wind:** ${escapeMarkdownInline(p.windSpeed)} ${escapeMarkdownInline(p.windDirection)}${precip}${humidity}${dew}`,
       );
       if (p.detailedForecast) {
-        lines.push(p.detailedForecast);
+        lines.push(escapeMarkdownInline(p.detailedForecast));
       }
       lines.push('');
     }
 
+    if (result.precipitationAmounts !== undefined) {
+      if (result.amountsUpdateTime === undefined)
+        throw new Error('Precipitation amounts require amountsUpdateTime (a timestamp or null).');
+      lines.push(
+        `## Precipitation Amounts`,
+        `**Amounts Updated:** ${result.amountsUpdateTime === null ? 'null' : escapeMarkdownInline(result.amountsUpdateTime)}`,
+      );
+      for (const layer of result.precipitationAmounts) {
+        lines.push(
+          `### ${layer.layer}`,
+          `**Unit:** ${layer.uom === null ? 'null' : escapeMarkdownInline(layer.uom)}`,
+        );
+        if (layer.values.length === 0) lines.push('Intervals: []');
+        for (const interval of layer.values)
+          lines.push(
+            `${escapeMarkdownInline(interval.validTime)}: ${interval.value === null ? 'null' : interval.value}`,
+          );
+      }
+      if (result.precipitationAmounts.length === 0) lines.push('Layers: []');
+    }
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

@@ -4,8 +4,9 @@
  * @module services/nws/nws-service
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
+import { type Context, z } from '@cyanheads/mcp-ts-core';
 import {
+  JsonRpcErrorCode,
   McpError,
   notFound,
   requestCancelled,
@@ -33,6 +34,7 @@ import type {
   NwsValue,
   Observation,
   PointsMetadata,
+  PrecipitationAmount,
   ProductListEntry,
   Station,
   ZoneForecastPeriod,
@@ -44,6 +46,23 @@ const POINTS_CACHE_TTL_MS = 3_600_000; // 1 hour — grid cells rarely change
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
 const REQUEST_TIMEOUT_MS = 10_000;
+/** Optional amounts share one deadline across attempts, body reads, and backoff. */
+const AMOUNTS_TIMEOUT_MS = 8_000;
+const AMOUNTS_FORECAST_TIMEOUT_MS = 55_000;
+
+const AMOUNT_LAYERS = ['quantitativePrecipitation', 'snowfallAmount', 'iceAccumulation'] as const;
+const amountLayerSchema = z.object({
+  uom: z.string().nullish(),
+  values: z.array(z.object({ validTime: z.string(), value: z.number().nullable() })),
+});
+const gridAmountsSchema = z.object({
+  properties: z.object({
+    updateTime: z.string().nullish(),
+    quantitativePrecipitation: amountLayerSchema.optional(),
+    snowfallAmount: amountLayerSchema.optional(),
+    iceAccumulation: amountLayerSchema.optional(),
+  }),
+});
 
 /** Instance-scoped cache for /points metadata. Grid cells are geography, not tenant-scoped. */
 const pointsCache = new Map<string, { data: PointsMetadata; expires: number }>();
@@ -479,6 +498,8 @@ async function resolvePoints(lat: number, lon: number, ctx: Context): Promise<Po
     gridY: props.gridY as number,
     forecastUrl,
     forecastHourlyUrl,
+    forecastGridDataUrl:
+      typeof props.forecastGridData === 'string' ? props.forecastGridData : undefined,
     observationStationsUrl,
     city: relativeLocation?.city ?? '',
     state: relativeLocation?.state ?? '',
@@ -762,6 +783,8 @@ function bearingToCompass(deg: number): string {
 // ---------------------------------------------------------------------------
 
 export interface ForecastResult {
+  readonly amountsNotice?: string;
+  readonly amountsUpdateTime?: string | null;
   readonly forecast: ForecastResponse;
   readonly location: {
     city: string;
@@ -771,6 +794,7 @@ export interface ForecastResult {
     forecastZone: string;
     county: string;
   };
+  readonly precipitationAmounts?: PrecipitationAmount[];
 }
 
 export interface AlertSearchResult {
@@ -832,6 +856,37 @@ export class NwsService {
     lon: number,
     hourly: boolean,
     ctx: Context,
+    includeAmounts = false,
+  ): Promise<ForecastResult> {
+    if (!includeAmounts) return this.fetchForecast(lat, lon, hourly, ctx, false, ctx.signal);
+    const deadline = AbortSignal.timeout(AMOUNTS_FORECAST_TIMEOUT_MS);
+    const operationContext = { ...ctx, signal: AbortSignal.any([ctx.signal, deadline]) };
+    try {
+      return await this.fetchForecast(lat, lon, hourly, operationContext, true, ctx.signal);
+    } catch (error) {
+      if (
+        !ctx.signal.aborted &&
+        deadline.aborted &&
+        error instanceof McpError &&
+        error.code === JsonRpcErrorCode.RequestCancelled
+      ) {
+        throw timeout(
+          'NWS forecast request exceeded its 55-second deadline. Retry in a few seconds.',
+          { timeoutMs: AMOUNTS_FORECAST_TIMEOUT_MS },
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async fetchForecast(
+    lat: number,
+    lon: number,
+    hourly: boolean,
+    ctx: Context,
+    includeAmounts: boolean,
+    callerSignal: AbortSignal,
   ): Promise<ForecastResult> {
     const points = await resolvePoints(lat, lon, ctx);
     const marineUnsupported = () =>
@@ -863,6 +918,65 @@ export class NwsService {
         problemType === MARINE_FORECAST_NOT_SUPPORTED ? marineUnsupported() : notFound(message),
     );
 
+    const forecast = parseForecastPeriods(data);
+    let amounts: Pick<
+      ForecastResult,
+      'precipitationAmounts' | 'amountsUpdateTime' | 'amountsNotice'
+    > = {};
+    if (includeAmounts) {
+      if (!points.forecastGridDataUrl) {
+        amounts = {
+          amountsNotice: 'Precipitation amounts unavailable: NWS supplied no forecastGridData URL.',
+        };
+      } else {
+        const deadline = AbortSignal.timeout(AMOUNTS_TIMEOUT_MS);
+        const amountContext = { ...ctx, signal: AbortSignal.any([ctx.signal, deadline]) };
+        try {
+          const raw = await nwsFetch<unknown>(points.forecastGridDataUrl, amountContext);
+          const parsed = gridAmountsSchema.safeParse(raw);
+          if (!parsed.success) throw serializationError('NWS grid amounts response is unusable.');
+          const props = parsed.data.properties;
+          const missing = AMOUNT_LAYERS.filter((layer) => props[layer] === undefined);
+          amounts = {
+            precipitationAmounts: AMOUNT_LAYERS.flatMap((layer) => {
+              const value = props[layer];
+              return value === undefined
+                ? []
+                : [{ layer, uom: value.uom ?? null, values: value.values }];
+            }),
+            amountsUpdateTime: props.updateTime ?? null,
+            ...(missing.length
+              ? { amountsNotice: `NWS grid amounts omit these layers: ${missing.join(', ')}.` }
+              : {}),
+          };
+        } catch (error) {
+          if (callerSignal.aborted) throw error;
+          const availableFailure =
+            error instanceof McpError &&
+            [
+              JsonRpcErrorCode.ServiceUnavailable,
+              JsonRpcErrorCode.Timeout,
+              JsonRpcErrorCode.SerializationError,
+              JsonRpcErrorCode.NotFound,
+              JsonRpcErrorCode.RateLimited,
+            ].includes(error.code);
+          if (
+            !availableFailure &&
+            !(
+              (deadline.aborted || ctx.signal.aborted) &&
+              error instanceof McpError &&
+              error.code === JsonRpcErrorCode.RequestCancelled
+            )
+          )
+            throw error;
+          amounts = {
+            amountsNotice:
+              'Precipitation amounts unavailable from NWS; the main forecast is still available. Retry include_amounts on a later call.',
+          };
+        }
+      }
+    }
+
     return {
       location: {
         city: points.city,
@@ -872,7 +986,8 @@ export class NwsService {
         forecastZone: points.forecastZone,
         county: points.county,
       },
-      forecast: parseForecastPeriods(data),
+      forecast,
+      ...amounts,
     };
   }
 

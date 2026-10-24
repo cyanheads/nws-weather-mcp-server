@@ -57,6 +57,67 @@ const forecastResult: ForecastResult = {
   },
 };
 
+describe('opt-in native amounts', () => {
+  it('fails loudly when an amount result lacks its required timestamp-or-null field', async () => {
+    mockGetForecast.mockResolvedValueOnce({ ...forecastResult, precipitationAmounts: [] });
+    const input = getForecastTool.input.parse({
+      latitude: 47.6,
+      longitude: -122.3,
+      include_amounts: true,
+    });
+    const result = await getForecastTool.handler(
+      input,
+      createMockContext({ errors: getForecastTool.errors }),
+    );
+    expect(() => getForecastTool.format!(result)).toThrow(
+      'Precipitation amounts require amountsUpdateTime',
+    );
+  });
+  it('renders every native interval and null metadata even with no forecast periods', async () => {
+    mockGetForecast.mockResolvedValueOnce({
+      ...forecastResult,
+      forecast: { ...forecastResult.forecast, periods: [] },
+      precipitationAmounts: [
+        {
+          layer: 'quantitativePrecipitation',
+          uom: null,
+          values: [
+            { validTime: 'P1M/NOW', value: null },
+            { validTime: '2026-04-03T00:00:00Z/P1D', value: 0 },
+          ],
+        },
+        { layer: 'snowfallAmount', uom: 'wmoUnit:mm', values: [] },
+      ],
+      amountsUpdateTime: null,
+    });
+    const result = await runToolContract(getForecastTool, {
+      latitude: 47.6,
+      longitude: -122.3,
+      include_amounts: true,
+    });
+    expect(result.structuredContent).toMatchObject({
+      amountsUpdateTime: null,
+      precipitationAmounts: [
+        {
+          layer: 'quantitativePrecipitation',
+          uom: null,
+          values: [
+            { validTime: 'P1M/NOW', value: null },
+            { validTime: '2026-04-03T00:00:00Z/P1D', value: 0 },
+          ],
+        },
+        { layer: 'snowfallAmount', uom: 'wmoUnit:mm', values: [] },
+      ],
+    });
+    const text = contentText(result);
+    expect(text).toContain('P1M/NOW');
+    expect(text).toContain('2026-04-03T00:00:00Z/P1D');
+    expect(text).toContain('snowfallAmount');
+    expect(text).toContain('null');
+    expect(mockGetForecast).toHaveBeenLastCalledWith(47.6, -122.3, false, expect.anything(), true);
+  });
+});
+
 /** Build a forecast result whose period array carries `count` distinguishable hourly periods. */
 function hourlyForecast(count: number): ForecastResult {
   return {

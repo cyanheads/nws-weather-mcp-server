@@ -51,6 +51,17 @@ function text(
 }
 
 describe('nws_get_observations format() — unit conversions', () => {
+  it('escapes upstream station names, conditions, and cloud labels as literal text', () => {
+    const t = text({
+      stationName: 'A *station* [west]',
+      textDescription: 'Rain *heavy* [nearby]',
+      cloudLayers: [{ amount: '*BKN*', baseM: 500 }],
+    });
+    expect(t).toContain('## Current Conditions — A \\*station\\* \\[west\\] (KSEA)');
+    expect(t).toContain('**Rain \\*heavy\\* \\[nearby\\]**');
+    expect(t).toContain('**Clouds:** \\*BKN\\* at 500m (1640 ft)');
+  });
+
   it('renders temperature with both F and C', () => {
     // 15°C = 59°F
     const t = text({ temperatureC: 15 });
@@ -252,7 +263,7 @@ describe('nws_get_observations format() — cloud layers', () => {
 });
 
 describe('nws_get_observations format() — sparse payloads', () => {
-  it('shows limited-data notice when most measurements are null', () => {
+  it('leaves limited-data notices to handler enrichment when measurements are null', () => {
     const t = text({
       temperatureC: null,
       dewpointC: null,
@@ -264,7 +275,7 @@ describe('nws_get_observations format() — sparse payloads', () => {
       windChillC: null,
       cloudLayers: [],
     });
-    expect(t).toContain('Limited data');
+    expect(t).not.toContain('Limited data');
   });
 
   it('does not show limited-data notice when most measurements are present', () => {
@@ -405,7 +416,7 @@ describe('nws_get_observations format() — exact output', () => {
     `);
   });
 
-  it('pins a sparse report with the limited-data notice', () => {
+  it('pins a sparse report whose notice is carried by enrichment', () => {
     expect(
       pinned({
         textDescription: '',
@@ -423,9 +434,7 @@ describe('nws_get_observations format() — exact output', () => {
       Observed: <observed> (America/Los_Angeles)
 
       **Temperature:** 46°F (8°C)
-      **Wind:** 180°, sustained not reported
-
-      _Limited data — most measurements unavailable from this station. Try a different station using nws_find_stations._"
+      **Wind:** 180°, sustained not reported"
     `);
   });
 

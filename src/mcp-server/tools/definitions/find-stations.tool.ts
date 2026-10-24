@@ -5,9 +5,16 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { paginateArray } from '@cyanheads/mcp-ts-core/utils';
+import { decodeCursor, escapeMarkdownInline, paginateArray } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
-import { clampPageLimit, composeNotice, LIMIT_CEILING, type PageLimit } from '../page-limit.js';
+import {
+  clampPageLimit,
+  composeNotice,
+  LIMIT_CEILING,
+  type PageLimit,
+  validatePageWindow,
+} from '../page-limit.js';
+import { unsetIfBlank } from '../unset-if-blank.js';
 
 /**
  * Upper bound on stations per page. The NWS grid-stations endpoint returns the
@@ -119,6 +126,16 @@ export const findStationsTool = tool('nws_find_stations', {
   },
 
   async handler(input, ctx) {
+    const cursor = unsetIfBlank(input.cursor);
+    if (cursor !== undefined) {
+      const { offset, limit } = decodeCursor(cursor, ctx);
+      validatePageWindow(
+        offset,
+        limit,
+        cursor,
+        'Omit `cursor` to restart from the nearest station, or pass the previous nextCursor unchanged.',
+      );
+    }
     const result = await getNwsService().findStations(input.latitude, input.longitude, ctx);
 
     const allStations = [...result.stations];
@@ -129,10 +146,10 @@ export const findStationsTool = tool('nws_find_stations', {
 
     // A cursor carries its own page size, so only a first page's limit is held
     // to the cap; `paginateArray` applies its cap to cursor pages alone.
-    const { effectiveLimit, clamp }: PageLimit = input.cursor
+    const { effectiveLimit, clamp }: PageLimit = cursor
       ? { effectiveLimit: input.limit }
       : clampPageLimit(input.limit, MAX_STATIONS);
-    const page = paginateArray(allStations, input.cursor, effectiveLimit, MAX_STATIONS, ctx);
+    const page = paginateArray(allStations, cursor, effectiveLimit, MAX_STATIONS, ctx);
 
     const stations = page.items.map((s) => ({
       stationId: s.stationId,
@@ -156,7 +173,7 @@ export const findStationsTool = tool('nws_find_stations', {
       pageNotice = `No observation stations found near (${input.latitude}, ${input.longitude}). Points beyond the NWS forecast grid (open waters and some remote islands) have no assigned stations — try coordinates on or near the coast of a US state or territory.`;
     } else if (page.nextCursor) {
       pageNotice = `Returning ${stations.length} of ${totalCount} nearby stations. Pass nextCursor back as cursor for the next page. Stations are contiguous within one response; the list is re-fetched on every call, so a later call can window an updated registry.`;
-    } else if (input.cursor && stations.length === 0) {
+    } else if (cursor && stations.length === 0) {
       pageNotice = `The cursor points past the end of the ${totalCount} stations near (${input.latitude}, ${input.longitude}). Call again without a cursor to restart from the nearest station.`;
     }
     const notice = composeNotice(clamp?.notice, pageNotice);
@@ -185,7 +202,7 @@ export const findStationsTool = tool('nws_find_stations', {
     for (const s of result.stations) {
       const elev = s.elevationM != null ? `${Math.round(s.elevationM)}m` : '—';
       lines.push(
-        `| ${s.stationId} | ${s.name} | ${s.distanceKm} km | ${s.bearing} | ${elev} | ${s.timeZone} | ${s.county} | ${s.forecastZone} |`,
+        `| ${escapeMarkdownInline(s.stationId)} | ${escapeMarkdownInline(s.name)} | ${s.distanceKm} km | ${escapeMarkdownInline(s.bearing)} | ${elev} | ${escapeMarkdownInline(s.timeZone)} | ${escapeMarkdownInline(s.county)} | ${escapeMarkdownInline(s.forecastZone)} |`,
       );
     }
 

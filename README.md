@@ -60,6 +60,7 @@ Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't s
 
 - `latitude` + `longitude`; returns 14 named 12-hour periods (~7 days) by default, or with `hourly: true` one-hour periods with dewpoint and humidity, 48 per page of the ~156 upstream
 - `nextCursor` carries its mode, so an hourly walk continues hourly without resending `hourly: true`
+- `include_amounts: true` adds every native `quantitativePrecipitation`, `snowfallAmount`, and `iceAccumulation` interval as `precipitationAmounts` (`layer`, `uom`, `values` with `validTime` and `value`), plus the separate `amountsUpdateTime`. Default false; resend it on any cursor page that needs amounts. Interval strings, units, zeroes, and nulls stay unchanged. Missing layers and unavailable amounts are explained in `notice`; present empty layers carry `values: []`. Absent units or update time are null. An unavailable amount feed leaves the main forecast available.
 - Returns `updateTime`, when the grid's forecast data was last updated, beside `generatedAt`; a `notice` flags a grid not updated in more than 24 hours
 - Returns the `forecastZone` and `county` zone codes for chaining into `nws_search_alerts`
 - Marine coordinates fail with `marine_forecast_unsupported`, and land points NWS serves no forecast grid for fail with `no_forecast_grid`
@@ -165,18 +166,40 @@ Agent-friendly output:
 
 ### Public Hosted Instance
 
-A public instance is available at `https://nws.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+A public instance is available at `https://nws.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http nws-weather-mcp-server https://nws.caseyjhand.com/mcp
+```
+
+For Cline (`cline_mcp_settings.json`):
 
 ```json
 {
   "mcpServers": {
     "nws-weather-mcp-server": {
-      "type": "streamable-http",
+      "type": "streamableHttp",
       "url": "https://nws.caseyjhand.com/mcp"
     }
   }
 }
 ```
+
+For Cursor (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "nws-weather-mcp-server": {
+      "url": "https://nws.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+Claude Desktop adds remote servers under Settings → Connectors.
 
 ### Self-Hosted / Local
 

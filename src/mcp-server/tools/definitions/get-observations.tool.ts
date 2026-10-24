@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import {
   formatCloudLayers,
@@ -17,6 +18,7 @@ import {
   roundTenth,
   roundValue,
 } from '../format-utils.js';
+import { composeNotice } from '../page-limit.js';
 import { unsetIfBlank } from '../unset-if-blank.js';
 
 /**
@@ -169,7 +171,7 @@ export const getObservationsTool = tool('nws_get_observations', {
       .string()
       .optional()
       .describe(
-        'Guidance when the latest observation is more than 2 hours old — data may not reflect current conditions.',
+        'Guidance when the latest observation is more than 2 hours old or most measurements are unavailable from this station.',
       ),
   },
 
@@ -206,12 +208,25 @@ export const getObservationsTool = tool('nws_get_observations', {
     // Anything older than 2 hours warrants a notice.
     const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
     const observedMs = new Date(obs.timestamp).getTime();
+    let staleNotice: string | undefined;
     if (!Number.isNaN(observedMs) && Date.now() - observedMs > STALE_THRESHOLD_MS) {
       const ageHours = Math.round(((Date.now() - observedMs) / 3_600_000) * 10) / 10;
-      ctx.enrich.notice(
-        `Observation is ${ageHours}h old — data may not reflect current conditions. Try a different station using nws_find_stations.`,
-      );
+      staleNotice = `Observation is ${ageHours}h old — data may not reflect current conditions. Try a different station using nws_find_stations.`;
     }
+    const measurable = [
+      obs.temperature,
+      obs.dewpoint,
+      obs.windSpeed,
+      obs.barometricPressure,
+      obs.visibility,
+      obs.relativeHumidity,
+    ];
+    const limitedNotice =
+      measurable.filter((measurement) => measurement.value == null).length >= 4
+        ? 'Limited data — most measurements unavailable from this station. Try a different station using nws_find_stations.'
+        : undefined;
+    const notice = composeNotice(staleNotice, limitedNotice);
+    if (notice) ctx.enrich.notice(notice);
 
     return {
       stationId: obs.stationId,
@@ -240,15 +255,15 @@ export const getObservationsTool = tool('nws_get_observations', {
   },
 
   format: (result) => {
-    const zoneSuffix = result.timeZone ? ` (${result.timeZone})` : '';
+    const zoneSuffix = result.timeZone ? ` (${escapeMarkdownInline(result.timeZone)})` : '';
     const observed = `Observed: ${formatTimestamp(result.timestamp, result.timeZone)}${zoneSuffix}`;
     // textDescription is empty during METAR gaps — omit the bold segment so the
     // header doesn't render a bare `****`.
     const conditions = result.textDescription
-      ? `**${result.textDescription}** | ${observed}`
+      ? `**${escapeMarkdownInline(result.textDescription)}** | ${observed}`
       : observed;
     const lines = [
-      `## Current Conditions — ${result.stationName} (${result.stationId})`,
+      `## Current Conditions — ${escapeMarkdownInline(result.stationName)} (${escapeMarkdownInline(result.stationId)})`,
       conditions,
       '',
     ];
@@ -289,24 +304,7 @@ export const getObservationsTool = tool('nws_get_observations', {
     if (precipitation) lines.push(`**Precipitation:** ${precipitation}`);
 
     if (result.cloudLayers.length > 0) {
-      lines.push(`**Clouds:** ${formatCloudLayers(result.cloudLayers)}`);
-    }
-
-    // Flag when most measurements are missing
-    const measurable = [
-      result.temperatureC,
-      result.dewpointC,
-      result.windSpeedKmh,
-      result.barometricPressurePa,
-      result.visibilityM,
-      result.relativeHumidityPct,
-    ];
-    const nullCount = measurable.filter((v) => v == null).length;
-    if (nullCount >= 4) {
-      lines.push('');
-      lines.push(
-        '_Limited data — most measurements unavailable from this station. Try a different station using nws_find_stations._',
-      );
+      lines.push(`**Clouds:** ${escapeMarkdownInline(formatCloudLayers(result.cloudLayers))}`);
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

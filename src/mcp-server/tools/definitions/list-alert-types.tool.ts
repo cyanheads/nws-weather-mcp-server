@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 
 export const listAlertTypesTool = tool('nws_list_alert_types', {
@@ -28,7 +29,10 @@ export const listAlertTypesTool = tool('nws_list_alert_types', {
   },
 
   format: (result) => {
-    const lines = [`## ${result.count} NWS Alert Event Types\n`, result.eventTypes.join(', ')];
+    const lines = [
+      `## ${result.count} NWS Alert Event Types\n`,
+      result.eventTypes.map(escapeMarkdownInline).join(', '),
+    ];
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

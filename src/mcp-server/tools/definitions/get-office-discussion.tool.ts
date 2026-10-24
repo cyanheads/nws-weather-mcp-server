@@ -7,7 +7,11 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { DEFAULT_OUTLINE_BUDGET_BYTES, markdown } from '@cyanheads/mcp-ts-core/utils';
+import {
+  DEFAULT_OUTLINE_BUDGET_BYTES,
+  escapeMarkdownInline,
+  markdown,
+} from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import {
   type ProductPart,
@@ -46,8 +50,8 @@ interface DiscussionView {
  */
 function renderText(result: DiscussionView): string {
   const lines = [
-    `## ${result.productName} (${result.productCode})`,
-    `**Office:** ${result.issuingOffice} | **Issued:** ${result.issuanceTime} | **WMO ID:** ${result.wmoCollectiveId}`,
+    `## ${escapeMarkdownInline(result.productName)} (${escapeMarkdownInline(result.productCode)})`,
+    `**Office:** ${escapeMarkdownInline(result.issuingOffice)} | **Issued:** ${escapeMarkdownInline(result.issuanceTime)} | **WMO ID:** ${escapeMarkdownInline(result.wmoCollectiveId)}`,
   ];
   if (result.productText !== undefined) {
     lines.push('', markdown().codeBlock(result.productText, 'text').build());
@@ -55,7 +59,9 @@ function renderText(result: DiscussionView): string {
   if (result.outline) {
     lines.push('', `**${result.outline.length} sections** (largest first):`, '');
     for (const row of result.outline) {
-      lines.push(`- \`${row.name}\`${row.label ? ` — ${row.label}` : ''} — ${row.bytes} bytes`);
+      lines.push(
+        `- ${markdown().inlineCode(row.name).build()}${row.label ? ` — ${escapeMarkdownInline(row.label)}` : ''} — ${row.bytes} bytes`,
+      );
     }
   }
   return lines.join('\n');
@@ -174,6 +180,10 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
       .describe(
         'Set when the product is outlined (with a worked sections re-call) or when sections selected part of it (how many of how many sections came back).',
       ),
+  },
+
+  enrichmentTrailer: {
+    notice: { render: (value) => `> ${escapeMarkdownInline(String(value))}` },
   },
 
   async handler(input, ctx) {

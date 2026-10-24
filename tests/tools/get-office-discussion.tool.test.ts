@@ -184,7 +184,9 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
     // Both surfaces carry the outline and the notice, and each fits the budget.
     expect(text).toContain('**34 sections** (largest first):');
     expect(text).toContain('- `WAZ315` — City of Seattle — 1508 bytes\n');
-    expect(text).toContain(structured.notice as string);
+    expect(text).toContain(
+      (structured.notice as string).replaceAll('[', '\\[').replaceAll(']', '\\]'),
+    );
     expect(text).not.toContain('.TODAY...');
     expect(bytes(JSON.stringify(structured))).toBeLessThanOrEqual(BUDGET);
     expect(bytes(text)).toBeLessThanOrEqual(BUDGET);
@@ -291,7 +293,9 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
     expect(structured.notice).toBe(
       'Returned 1 of 6 sections with the product header: DISCUSSION. Omit sections for the whole product.',
     );
-    expect(text).toContain(structured.notice as string);
+    expect(text).toContain(
+      (structured.notice as string).replaceAll('[', '\\[').replaceAll(']', '\\]'),
+    );
   });
 
   it('returns several named sections in product order', async () => {
@@ -416,7 +420,9 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
     } else {
       expect(structured.productText).toBeUndefined();
       expect((structured.outline as unknown[]).length).toBeGreaterThan(1);
-      expect(text).toContain(structured.notice as string);
+      expect(text).toContain(
+        (structured.notice as string).replaceAll('[', '\\[').replaceAll(']', '\\]'),
+      );
     }
   });
 
@@ -447,7 +453,9 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
       expect(structured.notice).toBe(
         'This FWF is 61685 bytes, over the 24000-byte response budget, so its 19 sections are outlined instead of returned. Re-call with the same office and product_type plus sections:["WYZ416"] to get that section (3459 bytes) with the product header. A selection returns the 1968-byte product header and closing lines plus every section it names whole, so add up the listed sizes before naming several.',
       );
-      expect(text).toContain(structured.notice as string);
+      expect(text).toContain(
+        (structured.notice as string).replaceAll('[', '\\[').replaceAll(']', '\\]'),
+      );
       expect(text).toContain(`- \`WYZ281\` — Johnson County/Casper BLM — ${segmentBytes} bytes\n`);
       expect(bytes(JSON.stringify(structured))).toBeLessThanOrEqual(BUDGET);
       expect(bytes(text)).toBeLessThanOrEqual(BUDGET);

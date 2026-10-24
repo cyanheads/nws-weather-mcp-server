@@ -50,6 +50,16 @@ export function invalidCursor(cursor: string, hint: string) {
   );
 }
 
+/** Reject fractional or non-finite cursor windows before any upstream lookup. */
+export function validatePageWindow(
+  offset: number,
+  limit: number,
+  cursor: string,
+  hint: string,
+): void {
+  if (!Number.isInteger(offset) || !Number.isInteger(limit)) throw invalidCursor(cursor, hint);
+}
+
 /** Join the notices a page owes into the one `notice` it carries, in order. */
 export function composeNotice(...parts: readonly (string | undefined)[]): string | undefined {
   const text = parts.filter((part) => part).join(' ');

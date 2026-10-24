@@ -43,6 +43,59 @@ const stationsResult: FindStationsResult = {
 };
 
 describe('nws_find_stations', () => {
+  it.each([' { "offset": 1, "limit": 1 } \n', '{"offset":1,"limit":1,"x":"???"}'])(
+    'keeps legacy padded standard-base64 tokens and extra fields: %s',
+    async (json) => {
+      mockFindStations.mockResolvedValue(stationsResult);
+      const result = await runToolContract(findStationsTool, {
+        latitude: 47.6,
+        longitude: -122.3,
+        cursor: Buffer.from(json).toString('base64'),
+        limit: 50,
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        stations: [{ stationId: 'KBFI' }],
+        totalCount: 2,
+        shown: 1,
+      });
+      expect(result.structuredContent).not.toHaveProperty('nextCursor');
+    },
+  );
+  it.each([
+    '{"offset":0,"limit":0.5}',
+    '{"offset":0.5,"limit":10}',
+    '{"offset":1e999,"limit":10}',
+    '{"offset":0,"limit":1e999}',
+  ])('rejects malformed numeric cursor before lookup: %s', async (json) => {
+    mockFindStations.mockResolvedValue(stationsResult);
+    const result = await runToolContract(findStationsTool, {
+      latitude: 47.6,
+      longitude: -122.3,
+      cursor: Buffer.from(json).toString('base64'),
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32602, data: { reason: 'invalid_cursor' } },
+    });
+    expect(mockFindStations).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a whitespace cursor before first-page clamping', async () => {
+    mockFindStations.mockResolvedValue(stationsResult);
+    const result = await runToolContract(findStationsTool, {
+      latitude: 47.6,
+      longitude: -122.3,
+      cursor: '   ',
+      limit: 51,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      shown: 2,
+      requestedLimit: 51,
+      effectiveLimit: 50,
+    });
+  });
   beforeEach(() => {
     mockFindStations.mockReset();
   });

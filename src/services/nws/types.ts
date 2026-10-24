@@ -13,6 +13,7 @@ export interface NwsValue {
 export interface GriddedPoint {
   readonly city: string;
   readonly county: string;
+  readonly forecastGridDataUrl: string | undefined;
   readonly forecastHourlyUrl: string;
   readonly forecastUrl: string;
   readonly forecastZone: string;
@@ -74,6 +75,13 @@ export interface ForecastResponse {
   readonly periods: readonly ForecastPeriod[];
   /** Null when NWS omits it; the OpenAPI spec marks it optional. */
   readonly updateTime: string | null;
+}
+
+/** Native quantitative grid layers; interval strings and missing measurements stay unchanged. */
+export interface PrecipitationAmount {
+  readonly layer: 'quantitativePrecipitation' | 'snowfallAmount' | 'iceAccumulation';
+  readonly uom: string | null;
+  readonly values: { readonly validTime: string; readonly value: number | null }[];
 }
 
 /**

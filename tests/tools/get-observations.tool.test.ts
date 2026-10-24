@@ -46,6 +46,63 @@ const observationResult: ObservationResult = {
 };
 
 describe('nws_get_observations', () => {
+  it.each([3, 4, 6])(
+    'preserves zero measurements and the %i-missing completeness boundary',
+    async (missing) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-04-03T12:00:00Z'));
+      try {
+        const observation = { ...observationResult.observation };
+        const keys = [
+          'temperature',
+          'dewpoint',
+          'windSpeed',
+          'barometricPressure',
+          'visibility',
+          'relativeHumidity',
+        ] as const;
+        keys.forEach((key, index) => {
+          observation[key] = { ...observation[key], value: index < missing ? null : 0 };
+        });
+        mockGetObservation.mockResolvedValueOnce({ observation });
+        const result = await runToolContract(getObservationsTool, { station_id: 'KSEA' });
+        const text = result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+        expect(result.structuredContent).toMatchObject({
+          temperatureC: null,
+          relativeHumidityPct: missing === 6 ? null : 0,
+        });
+        expect(text.includes('Limited data')).toBe(missing >= 4);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'enriches sparse observations once on both surfaces (stale: %s)',
+    async (stale) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-04-03T12:00:00Z'));
+      try {
+        const observation = {
+          ...observationResult.observation,
+          timestamp: stale ? '2026-04-03T09:00:00Z' : '2026-04-03T11:30:00Z',
+        };
+        for (const key of ['dewpoint', 'windSpeed', 'barometricPressure', 'visibility'] as const)
+          observation[key] = { ...observation[key], value: null };
+        mockGetObservation.mockResolvedValueOnce({ observation });
+        const result = await runToolContract(getObservationsTool, { station_id: 'KSEA' });
+        expect(result.structuredContent).toMatchObject({
+          notice: expect.stringContaining('Limited data'),
+        });
+        const text = result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+        expect(text.match(/Limited data/g)).toHaveLength(1);
+        expect(text.includes('3h old')).toBe(stale);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
   beforeEach(() => {
     mockGetObservation.mockReset();
   });

@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 
 /**
@@ -115,11 +116,15 @@ export const getZoneForecastTool = tool('nws_get_zone_forecast', {
   },
 
   format: (result) => {
-    const lines = [`## Zone Forecast: ${result.zoneId}`, `**Updated:** ${result.updated}`, ''];
+    const lines = [
+      `## Zone Forecast: ${escapeMarkdownInline(result.zoneId)}`,
+      `**Updated:** ${escapeMarkdownInline(result.updated)}`,
+      '',
+    ];
 
     for (const p of result.periods) {
-      lines.push(`### ${p.number}. ${p.name}`);
-      lines.push(p.detailedForecast);
+      lines.push(`### ${p.number}. ${escapeMarkdownInline(p.name)}`);
+      lines.push(escapeMarkdownInline(p.detailedForecast));
       lines.push('');
     }
 

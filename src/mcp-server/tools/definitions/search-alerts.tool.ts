@@ -5,7 +5,7 @@
 
 import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
+import { decodeCursor, encodeCursor, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import { alertMarkdownLines, alertOutputSchema, toAlertOutput } from '../alert-output.js';
 import {
@@ -14,6 +14,7 @@ import {
   invalidCursor,
   LIMIT_CEILING,
   type PageLimit,
+  validatePageWindow,
 } from '../page-limit.js';
 import { unsetIfBlank } from '../unset-if-blank.js';
 
@@ -269,9 +270,7 @@ const INVALID_CURSOR_HINT =
  */
 function readCursor(cursor: string, ctx: Context): Continuation {
   const { offset, limit, filters } = decodeCursor(cursor, ctx);
-  if (!Number.isInteger(offset) || !Number.isInteger(limit)) {
-    throw invalidCursor(cursor, INVALID_CURSOR_HINT);
-  }
+  validatePageWindow(offset, limit, cursor, INVALID_CURSOR_HINT);
   if (filters === undefined) return { offset, limit };
   const parsed = carriedFiltersSchema.safeParse(filters);
   if (!parsed.success) throw invalidCursor(cursor, INVALID_CURSOR_HINT);
@@ -459,6 +458,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   },
 
   enrichmentTrailer: {
+    notice: { render: (value) => `> ${escapeMarkdownInline(String(value))}` },
     totalCount: { label: 'Total Alerts' },
     shown: { label: 'Shown' },
     appliedFilters: { label: 'Filters' },

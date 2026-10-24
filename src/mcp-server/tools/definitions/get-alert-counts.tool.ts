@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 
 /** Display names for the NWS MarineRegionCode enumeration, matching nws_search_alerts. */
@@ -77,7 +78,7 @@ export const getAlertCountsTool = tool('nws_get_alert_counts', {
       lines.push('_No area has an active alert._');
     } else {
       lines.push('| Area | Alerts |', '|:-----|-------:|');
-      for (const [code, count] of areas) lines.push(`| ${code} | ${count} |`);
+      for (const [code, count] of areas) lines.push(`| ${escapeMarkdownInline(code)} | ${count} |`);
     }
 
     lines.push('', `### By Marine Region (${regions.length})`);
@@ -87,7 +88,7 @@ export const getAlertCountsTool = tool('nws_get_alert_counts', {
       lines.push('| Region | Alerts |', '|:-------|-------:|');
       for (const [code, count] of regions) {
         const name = MARINE_REGION_NAMES.get(code);
-        lines.push(`| ${name ? `${name} (${code})` : code} | ${count} |`);
+        lines.push(`| ${escapeMarkdownInline(name ? `${name} (${code})` : code)} | ${count} |`);
       }
     }
 

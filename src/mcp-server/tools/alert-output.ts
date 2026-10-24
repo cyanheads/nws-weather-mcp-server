@@ -6,7 +6,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { markdown } from '@cyanheads/mcp-ts-core/utils';
+import { escapeMarkdownInline, markdown } from '@cyanheads/mcp-ts-core/utils';
 import type { ALERT_HAZARD_KEYS, Alert } from '@/services/nws/types.js';
 import { formatTimestamp, zoneCodeToTimeZone } from './format-utils.js';
 
@@ -194,37 +194,50 @@ export function toAlertOutput(alert: Alert): AlertOutput {
  */
 export function alertMarkdownLines(alert: AlertOutput): string[] {
   const timeZone = zoneCodeToTimeZone(alert.affectedZones[0]?.code);
-  const lines = [`### ${alert.event}`, `_ID: ${alert.id}_`];
+  const lines = [
+    `### ${escapeMarkdownInline(alert.event)}`,
+    `_ID: ${escapeMarkdownInline(alert.id)}_`,
+  ];
 
-  if (alert.headline) lines.push(`**${alert.headline}**`);
-  if (alert.nwsHeadline) lines.push(`**NWS headline:** ${alert.nwsHeadline}`);
+  if (alert.headline) lines.push(`**${escapeMarkdownInline(alert.headline)}**`);
+  if (alert.nwsHeadline) lines.push(`**NWS headline:** ${escapeMarkdownInline(alert.nwsHeadline)}`);
   lines.push(
-    `**Severity:** ${alert.severity} | **Urgency:** ${alert.urgency} | **Certainty:** ${alert.certainty}`,
+    `**Severity:** ${escapeMarkdownInline(alert.severity)} | **Urgency:** ${escapeMarkdownInline(alert.urgency)} | **Certainty:** ${escapeMarkdownInline(alert.certainty)}`,
   );
-  lines.push(`**Area:** ${alert.areaDesc}`);
+  lines.push(`**Area:** ${escapeMarkdownInline(alert.areaDesc)}`);
   if (alert.onset) lines.push(`**Hazard onset:** ${formatTimestamp(alert.onset, timeZone)}`);
   if (alert.ends) lines.push(`**Hazard ends:** ${formatTimestamp(alert.ends, timeZone)}`);
   if (alert.expires) {
     lines.push(`**Message valid until:** ${formatTimestamp(alert.expires, timeZone)}`);
   }
-  lines.push(`**Message type:** ${alert.messageType} | **Status:** ${alert.status}`);
+  lines.push(
+    `**Message type:** ${escapeMarkdownInline(alert.messageType)} | **Status:** ${escapeMarkdownInline(alert.status)}`,
+  );
   lines.push(
     `**Message sent:** ${formatTimestamp(alert.sent, timeZone)} | **Message effective:** ${formatTimestamp(alert.effective, timeZone)}`,
   );
   if (alert.references.length > 0) {
     const priors = alert.references
-      .map((r) => `${r.identifier} (sent ${formatTimestamp(r.sent, timeZone)})`)
+      .map(
+        (r) =>
+          `${escapeMarkdownInline(r.identifier)} (sent ${escapeMarkdownInline(formatTimestamp(r.sent, timeZone))})`,
+      )
       .join('; ');
     lines.push(`**Supersedes:** ${priors}`);
   }
-  lines.push(`**From:** ${alert.senderName}`);
-  if (alert.office) lines.push(`**Office:** ${alert.office}`);
+  lines.push(`**From:** ${escapeMarkdownInline(alert.senderName)}`);
+  if (alert.office) lines.push(`**Office:** ${escapeMarkdownInline(alert.office)}`);
   if (alert.affectedZones.length > 0) {
-    lines.push(`**Zones:** ${alert.affectedZones.map((z) => `${z.code} (${z.type})`).join(', ')}`);
+    lines.push(
+      `**Zones:** ${alert.affectedZones.map((z) => `${escapeMarkdownInline(z.code)} (${escapeMarkdownInline(z.type)})`).join(', ')}`,
+    );
   }
-  if (alert.vtec.length > 0) lines.push(`**VTEC:** ${alert.vtec.join(', ')}`);
+  if (alert.vtec.length > 0)
+    lines.push(`**VTEC:** ${alert.vtec.map(escapeMarkdownInline).join(', ')}`);
   if (alert.hazard) {
-    const tags = Object.entries(alert.hazard).map(([key, value]) => `${key}: ${value}`);
+    const tags = Object.entries(alert.hazard).map(
+      ([key, value]) => `${key}: ${escapeMarkdownInline(String(value))}`,
+    );
     lines.push(`**Hazard tags:** ${tags.join('; ')}`);
   }
   // NWS hard-wraps both texts, with `* WHAT...` bullets and Markdown

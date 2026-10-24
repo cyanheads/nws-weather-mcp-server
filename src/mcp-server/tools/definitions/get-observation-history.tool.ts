@@ -5,7 +5,7 @@
 
 import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
+import { decodeCursor, encodeCursor, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import {
   formatCloudLayers,
@@ -429,8 +429,8 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
 
   format: (result) => {
     const lines = [
-      `## Observation History — ${result.stationName} (${result.stationId})`,
-      `**Station time zone:** ${result.timeZone ?? 'Not available'}`,
+      `## Observation History — ${escapeMarkdownInline(result.stationName)} (${escapeMarkdownInline(result.stationId)})`,
+      `**Station time zone:** ${escapeMarkdownInline(result.timeZone ?? 'Not available')}`,
       '',
     ];
 
@@ -465,7 +465,7 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
         ) ?? MISSING,
         o.cloudLayers.length > 0 ? formatCloudLayers(o.cloudLayers) : MISSING,
       ];
-      lines.push(`| ${cells.join(' | ')} |`);
+      lines.push(`| ${cells.map(escapeMarkdownInline).join(' | ')} |`);
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

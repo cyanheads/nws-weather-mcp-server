@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.11.2](changelog/0.11.x/0.11.2.md) — 2026-10-24
+
+Opt-in native forecast amounts and consistent observation notices across response surfaces.
+
 ## [0.11.1](changelog/0.11.x/0.11.1.md) — 2026-10-23
 
 Adds CAP fields on alerts, precipitation amounts on observations, a forecast updateTime, and FWF for fire-zone alerts. Fixes page cursors that dropped their query or mode, unfenced NWS text in content[], gust-only wind text, and observation temperature rounding.

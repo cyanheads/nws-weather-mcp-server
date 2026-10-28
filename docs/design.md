@@ -72,7 +72,7 @@ Searches active weather alerts (watches, warnings, advisories) across the US. Us
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `area` | string | No | US state/territory code (e.g., "WA", "OK", "PR") or marine area code (e.g., "GM" for Gulf of Mexico). Most common filter. |
-| `point` | string | No | Coordinates as "lat,lon" (e.g., "47.6,-122.3"). Returns alerts whose geometry contains this point. Must lie inside NWS coverage (US states, territories, and adjacent marine areas). More precise than `area` but may miss alerts with imprecise geometries. |
+| `point` | string | No | Coordinates as "lat,lon" (e.g., "47.6,-122.3"). Filters active alerts by point. Must lie inside NWS coverage (US states, territories, and adjacent marine areas). An empty result means no alerts matched the point and applied filters; separate zone or area searches can return broader matches whose affected areas need checking. |
 | `zone` | string | No | NWS forecast zone (e.g., "WAZ558") or county zone (e.g., "WAC033"). Both zone types are valid here. Get zone IDs from `nws_get_forecast` response metadata or the `/points` endpoint. |
 | `region_type` | string | No | Restrict to land or marine alerts: "Land" or "Marine". Sent upstream lowercased. Mutually exclusive with `area`, `point`, `zone`, and `region`. |
 | `region` | string[] | No | NWS marine region groups: "AL" (Alaska waters), "AT" (Atlantic Ocean), "GL" (Great Lakes), "GM" (Gulf of Mexico), "PA" (Eastern Pacific and US West Coast), "PI" (Central and Western Pacific). Sent upstream comma-joined. Marine alerts only. Mutually exclusive with `area`, `point`, `zone`, and `region_type`. |
@@ -293,6 +293,10 @@ A `zone_id` that is not a plain alphanumeric token fails as `zone_not_found` wit
 Static list of all valid NWS alert event type names (111 types). Useful reference when constructing `event` filters for `nws_search_alerts`. Fetched from `/alerts/types` and cached.
 
 **Tool coverage:** Fully covered by `nws_list_alert_types`. This resource is a convenience for clients that support resource injection.
+
+### `skill://nws-weather-guide/SKILL.md`
+
+Published agent workflow for reconciling forecasts, active alerts, station trends, and forecaster discussions before a time-and-location weather decision. It carries geographic search gates, accumulation-window precautions, and source-alignment decisions rather than repeating tool schemas. `createApp({ skills: 'skills' })` serves the root skill tree through the MCP Skills extension and lists this Markdown resource alongside `nws://alert-types`.
 
 ---
 

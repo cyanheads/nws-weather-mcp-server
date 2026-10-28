@@ -37,6 +37,7 @@ await createApp({
     getZoneForecastTool,
   ],
   resources: [alertTypesResource],
+  skills: 'skills',
   // No tool gates on `ctx.requestInput`, so nothing here needs a session to
   // round-trip through. Declared in source rather than left to the schema
   // default (`auto`, which resolves to stateful); `MCP_SESSION_MODE` still

@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/nws-weather-mcp-server</h1>
   <p><b>Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.</b>
-  <div>10 Tools • 1 Resource</div>
+  <div>10 Tools • 2 Resources</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.11.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.11.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/nws-weather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/nws-weather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/nws-weather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -51,8 +51,9 @@ Real-time US weather from the National Weather Service: forecasts, active alerts
 | Resource | Description |
 |:---------|:------------|
 | `nws://alert-types` | Static list of all valid NWS alert event type names. |
+| `skill://nws-weather-guide/SKILL.md` | Decision gates for combining forecasts, alerts, station trends, and forecaster discussions. |
 
-Also reachable via the `nws_list_alert_types` tool, for MCP clients that don't support resources.
+Alert types are also reachable via `nws_list_alert_types`. The weather guide is available through the MCP Skills extension and in the plugin's `skills/` directory.
 
 ## Capability reference
 
@@ -164,125 +165,32 @@ Agent-friendly output:
 
 ## Getting started
 
-### Public Hosted Instance
-
-A public instance is available at `https://nws.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
-
-For Claude Code:
+Connect to the hosted instance, no install:
 
 ```sh
 claude mcp add --transport http nws-weather-mcp-server https://nws.caseyjhand.com/mcp
 ```
 
-For Cline (`cline_mcp_settings.json`):
+Or run it locally:
 
-```json
-{
-  "mcpServers": {
-    "nws-weather-mcp-server": {
-      "type": "streamableHttp",
-      "url": "https://nws.caseyjhand.com/mcp"
-    }
-  }
-}
+```sh
+claude mcp add nws-weather-mcp-server -- npx -y @cyanheads/nws-weather-mcp-server
 ```
 
-For Cursor (`mcp.json`):
+For other clients, add this to the MCP config file:
 
 ```json
 {
   "mcpServers": {
     "nws-weather-mcp-server": {
-      "url": "https://nws.caseyjhand.com/mcp"
-    }
-  }
-}
-```
-
-Claude Desktop adds remote servers under Settings → Connectors.
-
-### Self-Hosted / Local
-
-Add the following to your MCP client configuration file.
-
-```json
-{
-  "mcpServers": {
-    "nws-weather-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/nws-weather-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
-    }
-  }
-}
-```
-
-Or with npx (no Bun required):
-
-```json
-{
-  "mcpServers": {
-    "nws-weather-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/nws-weather-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
+      "args": ["-y", "@cyanheads/nws-weather-mcp-server"]
     }
   }
 }
 ```
 
-Or with Docker:
-
-```json
-{
-  "mcpServers": {
-    "nws-weather-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/nws-weather-mcp-server:latest"]
-    }
-  }
-}
-```
-
-For Streamable HTTP, set the transport and start the server:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_SESSION_MODE=stateless MCP_HTTP_PORT=3010 bun run start:http
-# Server listens at http://localhost:3010/mcp
-```
-
-### Prerequisites
-
-- [Node.js v24+](https://nodejs.org/) or [Bun v1.4+](https://bun.sh/)
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/nws-weather-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd nws-weather-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
+`NWS_USER_AGENT` optionally sets the contact identifier sent to NWS. For Docker or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -300,6 +208,14 @@ See [`.env.example`](.env.example) for the full list including auth, storage, an
 ## Running the server
 
 ### Local development
+
+Source development requires [Bun v1.4+](https://bun.sh/). The published executable also runs on [Node.js v24+](https://nodejs.org/).
+
+```sh
+git clone https://github.com/cyanheads/nws-weather-mcp-server.git
+cd nws-weather-mcp-server && bun install
+cp .env.example .env
+```
 
 - **Build and run the production version:**
 
@@ -320,11 +236,20 @@ See [`.env.example`](.env.example) for the full list including auth, storage, an
   bun run test         # Runs test suite
   ```
 
+### Docker
+
+```sh
+docker run --rm -p 3010:3010 ghcr.io/cyanheads/nws-weather-mcp-server:latest
+```
+
+The image defaults to HTTP transport, stateless session mode, and logs to `/var/log/nws-weather-mcp-server`. To run it over stdio from an MCP client, use `"command": "docker"` with `"args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/nws-weather-mcp-server:latest"]`. To build locally, `docker build -t nws-weather-mcp-server .`; OpenTelemetry peers are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
+
 ## Project structure
 
 | Directory | Purpose |
 |:----------|:--------|
-| `src/index.ts` | `createApp()` entry point — registers tools and the resource. |
+| `src/index.ts` | `createApp()` entry point — registers tools, the alert-types resource, and published skills. |
+| `skills/` | Published agent skills, also served over MCP. |
 | `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`). |
 | `src/mcp-server/resources/definitions/` | Resource definitions (`*.resource.ts`). |
 | `src/services/nws/` | NWS API client and response types. |

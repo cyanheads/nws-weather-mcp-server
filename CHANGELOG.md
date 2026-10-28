@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.12.0](changelog/0.12.x/0.12.0.md) — 2026-10-28
+
+Publish a weather decision guide for reconciling forecasts, alerts, observations, and forecaster discussions.
+
 ## [0.11.2](changelog/0.11.x/0.11.2.md) — 2026-10-24
 
 Opt-in native forecast amounts and consistent observation notices across response surfaces.

@@ -1,6 +1,6 @@
 # nws-weather-mcp-server - Directory Structure
 
-Generated on: 2026-10-28 07:10:48
+Generated on: 2026-10-28 07:40:23
 
 ```text
 nws-weather-mcp-server/
@@ -26,6 +26,7 @@ nws-weather-mcp-server/
 ├── changelog/
 │   ├── 0.10.x/
 │   ├── 0.11.x/
+│   ├── 0.12.x/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
@@ -201,6 +202,8 @@ nws-weather-mcp-server/
 │   ├── prompts/
 │   ├── resources/
 │   │   └── alert-types.resource.test.ts
+│   ├── scripts/
+│   │   └── clean-mcpb.test.ts
 │   ├── services/
 │   │   └── nws/
 │   │       ├── forecast-amounts.test.ts

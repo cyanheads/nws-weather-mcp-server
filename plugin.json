@@ -1,0 +1,29 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "nws-weather-mcp-server",
+  "version": "0.11.2",
+  "description": "Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/nws-weather-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/nws-weather-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "weather",
+    "nws",
+    "national-weather-service",
+    "forecast",
+    "alerts",
+    "observations",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http"
+  ]
+}

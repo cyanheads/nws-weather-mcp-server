@@ -396,7 +396,7 @@ describe('nws_get_observation_history', () => {
       expect(first.data).toMatchObject({ shown: 5, truncated: true, cap: 5 });
       expect(first.data.nextCursor).toEqual(expect.any(String));
       expect(first.data.notice).toBe(guidance);
-      expect(first.text).toContain(`**Next Cursor:** ${first.data.nextCursor}`);
+      expect(first.text).toContain(`**Next Cursor:** \`${first.data.nextCursor}\``);
       expect(first.text).toContain('**Page Full:** true');
       expect(first.text).toContain('**Page Limit:** 5');
       expect(first.text).toContain(guidance);
@@ -491,7 +491,7 @@ describe('nws_get_observation_history', () => {
       expect(data).toMatchObject({ shown: 5, truncated: true, cap: 5 });
       expect(data.nextCursor).toEqual(expect.any(String));
       expect(data.notice).toContain(`continue from before ${all[4]}`);
-      expect(text).toContain(`**Next Cursor:** ${data.nextCursor}`);
+      expect(text).toContain(`**Next Cursor:** \`${data.nextCursor}\``);
       expect(text).toContain('**Returned:** 5');
       expect(text).toContain(`continue from before ${all[4]}`);
       // A limit within the cap discloses no clamp: the notice is the continuation alone.

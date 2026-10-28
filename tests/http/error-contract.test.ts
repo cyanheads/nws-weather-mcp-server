@@ -765,7 +765,7 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
         );
         expect(requested, testCase.id).toEqual([`${API}/alerts/active${testCase.query}`]);
         expect(result.structuredContent.appliedFilters, testCase.id).toBe(testCase.filters);
-        expect(text, testCase.id).toContain(`**Filters:** ${testCase.filters}`);
+        expect(text, testCase.id).toContain(`**Filters:** \`${testCase.filters}\``);
       }
 
       // Step 3: the blank station_id is unset, so the coordinates resolve the
@@ -784,7 +784,7 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
         stationId: 'KBFI',
         station: 'KBFI',
       });
-      expect(observations.text).toContain('**Station:** KBFI');
+      expect(observations.text).toContain('**Station:** `KBFI`');
 
       // Step 4b: a blank product_type falls back to its AFD default.
       const discussion = await call('blank-product-type', 'nws_get_office_discussion', {

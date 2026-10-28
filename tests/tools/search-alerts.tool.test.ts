@@ -164,7 +164,7 @@ describe('nws_search_alerts', () => {
       totalCount: 1,
     });
     const text = result.content.map((block) => ('text' in block ? block.text : '')).join('\n');
-    expect(text).toContain('**Filters:** national (no filters)');
+    expect(text).toContain('**Filters:** `national (no filters)`');
     expect(text).toContain('Wind Advisory');
     expect(mockSearchAlerts).toHaveBeenCalledWith(
       expect.objectContaining({ area: undefined, point: undefined, zone: undefined }),

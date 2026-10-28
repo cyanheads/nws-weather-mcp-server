@@ -365,7 +365,7 @@ describe('nws_search_alerts extended', () => {
 
       expect(result.isError).toBeFalsy();
       expect(result.structuredContent).toMatchObject({ appliedFilters: 'national (no filters)' });
-      expect(textOf(result)).toContain('**Filters:** national (no filters)');
+      expect(textOf(result)).toContain('**Filters:** `national (no filters)`');
       expect(mockSearchAlerts).toHaveBeenCalledWith(
         expect.objectContaining({ [field]: undefined }),
         expect.anything(),
@@ -381,7 +381,7 @@ describe('nws_search_alerts extended', () => {
 
         expect(result.isError).toBeFalsy();
         expect(result.structuredContent).toMatchObject({ appliedFilters: 'national (no filters)' });
-        expect(textOf(result)).toContain('**Filters:** national (no filters)');
+        expect(textOf(result)).toContain('**Filters:** `national (no filters)`');
         expect(mockSearchAlerts).toHaveBeenCalledWith(
           expect.objectContaining({ [field]: undefined }),
           expect.anything(),
@@ -1211,7 +1211,7 @@ describe('nws_search_alerts extended', () => {
       });
       expect(second.data.appliedFilters).toBe('region=PA');
       expect(lastParams()).toMatchObject({ region: ['PA'], status: 'Actual' });
-      expect(second.text).toContain('**Filters:** region=PA');
+      expect(second.text).toContain('**Filters:** `region=PA`');
     });
 
     it('ignores filter inputs sent with a query-carrying cursor', async () => {

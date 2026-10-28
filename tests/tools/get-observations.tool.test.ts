@@ -304,7 +304,7 @@ describe('nws_get_observations', () => {
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toMatchObject({ stationId: 'KSEA', station: 'KSEA' });
     const text = result.content.map((block) => ('text' in block ? block.text : '')).join('\n');
-    expect(text).toContain('**Station:** KSEA');
+    expect(text).toContain('**Station:** `KSEA`');
     expect(mockGetObservation).toHaveBeenCalledWith(
       { latitude: 47.6062, longitude: -122.3321, stationId: undefined },
       expect.anything(),

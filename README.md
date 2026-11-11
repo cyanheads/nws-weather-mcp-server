@@ -138,7 +138,7 @@ Alert types are also reachable via `nws_list_alert_types`. The weather guide is 
 ### `nws_get_zone_forecast` <sub>tool</sub>
 
 - `zone_id`: forecast zone code (e.g., "WAZ315") — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`)
-- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters, and `updated`, the issuance time of the product it comes from; when NWS sends it 12 hours off (it misreads the 12 o'clock hour), the value is corrected and `notice` names NWS's value, and a time later than the response that cannot be corrected is returned as sent with a `notice`
+- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters, and `updated`, the issuance time of the product it comes from; when NWS sends it 12 hours off (it reads a midnight-hour `12xx AM` header as noon; a noon-hour header it reads correctly), the value is corrected and `notice` names NWS's value, and a time later than the response that cannot be corrected is returned as sent with a `notice`
 - County (`XXC###`) and unknown zone codes fail with `zone_not_found`, and so do most fire zone codes, whose forecast is their segment of the office FWF on `nws_get_office_discussion`; a fire code that is also a public zone code returns the public zone's forecast; marine zones with no text forecast fail with `marine_forecast_unsupported` (coastal zones starting AMZ, ANZ, GMZ, PHZ, or PZZ usually have one; Great Lakes, most Alaska, Guam, American Samoa, and offshore zones have none), and land zones with none with `zone_forecast_unavailable`
 
 ---

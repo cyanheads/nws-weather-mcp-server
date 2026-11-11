@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.12.1](changelog/0.12.x/0.12.1.md) — 2026-11-11
+
+Search alert messages issued over the past 7 days, including expired warnings; return sea-level pressure beside the altimeter setting; flag expired products and misread zone forecast times.
+
 ## [0.12.0](changelog/0.12.x/0.12.0.md) — 2026-10-28
 
 Publish a weather decision guide for reconciling forecasts, alerts, observations, and forecaster discussions.

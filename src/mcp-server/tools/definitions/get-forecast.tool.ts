@@ -30,6 +30,9 @@ const MAX_PERIODS = 48;
  */
 const STALE_UPDATE_MS = 24 * 3_600_000;
 
+const INVALID_CURSOR_HINT =
+  'Omit cursor to start from the first period, or pass the nextCursor from the previous response unchanged.';
+
 /**
  * A page of the period array. `hourly` is the mode the token was minted in;
  * a 0.11.0 token carries none, and the page then reads the `hourly` input.
@@ -50,17 +53,9 @@ interface PeriodWindow {
  */
 function readCursor(cursor: string, ctx: Context): PeriodWindow {
   const { offset, limit, hourly } = decodeCursor(cursor, ctx);
-  validatePageWindow(
-    offset,
-    limit,
-    cursor,
-    'Omit `cursor` to start from the first period, or pass the `nextCursor` from the previous response unchanged.',
-  );
+  validatePageWindow(offset, limit, cursor, INVALID_CURSOR_HINT);
   if (hourly !== undefined && typeof hourly !== 'boolean') {
-    throw invalidCursor(
-      cursor,
-      'Omit `cursor` to start from the first period, or pass the `nextCursor` from the previous response unchanged.',
-    );
+    throw invalidCursor(cursor, INVALID_CURSOR_HINT);
   }
   return { offset, limit: Math.min(limit, MAX_PERIODS), hourly };
 }
@@ -104,7 +99,7 @@ export const getForecastTool = tool('nws_get_forecast', {
       code: JsonRpcErrorCode.NotFound,
       when: 'Coordinates fall in a marine area, where NWS publishes no point forecast',
       recovery:
-        'Retry nws_get_forecast with coordinates on nearby land, or use nws_search_alerts (by point, or by the marine zone code in the message) for marine hazards at this location.',
+        'If the marine zone in the message is a coastal zone on an ocean coast, bay, or sound (codes starting AMZ, ANZ, GMZ, PHZ, or PZZ), call nws_get_zone_forecast with it for its text forecast of wind and seas; Great Lakes, most Alaska, Guam, American Samoa, and offshore zones have none. Otherwise retry nws_get_forecast with coordinates on nearby land, or use nws_search_alerts (by point, or by the marine zone code in the message) for marine hazards.',
       severity: 'notice',
       thrownBy: 'service',
     },

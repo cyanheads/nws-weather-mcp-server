@@ -140,10 +140,8 @@ describe('NwsService extended', () => {
       const result = service.getNwsService().getOfficeDiscussion('SEW', 'SPS', ctx);
 
       await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.NotFound });
-      await expect(result).rejects.toThrow(
-        'No SPS products are currently available for office "SEW"',
-      );
-      await expect(result).rejects.toThrow('episodic');
+      await expect(result).rejects.toThrow('No SPS products are on file for office "SEW"');
+      await expect(result).rejects.toThrow('issued only when conditions warrant');
     });
 
     describe('empty product list for a valid office, per product type (issue #59)', () => {
@@ -179,7 +177,7 @@ describe('NwsService extended', () => {
           },
         });
         expect((error as Error).message).toBe(
-          `No ${productType} products are currently available for office "SEW". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
+          `No ${productType} products are on file for office "SEW". ${productType} products are issued only when conditions warrant, and NWS keeps about 7 days of them. Try a different product type (AFD is near-always available).`,
         );
       });
 
@@ -517,13 +515,20 @@ describe('NwsService extended', () => {
   });
 
   describe('listAlertTypes edge cases', () => {
-    it('returns empty array when upstream eventTypes is missing', async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    it.each([
+      ['missing', {}],
+      ['null', { eventTypes: null }],
+      ['empty', { eventTypes: [] }],
+      ['not an array', { eventTypes: 'Tornado Warning' }],
+      ['holding a non-string', { eventTypes: [null, 'Tornado Warning'] }],
+    ])('fails as SerializationError when upstream eventTypes is %s', async (_label, body) => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(body));
 
       const ctx = createMockContext({ tenantId: 'test' });
-      const types = await service.getNwsService().listAlertTypes(ctx);
+      const result = service.getNwsService().listAlertTypes(ctx);
 
-      expect(types).toHaveLength(0);
+      await expect(result).rejects.toMatchObject({ code: JsonRpcErrorCode.SerializationError });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it('retries on transient 500 before succeeding', async () => {

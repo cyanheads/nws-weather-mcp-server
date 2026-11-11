@@ -161,6 +161,39 @@ describe('upstream availability contract', () => {
       },
     );
 
+    it.each([
+      { zone: 'PZZ251', points: griddedMarinePointsResponse },
+      {
+        zone: 'LMZ645',
+        points: {
+          properties: {
+            ...griddedMarinePointsResponse.properties,
+            forecastZone: `${API}/zones/forecast/LMZ645`,
+          },
+        },
+      },
+    ])(
+      'names gridded marine zone $zone with forecastZone in data and the contract recovery (issue #82)',
+      async ({ zone, points }) => {
+        http.route(
+          route(`${API}/points/46.2,-124.1`, points),
+          route(`${MARINE_GRID}/forecast`, marineForecastNotSupportedProblem, 404),
+        );
+
+        const { error } = errorOf(
+          await runToolContract(tools.getForecastTool, { latitude: 46.2, longitude: -124.1 }),
+        );
+
+        expect(error.message).toBe(
+          `Coordinates (46.2, -124.1) are in marine zone ${zone}; NWS publishes no point forecast for marine areas.`,
+        );
+        expect(error.data).toMatchObject({ forecastZone: zone, latitude: 46.2, longitude: -124.1 });
+        expect(error.data?.recovery?.hint).toBe(
+          contractRecovery(tools.getForecastTool, 'marine_forecast_unsupported'),
+        );
+      },
+    );
+
     it('fails a gridless marine point with marine_forecast_unsupported after one upstream call', async () => {
       http.route(route(`${API}/points/28,-90`, gridlessMarinePointsResponse));
 
@@ -178,6 +211,51 @@ describe('upstream availability contract', () => {
       expect(error.message).toContain('GMZ056');
       expect(text).toContain('Recovery:');
       expect(http.calls).toHaveLength(1);
+    });
+
+    it('calls the gridless marine zone offshore, beyond the forecast grid (issue #82)', async () => {
+      http.route(route(`${API}/points/28,-90`, gridlessMarinePointsResponse));
+
+      const { error, text } = errorOf(
+        await runToolContract(tools.getForecastTool, { latitude: 28, longitude: -90 }),
+      );
+      const message =
+        'Coordinates (28, -90) are in offshore marine zone GMZ056, beyond the NWS forecast grid; NWS publishes no point forecast for marine areas.';
+
+      expect(error.message).toBe(message);
+      expect(error.data).toMatchObject({ forecastZone: 'GMZ056', latitude: 28, longitude: -90 });
+      expect(text).toContain(`Error: ${message}`);
+      expect(http.calls).toHaveLength(1);
+    });
+
+    it('sends a coastal-family zone to nws_get_zone_forecast before land or alerts (issue #82)', () => {
+      expect(contractRecovery(tools.getForecastTool, 'marine_forecast_unsupported')).toBe(
+        'If the marine zone in the message is a coastal zone on an ocean coast, bay, or sound (codes starting AMZ, ANZ, GMZ, PHZ, or PZZ), call nws_get_zone_forecast with it for its text forecast of wind and seas; Great Lakes, most Alaska, Guam, American Samoa, and offshore zones have none. Otherwise retry nws_get_forecast with coordinates on nearby land, or use nws_search_alerts (by point, or by the marine zone code in the message) for marine hazards.',
+      );
+    });
+
+    it('reaches the coastal zone’s text forecast in one hop from the forecastZone in data (issue #82)', async () => {
+      http.route(
+        route(`${API}/points/46.2,-124.1`, griddedMarinePointsResponse),
+        route(`${MARINE_GRID}/forecast`, marineForecastNotSupportedProblem, 404),
+        route(`${API}/zones/forecast/PZZ251/forecast`, coastalZoneForecastResponse),
+      );
+
+      const { error } = errorOf(
+        await runToolContract(tools.getForecastTool, { latitude: 46.2, longitude: -124.1 }),
+      );
+      const forecastZone = error.data?.forecastZone;
+      expect(typeof forecastZone).toBe('string');
+      const zone = await runToolContract(tools.getZoneForecastTool, {
+        zone_id: String(forecastZone),
+      });
+
+      expect(zone.structuredContent).toMatchObject({
+        zoneId: 'PZZ251',
+        periods: [{ name: 'Today' }, { name: 'Tonight' }],
+      });
+      expect(textOf(zone)).toContain('Seas 3 to 5 ft');
+      expect(http.calls).toHaveLength(3);
     });
 
     it('still raises ServiceUnavailable for a land /points missing its grid URLs', async () => {

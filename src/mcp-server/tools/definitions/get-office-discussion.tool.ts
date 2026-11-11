@@ -1,7 +1,8 @@
 /**
  * @fileoverview Tool: nws_get_office_discussion — fetches the latest narrative product from a
  * Weather Forecast Office. A product too large to inline comes back as an outline of its
- * sections, and `sections` selects AFD sections or zone segments from any product.
+ * sections, and `sections` selects AFD sections or zone segments from any product. A
+ * response whose zone segments have all passed their UGC expiry says so in its notice.
  * @module mcp-server/tools/definitions/get-office-discussion
  */
 
@@ -17,7 +18,9 @@ import {
   type ProductPart,
   partitionProduct,
   partMatches,
+  ugcExpiryTime,
 } from '@/services/nws/product-sections.js';
+import { composeNotice } from '../page-limit.js';
 
 /**
  * Office code shape advertised as a JSON Schema `pattern` (issue #54): 2–3 letters
@@ -73,9 +76,48 @@ function selectorFor(part: ProductPart): string {
   return first ? `${first.prefix}${String(first.from).padStart(3, '0')}` : part.name;
 }
 
+/** The product a response comes from, as an expiry notice names it. */
+interface ProductRef {
+  readonly issuanceTime: string;
+  readonly office: string;
+  readonly productType: string;
+}
+
+/**
+ * The notice owed when the zone segments a response carries are no longer in effect:
+ * the latest of their UGC expiry times is not after now. AFD sections, and a product
+ * with no UGC line, carry no expiry and owe none. `selection` words it for the
+ * segments a `sections` call chose rather than the whole product.
+ */
+function expiryNotice(
+  carried: readonly ProductPart[],
+  product: ProductRef,
+  selection: boolean,
+): string | undefined {
+  let latest: number | undefined;
+  for (const part of carried) {
+    const at =
+      part.expiry === undefined ? undefined : ugcExpiryTime(part.expiry, product.issuanceTime);
+    if (at !== undefined && (latest === undefined || at > latest)) latest = at;
+  }
+  if (latest === undefined || latest > Date.now()) return;
+
+  // The token's own precision: UTC to the minute.
+  const expiredAt = `${new Date(latest).toISOString().slice(0, 16)}Z`;
+  const { office, productType } = product;
+  const expired = selection
+    ? `The selected sections of this ${productType} expired at ${expiredAt} and are no longer in effect`
+    : `This ${productType} expired at ${expiredAt} and is no longer in effect`;
+  const alerts =
+    productType === 'SPS'
+      ? ' For Special Weather Statements in effect now, call nws_search_alerts with event ["Special Weather Statement"].'
+      : '';
+  return `${expired}; it is the newest ${productType} on file for ${office}.${alerts}`;
+}
+
 export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
   description:
-    'Get the latest narrative forecast product from a Weather Forecast Office (WFO). The default product is AFD (Area Forecast Discussion), which explains the meteorological reasoning behind the forecast — synoptic setup, model guidance, and forecaster confidence. Other types: HWO (Hazardous Weather Outlook, 1-7 day severe/flood/winter outlook), ZFP (Zone Forecast Product, zone-by-zone text), SPS (Special Weather Statement, short-fuse advisory), FWF (Fire Weather Planning Forecast, one segment per fire weather zone). The office code is the 3-letter WFO identifier returned as the "office" field by nws_get_forecast. A product over 24,000 bytes (most ZFPs and FWFs) comes back as an outline of its sections — AFD section names, or ZFP/HWO/SPS/FWF zone segments with their area names — with each section\'s size, instead of the text; re-call with sections to get the ones you need. sections also works on a product of any size, to read one AFD section or one zone\'s forecast. For an alert zone typed "fire" (Red Flag Warning, Fire Weather Watch), pass the alert\'s "office" field as office, product_type "FWF", and the zone code in sections.',
+    'Get the latest narrative forecast product from a Weather Forecast Office (WFO). The default product is AFD (Area Forecast Discussion), which explains the meteorological reasoning behind the forecast — synoptic setup, model guidance, and forecaster confidence. Other types: HWO (Hazardous Weather Outlook, 1-7 day severe/flood/winter outlook), ZFP (Zone Forecast Product, zone-by-zone text), SPS (Special Weather Statement, short-fuse advisory), FWF (Fire Weather Planning Forecast, one segment per fire weather zone). The office code is the 3-letter WFO identifier returned as the "office" field by nws_get_forecast. A product over 24,000 bytes (most ZFPs and FWFs) comes back as an outline of its sections — AFD section names, or ZFP/HWO/SPS/FWF zone segments with their area names — with each section\'s size, instead of the text; re-call with sections to get the ones you need. sections also works on a product of any size, to read one AFD section or one zone\'s forecast. For an alert zone typed "fire" (Red Flag Warning, Fire Weather Watch), pass the alert\'s "office" field as office, product_type "FWF", and the zone code in sections. The newest product on file can be past its expiry time, and a notice then names it: an SPS usually is, so for statements in effect now use nws_search_alerts with event ["Special Weather Statement"].',
   annotations: { readOnlyHint: true },
   errors: [
     {
@@ -178,7 +220,7 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
       .string()
       .optional()
       .describe(
-        'Set when the product is outlined (with a worked sections re-call) or when sections selected part of it (how many of how many sections came back).',
+        'Set when the product is outlined (with a worked sections re-call), when sections selected part of it (how many of how many sections came back), or when the zone segments returned have all passed their expiry time, which it names: the product is no longer in effect, and for SPS it names the nws_search_alerts call for statements in effect now. AFD has no expiry time.',
       ),
   },
 
@@ -206,10 +248,28 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
       productText: result.productText,
       wmoCollectiveId: result.wmoCollectiveId,
     };
-    const responseBytes = Math.max(utf8Bytes(JSON.stringify(full)), utf8Bytes(renderText(full)));
-    if (wanted.length === 0 && responseBytes <= BUDGET_BYTES) return full;
-
+    // Partitioned on every path, the whole product included: its segments' expiry
+    // tokens decide whether the response owes an expiry notice.
     const { header, parts, trailer } = partitionProduct(result.productText, input.product_type);
+    const product: ProductRef = {
+      issuanceTime: result.issuanceTime,
+      office,
+      productType: input.product_type,
+    };
+    /** Sets the one notice a response carries, its parts joined in order (`ctx.enrich.notice` is last-wins). */
+    const notify = (...notices: (string | undefined)[]) => {
+      const notice = composeNotice(...notices);
+      if (notice) ctx.enrich.notice(notice);
+    };
+    /** The whole product, with the notice it owes when every segment has expired. */
+    const whole = () => {
+      notify(expiryNotice(parts, product, false));
+      return full;
+    };
+
+    const responseBytes = Math.max(utf8Bytes(JSON.stringify(full)), utf8Bytes(renderText(full)));
+    if (wanted.length === 0 && responseBytes <= BUDGET_BYTES) return whole();
+
     const footer = trailer.trim();
     const { productText: _whole, ...metadata } = full;
     /** A selection's text: the header, the chosen parts, then the closing lines. */
@@ -237,14 +297,15 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
         );
       }
       const selected = parts.filter((part) => wanted.some((name) => partMatches(part, name)));
-      ctx.enrich.notice(
+      notify(
+        expiryNotice(selected, product, true),
         `Returned ${selected.length} of ${parts.length} sections with the product header: ${selected.map((part) => part.name).join('; ')}. Omit sections for the whole product.`,
       );
       return { ...metadata, productText: assemble(selected) };
     }
 
     // Over budget with nothing to choose between: the whole product, as before.
-    if (parts.length < 2) return full;
+    if (parts.length < 2) return whole();
 
     const rows = parts
       .map((part) => ({ part, bytes: utf8Bytes(part.text) }))
@@ -255,7 +316,8 @@ export const getOfficeDiscussionTool = tool('nws_get_office_discussion', {
     const recall = example
       ? `Re-call with the same office and product_type plus sections:["${selectorFor(example.part)}"] to get that section (${example.bytes} bytes) with the product header. A selection returns the ${frameBytes}-byte product header and closing lines plus every section it names whole, so add up the listed sizes before naming several.`
       : `No single section fits the budget (the smallest is ${rows.at(-1)?.bytes} bytes); a sections:[...] selection still returns whole at any size.`;
-    ctx.enrich.notice(
+    notify(
+      expiryNotice(parts, product, false),
       `This ${input.product_type} is ${responseBytes} bytes, over the ${BUDGET_BYTES}-byte response budget, so its ${parts.length} sections are outlined instead of returned. ${recall}`,
     );
     return {

@@ -69,6 +69,7 @@ const mockObsResult = {
     windDirection: { value: 180, unitCode: 'wmoUnit:degree_(angle)' },
     windGust: { value: null, unitCode: 'wmoUnit:km_h-1' },
     barometricPressure: { value: 101325, unitCode: 'wmoUnit:Pa' },
+    seaLevelPressure: { value: null, unitCode: 'wmoUnit:Pa' },
     visibility: { value: 16093, unitCode: 'wmoUnit:m' },
     relativeHumidity: { value: 55, unitCode: 'wmoUnit:percent' },
     heatIndex: { value: null, unitCode: 'wmoUnit:degC' },
@@ -127,14 +128,33 @@ describe('Input validation — limit bounds', () => {
     ).toThrow();
   });
 
-  it('rejects limit > 10000 for nws_find_stations, the ceiling past the 50-station page cap', () => {
+  it('serves a limit past the 50-station page cap as the cap, and rejects one past the safe-integer range', async () => {
     expect(() =>
-      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 10_001 }),
+      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 2 ** 53 }),
     ).toThrow();
-    // Past the page cap but under the ceiling: accepted, then served up to the cap.
-    expect(
-      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 51 }).limit,
-    ).toBe(51);
+
+    mockFindStations.mockResolvedValueOnce({
+      stations: Array.from({ length: 60 }, (_, index) => ({
+        stationId: `K${String(index).padStart(3, '0')}`,
+        name: `Station ${index}`,
+        distance: index,
+        bearing: 'N',
+        elevation: { value: 10, unitCode: 'wmoUnit:m' },
+        timeZone: 'America/Los_Angeles',
+        county: 'https://api.weather.gov/zones/county/WAC033',
+        forecastZone: 'https://api.weather.gov/zones/forecast/WAZ558',
+      })),
+    });
+    const input = findStationsTool.input.parse({
+      latitude: 47.6,
+      longitude: -122.3,
+      limit: Number.MAX_SAFE_INTEGER,
+    });
+    expect(input.limit).toBe(Number.MAX_SAFE_INTEGER);
+
+    const ctx = createMockContext({ tenantId: 'test', errors: findStationsTool.errors });
+    const result = await findStationsTool.handler(input, ctx);
+    expect(result.stations).toHaveLength(50);
   });
 
   it('accepts limit = 1 and limit = 50 for nws_find_stations', () => {

@@ -82,6 +82,22 @@ describe('formatTimestamp', () => {
       expect(out).toContain('UTC+02:00');
     });
 
+    it('renders the whole wall-clock line in the offset it was sent with', () => {
+      // ICU joins the date and time with ", " on Node and " at " on Bun.
+      expect(formatTimestamp('2026-04-19T15:00:00-04:00')).toMatch(
+        /^Sun, Apr 19(,| at) 3:00 PM UTC-04:00$/,
+      );
+      expect(formatTimestamp('2026-11-11T00:22:00-06:00')).toMatch(
+        /^Wed, Nov 11(,| at) 12:22 AM UTC-06:00$/,
+      );
+      expect(formatTimestamp('2026-12-31T23:59:59.5Z')).toMatch(
+        /^Thu, Dec 31(,| at) 11:59 PM UTC$/,
+      );
+      expect(formatTimestamp('2026-07-04T12:05:00+05:30')).toMatch(
+        /^Sat, Jul 4(,| at) 12:05 PM UTC\+05:30$/,
+      );
+    });
+
     it('treats explicit undefined and null timeZone the same as omission', () => {
       const iso = '2026-04-19T15:00:00-07:00';
       const baseline = formatTimestamp(iso);

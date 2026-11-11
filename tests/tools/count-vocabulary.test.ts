@@ -94,6 +94,34 @@ describe('upstream-paged tools report shown without totalCount (issue #26)', () 
 });
 
 /**
+ * nws_search_alerts pages its windowed searches upstream (issue #81), where NWS gives
+ * no total, so its `totalCount` is optional: reported on an active search, absent on
+ * a windowed one. The tools that always window a whole collection keep it required.
+ */
+describe('windowed alert searches report shown without totalCount (issue #81)', () => {
+  it('nws_search_alerts declares totalCount optional and shown required', () => {
+    const enrichment = searchAlertsTool.enrichment;
+
+    expect(enrichment?.totalCount.safeParse(undefined).success).toBe(true);
+    expect(enrichment?.shown.safeParse(undefined).success).toBe(false);
+  });
+
+  it('nws_search_alerts names where totalCount is reported and where it is absent', () => {
+    const description = searchAlertsTool.enrichment?.totalCount.description ?? '';
+
+    expect(description).toMatch(/reported on every search of the active alerts/i);
+    expect(description).toMatch(/absent on a windowed search/i);
+  });
+
+  it.each([
+    ['nws_get_forecast', getForecastTool],
+    ['nws_find_stations', findStationsTool],
+  ] as const)('%s keeps totalCount required', (_name, tool) => {
+    expect(tool.enrichment?.totalCount.safeParse(undefined).success).toBe(false);
+  });
+});
+
+/**
  * nws_get_alert_counts pages nothing (issue #25). Its national total is a count of
  * active alerts named for what it counts, so neither paging name appears on it.
  */

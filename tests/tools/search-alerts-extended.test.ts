@@ -1,6 +1,7 @@
 /**
  * @fileoverview Extended tests for nws_search_alerts: point validation edge cases,
- * zone filter, marine area codes, event filtering, caps.
+ * zone filter, marine area codes, event filtering, caps, cursors, and windowed
+ * searches.
  * @module tests/tools/search-alerts-extended
  */
 
@@ -8,17 +9,28 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { decodeCursor, encodeCursor } from '@cyanheads/mcp-ts-core/utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AlertSearchResult, NwsService } from '@/services/nws/nws-service.js';
+import { windowAlertMessages } from '../fixtures/nws-responses.js';
 
 /** The filters the tool hands the service, as the service declares them. */
 type SearchParams = Parameters<NwsService['searchAlerts']>[0];
+/** A windowed search as the tool hands it to the service. */
+type WindowParams = Parameters<NwsService['searchAlertWindow']>[0];
 
 const mockSearchAlerts =
   vi.fn<(params: SearchParams, ctx: unknown) => Promise<AlertSearchResult>>();
+const mockSearchAlertWindow =
+  vi.fn<(params: WindowParams, ctx: unknown) => Promise<AlertSearchResult>>();
+const mockMatchAlertEventTypes =
+  vi.fn<(terms: readonly string[], ctx: unknown) => Promise<readonly string[]>>();
 
 vi.mock('@/services/nws/nws-service.js', () => ({
-  getNwsService: () => ({ searchAlerts: mockSearchAlerts }),
+  getNwsService: () => ({
+    searchAlerts: mockSearchAlerts,
+    searchAlertWindow: mockSearchAlertWindow,
+    matchAlertEventTypes: mockMatchAlertEventTypes,
+  }),
 }));
 
 const { searchAlertsTool } = await import('@/mcp-server/tools/definitions/search-alerts.tool.js');
@@ -61,6 +73,8 @@ function makeAlert(overrides: Partial<AlertOutput> = {}): AlertOutput {
 describe('nws_search_alerts extended', () => {
   beforeEach(() => {
     mockSearchAlerts.mockReset();
+    mockSearchAlertWindow.mockReset();
+    mockMatchAlertEventTypes.mockReset();
   });
 
   describe('point validation edge cases', () => {
@@ -819,10 +833,13 @@ describe('nws_search_alerts extended', () => {
       expect(() => searchAlertsTool.input.parse({ limit: 0 })).toThrow();
     });
 
-    it('accepts a limit past the 25-alert cap up to the 10000 ceiling, and rejects beyond it', () => {
+    it('accepts any safe-integer limit past the 25-alert cap, and rejects beyond the safe range', () => {
       expect(searchAlertsTool.input.parse({ limit: 26 }).limit).toBe(26);
-      expect(searchAlertsTool.input.parse({ limit: 10_000 }).limit).toBe(10_000);
-      expect(() => searchAlertsTool.input.parse({ limit: 10_001 })).toThrow();
+      expect(searchAlertsTool.input.parse({ limit: 10_001 }).limit).toBe(10_001);
+      expect(searchAlertsTool.input.parse({ limit: Number.MAX_SAFE_INTEGER }).limit).toBe(
+        Number.MAX_SAFE_INTEGER,
+      );
+      expect(() => searchAlertsTool.input.parse({ limit: 2 ** 53 })).toThrow();
     });
   });
 
@@ -919,7 +936,7 @@ describe('nws_search_alerts extended', () => {
     });
 
     it.each([
-      ['past the 10000 ceiling', 10_001],
+      ['past the safe-integer range', 2 ** 53],
       ['zero', 0],
       ['fractional', 2.5],
     ])('rejects a limit %s as invalid_arguments', async (_label, limit) => {
@@ -1408,8 +1425,683 @@ describe('nws_search_alerts extended', () => {
     it('says in the cursor description that the token carries the query and page size', () => {
       const { description } = searchAlertsTool.input.shape.cursor;
 
-      expect(description).toMatch(/carries (?:the|that) query's filters and page size/);
+      expect(description).toMatch(/carries (?:the|that) query's filters, window, and page size/);
       expect(description).toMatch(/first page only/);
+    });
+  });
+
+  describe('windowed search (issue #81)', () => {
+    /** The clock every windowed case runs at. */
+    const NOW = '2026-11-11T12:00:00Z';
+    /** NOW less the 7 days NWS keeps alert messages for. */
+    const CUTOFF = '2026-11-04T12:00:00Z';
+    /** The window `windowAlertMessages` was served for. */
+    const WINDOW = { start: '2026-11-11T02:00:00Z', end: '2026-11-11T03:00:00Z' } as const;
+    const CAP_PREFIX = 'urn:oid:2.49.0.1.840.0.';
+    /** The message hashes of the fixture's 4-message tie at 02:44Z, 30-message tie at 02:37Z, and 11-message tie at 02:33Z. */
+    const TIE_44 = '0661c42ec6465e3547320c18750c5e69a35c353f';
+    const TIE_37 = 'f4bcc0d7975543a3af2853065b60547e3a99236b';
+    const TIE_33 = 'c73deb5a8cb86ffaace27e6576331c7beffa3105';
+    const RETENTION = `This window starts before ${CUTOFF}, about as far back as NWS keeps alert messages (7 days), so messages issued before then may be missing from it.`;
+    const MORE_REMAIN = (shown: number) =>
+      `Returning ${shown} alert messages, newest first; older messages in this window remain. Pass nextCursor back as cursor for the next page, which picks up where this one ends; a walk returns each message once.`;
+
+    const fixtureAlerts = windowAlertMessages.map(([id, sent, event, messageType]) =>
+      makeAlert({ id, sent, event, messageType }),
+    );
+
+    type Surfaces = {
+      data: Record<string, unknown> & { alerts: { id: string }[] };
+      text: string;
+    };
+    type Token = {
+      offset: number;
+      limit: number;
+      filters?: Record<string, unknown>;
+      keyset?: { sent: string; ids: string[][] };
+    };
+
+    /** One call through the production parse, returning both client surfaces. */
+    async function call(args: Record<string, unknown>): Promise<Surfaces> {
+      const result = await runToolContract(searchAlertsTool, args);
+      expect(result.isError).toBeFalsy();
+      return {
+        data: result.structuredContent as Surfaces['data'],
+        text: result.content.map((block) => (block as { text: string }).text).join('\n'),
+      };
+    }
+
+    /** One call that must fail, returning its error envelope. */
+    async function refused(args: Record<string, unknown>) {
+      const result = await runToolContract(searchAlertsTool, args);
+      expect(result.isError).toBe(true);
+      return (
+        result.structuredContent as {
+          error: { code: number; message: string; data?: { reason?: string } };
+        }
+      ).error;
+    }
+
+    const ids = (surfaces: Surfaces) => surfaces.data.alerts.map((alert) => alert.id);
+    const decode = (cursor: unknown) =>
+      decodeCursor(cursor as string, createMockContext()) as Token;
+    const windowCalls = () => mockSearchAlertWindow.mock.calls.map(([params]) => params);
+    /** Requests that reached any service method; a refusal before any request leaves this 0. */
+    const serviceCalls = () =>
+      mockSearchAlerts.mock.calls.length +
+      mockSearchAlertWindow.mock.calls.length +
+      mockMatchAlertEventTypes.mock.calls.length;
+    /** The message IDs a keyset's groups stand for: one per suffix, or the loose ID itself. */
+    const carriedCount = (groups: string[][]) =>
+      groups.reduce((count, group) => count + Math.max(group.length - 1, 1), 0);
+
+    /** FNV-1a, for a reproducible reorder. */
+    function hash(text: string): number {
+      let h = 2166136261;
+      for (let index = 0; index < text.length; index++) {
+        h = Math.imul(h ^ text.charCodeAt(index), 16777619);
+      }
+      return h >>> 0;
+    }
+
+    /**
+     * Answer as `/alerts` does: the messages sent within [start, end] by instant,
+     * both ends inclusive, newest first, at most `limit` — and, as NWS does, the
+     * messages that share a `sent` instant in a different order on every request.
+     */
+    function serveWindow(messages: readonly AlertOutput[]) {
+      let request = 0;
+      mockSearchAlertWindow.mockImplementation(async (params) => {
+        request += 1;
+        const startMs = params.start === undefined ? -Infinity : Date.parse(params.start);
+        const endMs = params.end === undefined ? Infinity : Date.parse(params.end);
+        const alerts = messages
+          .filter((message) => {
+            const sentMs = Date.parse(message.sent);
+            return sentMs >= startMs && sentMs <= endMs;
+          })
+          .sort(
+            (a, b) =>
+              Date.parse(b.sent) - Date.parse(a.sent) ||
+              hash(`${request}:${a.id}`) - hash(`${request}:${b.id}`),
+          )
+          .slice(0, params.limit);
+        return { alerts };
+      });
+    }
+
+    /** `count` messages an hour apart, the newest at `newest`. */
+    function hourly(count: number, newest: string) {
+      return Array.from({ length: count }, (_, index) =>
+        makeAlert({
+          id: `urn:test:hourly:${String(index).padStart(3, '0')}`,
+          sent: new Date(Date.parse(newest) - index * 3_600_000).toISOString(),
+        }),
+      );
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(NOW));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('mints a keyset of the oldest sent instant, in UTC, and the IDs returned there grouped by message hash', async () => {
+      const hashA = 'a'.repeat(40);
+      const hashB = 'b'.repeat(40);
+      const newer = makeAlert({ id: `${CAP_PREFIX}${hashA}.009.1`, sent: '2026-11-11T02:55:00Z' });
+      const a1 = makeAlert({ id: `${CAP_PREFIX}${hashA}.001.1`, sent: '2026-11-11T02:50:00Z' });
+      // The same instant from offices in other offsets is the same tie.
+      const b1 = makeAlert({
+        id: `${CAP_PREFIX}${hashB}.002.1`,
+        sent: '2026-11-10T18:50:00-08:00',
+      });
+      const loose = makeAlert({ id: 'urn:test:heartbeat', sent: '2026-11-10T21:50:00-05:00' });
+      const a2 = makeAlert({ id: `${CAP_PREFIX}${hashA}.003.2`, sent: '2026-11-11T02:50:00Z' });
+      const a3 = makeAlert({ id: `${CAP_PREFIX}${hashA}.004.1`, sent: '2026-11-11T02:50:00Z' });
+      const older = makeAlert({ id: 'urn:test:older', sent: '2026-11-11T02:40:00Z' });
+      mockSearchAlertWindow.mockResolvedValueOnce({ alerts: [newer, a1, b1, loose, a2, a3] });
+
+      const first = await call({ ...WINDOW, limit: 5 });
+
+      expect(ids(first)).toEqual([newer.id, a1.id, b1.id, loose.id, a2.id]);
+      expect(windowCalls()[0]).toMatchObject({ ...WINDOW, status: 'Actual', limit: 6 });
+      expect(mockMatchAlertEventTypes).not.toHaveBeenCalled();
+      expect(decode(first.data.nextCursor)).toEqual({
+        offset: 0,
+        limit: 5,
+        filters: { ...WINDOW, status: 'Actual' },
+        keyset: {
+          sent: '2026-11-11T02:50:00Z',
+          ids: [[hashA, '001.1', '003.2'], [hashB, '002.1'], ['urn:test:heartbeat']],
+        },
+      });
+
+      // NWS answers the boundary request with the tie in another order.
+      mockSearchAlertWindow.mockResolvedValueOnce({ alerts: [loose, a3, a2, b1, a1, older] });
+      const second = await call({ cursor: first.data.nextCursor });
+
+      expect(windowCalls()[1]).toMatchObject({
+        start: WINDOW.start,
+        end: '2026-11-11T02:50:00Z',
+        limit: 4 + 5 + 1,
+      });
+      expect(ids(second)).toEqual([a3.id, older.id]);
+      expect(second.data).not.toHaveProperty('nextCursor');
+    });
+
+    it('walks a 30-message tie that spans pages, carrying every ID already returned at it, and returns each of the 51 messages once', async () => {
+      serveWindow(fixtureAlerts);
+
+      const seen: string[] = [];
+      const sizes: number[] = [];
+      const keysets: [string, number, string[]][] = [];
+      let surfaces = await call({ ...WINDOW, limit: 7 });
+      for (let pages = 1; ; pages++) {
+        seen.push(...ids(surfaces));
+        sizes.push(surfaces.data.alerts.length);
+        const next = surfaces.data.nextCursor;
+        if (next === undefined || pages === 20) break;
+        const { keyset } = decode(next);
+        keysets.push([
+          keyset!.sent,
+          carriedCount(keyset!.ids),
+          keyset!.ids.map((group) => group[0]!),
+        ]);
+        surfaces = await call({ cursor: next });
+      }
+
+      expect(sizes).toEqual([7, 7, 7, 7, 7, 7, 7, 2]);
+      expect(seen).toHaveLength(51);
+      expect(new Set(seen)).toEqual(new Set(windowAlertMessages.map(([id]) => id)));
+      // Inside a tie the carried IDs accumulate; a new boundary instant starts over.
+      // Each tie is one product, so its IDs ride as one hash group.
+      expect(keysets).toEqual([
+        ['2026-11-11T02:44:00Z', 3, [TIE_44]],
+        ['2026-11-11T02:37:00Z', 6, [TIE_37]],
+        ['2026-11-11T02:37:00Z', 13, [TIE_37]],
+        ['2026-11-11T02:37:00Z', 20, [TIE_37]],
+        ['2026-11-11T02:37:00Z', 27, [TIE_37]],
+        ['2026-11-11T02:33:00Z', 4, [TIE_33]],
+        ['2026-11-11T02:33:00Z', 11, [TIE_33]],
+      ]);
+      // Each request ends at the boundary and asks for the carried IDs, a page, and one more.
+      expect(windowCalls().map(({ start, end, limit }) => [start, end, limit])).toEqual([
+        [WINDOW.start, WINDOW.end, 8],
+        [WINDOW.start, '2026-11-11T02:44:00Z', 3 + 8],
+        [WINDOW.start, '2026-11-11T02:37:00Z', 6 + 8],
+        [WINDOW.start, '2026-11-11T02:37:00Z', 13 + 8],
+        [WINDOW.start, '2026-11-11T02:37:00Z', 20 + 8],
+        [WINDOW.start, '2026-11-11T02:37:00Z', 27 + 8],
+        [WINDOW.start, '2026-11-11T02:33:00Z', 4 + 8],
+        [WINDOW.start, '2026-11-11T02:33:00Z', 11 + 8],
+      ]);
+      expect(surfaces.data.notice).toBeUndefined();
+    });
+
+    it('continues the token’s query when the window inputs are resent with it', async () => {
+      serveWindow(fixtureAlerts);
+
+      const first = await call({ ...WINDOW, limit: 7 });
+      await call({ cursor: first.data.nextCursor });
+      await call({ ...WINDOW, area: 'AK', limit: 3, cursor: first.data.nextCursor });
+
+      const [, alone, resent] = windowCalls();
+      expect(resent).toEqual(alone);
+      expect(resent).toMatchObject({ end: '2026-11-11T02:44:00Z', limit: 11 });
+      expect(resent?.area).toBeUndefined();
+    });
+
+    const WINDOW_FILTERS = { ...WINDOW, status: 'Actual' };
+    const keyset = (overrides: Record<string, unknown> = {}) => ({
+      sent: '2026-11-11T02:37:00Z',
+      ids: [[TIE_37, '001.1']],
+      ...overrides,
+    });
+    const windowToken = (body: Record<string, unknown>) =>
+      encodeCursor({ offset: 0, limit: 7, ...body });
+    const looseIds = (count: number) =>
+      Array.from({ length: count }, (_, index): [string] => [`urn:test:seen:${index}`]);
+
+    it.each([
+      [
+        'a keyset without a window',
+        { cursor: windowToken({ filters: { status: 'Actual' }, keyset: keyset() }) },
+      ],
+      ['a keyset with no filters', { cursor: windowToken({ keyset: keyset() }) }],
+      ['window filters without a keyset', { cursor: windowToken({ filters: WINDOW_FILTERS }) }],
+      [
+        'an {offset, limit} token sent with start',
+        { start: WINDOW.start, cursor: encodeCursor({ offset: 3, limit: 3 }) },
+      ],
+      [
+        'an {offset, limit} token sent with end',
+        { end: WINDOW.end, cursor: encodeCursor({ offset: 3, limit: 3 }) },
+      ],
+      [
+        'an {offset, limit, filters} token sent with start and end',
+        {
+          ...WINDOW,
+          cursor: encodeCursor({
+            offset: 3,
+            limit: 3,
+            filters: { region: ['PA'], status: 'Actual' },
+          }),
+        },
+      ],
+      [
+        'a keyset sent that does not parse',
+        { cursor: windowToken({ filters: WINDOW_FILTERS, keyset: keyset({ sent: 'yesterday' }) }) },
+      ],
+      [
+        'a keyset sent before start',
+        {
+          cursor: windowToken({
+            filters: WINDOW_FILTERS,
+            keyset: keyset({ sent: '2026-11-11T01:59:59Z' }),
+          }),
+        },
+      ],
+      [
+        'a keyset sent after end',
+        {
+          cursor: windowToken({
+            filters: WINDOW_FILTERS,
+            keyset: keyset({ sent: '2026-11-11T03:00:01Z' }),
+          }),
+        },
+      ],
+      [
+        'empty keyset ids',
+        { cursor: windowToken({ filters: WINDOW_FILTERS, keyset: keyset({ ids: [] }) }) },
+      ],
+      [
+        'keyset ids that are not tuples',
+        {
+          cursor: windowToken({
+            filters: WINDOW_FILTERS,
+            keyset: keyset({ ids: [`${CAP_PREFIX}${TIE_37}.001.1`] }),
+          }),
+        },
+      ],
+      [
+        'an empty keyset ID group',
+        { cursor: windowToken({ filters: WINDOW_FILTERS, keyset: keyset({ ids: [[]] }) }) },
+      ],
+      [
+        'a keyset with an unknown key',
+        { cursor: windowToken({ filters: WINDOW_FILTERS, keyset: keyset({ offset: 3 }) }) },
+      ],
+      [
+        'keyset ids that, with the page and one more, pass 500',
+        {
+          cursor: windowToken({ filters: WINDOW_FILTERS, keyset: keyset({ ids: looseIds(493) }) }),
+        },
+      ],
+      [
+        'a carried start of Feb 30',
+        {
+          cursor: windowToken({
+            filters: { ...WINDOW_FILTERS, start: '2026-02-30T00:00:00Z' },
+            keyset: keyset(),
+          }),
+        },
+      ],
+      [
+        'a carried start after its end',
+        {
+          cursor: windowToken({
+            filters: { ...WINDOW_FILTERS, start: WINDOW.end, end: WINDOW.start },
+            keyset: keyset(),
+          }),
+        },
+      ],
+    ])('rejects %s as invalid_cursor before any request', async (_label, args) => {
+      serveWindow(fixtureAlerts);
+
+      const error = await refused(args);
+
+      expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(error.data?.reason).toBe('invalid_cursor');
+      expect(serviceCalls()).toBe(0);
+    });
+
+    it('accepts a keyset whose IDs, with the page and one more, fill one request exactly', async () => {
+      serveWindow(fixtureAlerts);
+
+      await call({
+        cursor: windowToken({ filters: WINDOW_FILTERS, keyset: keyset({ ids: looseIds(492) }) }),
+      });
+
+      expect(windowCalls()).toHaveLength(1);
+      expect(windowCalls()[0]?.limit).toBe(500);
+    });
+
+    it('serves a windowed token’s carried page size above the cap as 25, budgeting the request on that page', async () => {
+      const sent = '2026-11-11T02:37:00Z';
+      const seenIds = looseIds(440);
+      const unseen = Array.from({ length: 26 }, (_, index) =>
+        makeAlert({ id: `urn:test:unseen:${String(index).padStart(2, '0')}`, sent }),
+      );
+      mockSearchAlertWindow.mockResolvedValueOnce({
+        alerts: [...seenIds.map(([id]) => makeAlert({ id, sent })), ...unseen],
+      });
+
+      // 440 carried with the 100 it names would pass 500; with the 25 it is served, 466 fits.
+      const surfaces = await call({
+        cursor: encodeCursor({
+          offset: 0,
+          limit: 100,
+          filters: WINDOW_FILTERS,
+          keyset: { sent, ids: seenIds },
+        }),
+      });
+
+      expect(windowCalls()[0]).toMatchObject({ end: sent, limit: 440 + 25 + 1 });
+      expect(ids(surfaces)).toEqual(unseen.slice(0, 25).map((alert) => alert.id));
+      expect(decode(surfaces.data.nextCursor)).toMatchObject({ limit: 25 });
+    });
+
+    it.each([
+      ['{ offset, limit }', encodeCursor({ offset: 3, limit: 3 }), 'national (no filters)'],
+      [
+        '{ offset, limit, filters }',
+        encodeCursor({ offset: 3, limit: 3, filters: { region: ['PA'], status: 'Actual' } }),
+        'region=PA',
+      ],
+    ])(
+      'resumes a %s token on the active path, never /alerts',
+      async (_label, cursor, appliedFilters) => {
+        mockSearchAlerts.mockResolvedValue({
+          alerts: Array.from({ length: 8 }, (_, index) => makeAlert({ id: `urn:active:${index}` })),
+        });
+
+        const surfaces = await call({ cursor });
+
+        expect(ids(surfaces)).toEqual(['urn:active:3', 'urn:active:4', 'urn:active:5']);
+        expect(surfaces.data).toMatchObject({ totalCount: 8, shown: 3, appliedFilters });
+        expect(surfaces.data).not.toHaveProperty('window');
+        expect(mockSearchAlerts).toHaveBeenCalledTimes(1);
+        expect(mockSearchAlertWindow).not.toHaveBeenCalled();
+        expect(mockMatchAlertEventTypes).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      [
+        'start after end',
+        { start: WINDOW.end, end: WINDOW.start },
+        `start "${WINDOW.end}" is after end "${WINDOW.start}"`,
+      ],
+      [
+        'a start of Feb 30',
+        { start: '2026-02-30T00:00:00Z' },
+        'start "2026-02-30T00:00:00Z" is not a valid ISO 8601 date-time',
+      ],
+      [
+        'a date-only start',
+        { start: '2026-11-10' },
+        'start "2026-11-10" is not a valid ISO 8601 date-time',
+      ],
+      [
+        'a date-only end',
+        { end: '2026-11-10' },
+        'end "2026-11-10" is not a valid ISO 8601 date-time',
+      ],
+    ])('refuses %s as invalid_time_window before any request', async (_label, args, message) => {
+      serveWindow(fixtureAlerts);
+
+      const error = await refused(args);
+
+      expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error.data?.reason).toBe('invalid_time_window');
+      expect(error.message).toContain(message);
+      expect(serviceCalls()).toBe(0);
+    });
+
+    it('orders start and end by instant when their offsets differ', async () => {
+      serveWindow(fixtureAlerts);
+
+      // 20:30 CST on Nov 10 is 02:30Z on Nov 11, after an end of 02:00Z, though it reads earlier.
+      const inverted = { start: '2026-11-10T20:30:00-06:00', end: '2026-11-11T02:00:00Z' };
+      const error = await refused(inverted);
+      expect(error.data?.reason).toBe('invalid_time_window');
+      expect(error.message).toContain(`start "${inverted.start}" is after end "${inverted.end}"`);
+      expect(serviceCalls()).toBe(0);
+
+      // 21:00 EST on Nov 10 is 02:00Z on Nov 11, after a start of 01:00Z, though it reads earlier.
+      const ordered = { start: '2026-11-11T01:00:00Z', end: '2026-11-10T21:00:00-05:00' };
+      const served = await call(ordered);
+      expect(served.data.window).toEqual(ordered);
+      expect(windowCalls()).toEqual([expect.objectContaining(ordered)]);
+    });
+
+    it.each([
+      // 449 + 25 = 474 carried; 474 + 25 + 1 = 500 still fits one request.
+      [449, true],
+      // 474 + 25 = 499 carried; 499 + 25 + 1 = 525 does not.
+      [474, false],
+    ])(
+      'with %i IDs already returned at the boundary, offers a cursor only while the next request fits 500: %s',
+      async (seenCount, continues) => {
+        const sent = '2026-11-11T02:37:00Z';
+        const seenIds = looseIds(seenCount);
+        const unseen = Array.from({ length: 26 }, (_, index) =>
+          makeAlert({ id: `urn:test:unseen:${String(index).padStart(2, '0')}`, sent }),
+        );
+        mockSearchAlertWindow.mockResolvedValueOnce({
+          alerts: [...seenIds.map(([id]) => makeAlert({ id, sent })), ...unseen],
+        });
+
+        const surfaces = await call({
+          cursor: encodeCursor({
+            offset: 0,
+            limit: 25,
+            filters: WINDOW_FILTERS,
+            keyset: { sent, ids: seenIds },
+          }),
+        });
+
+        expect(windowCalls()[0]).toMatchObject({ end: sent, limit: seenCount + 25 + 1 });
+        expect(ids(surfaces)).toEqual(unseen.slice(0, 25).map((alert) => alert.id));
+        const carried = seenCount + 25;
+        if (continues) {
+          expect(carriedCount(decode(surfaces.data.nextCursor).keyset!.ids)).toBe(carried);
+          expect(surfaces.data.notice).toBe(MORE_REMAIN(25));
+        } else {
+          const notice = `Returning 25 alert messages, newest first. More remain, but this walk has already returned ${carried} issued at ${sent}, more than one NWS request can page past; narrow the filters, or move end to just before ${sent}, to reach the rest.`;
+          expect(surfaces.data).not.toHaveProperty('nextCursor');
+          expect(surfaces.data.notice).toBe(notice);
+          expect(surfaces.text).toContain(`> ${notice}`);
+          expect(surfaces.text).not.toContain('Next Cursor');
+        }
+      },
+    );
+
+    it('ends a walk whose remaining messages are gone with an empty page that says so', async () => {
+      // Every message the boundary request returns was already returned.
+      const sent = '2026-11-11T02:37:00Z';
+      mockSearchAlertWindow.mockResolvedValueOnce({
+        alerts: [makeAlert({ id: `${CAP_PREFIX}${TIE_37}.001.1`, sent })],
+      });
+
+      const surfaces = await call({
+        cursor: windowToken({ filters: WINDOW_FILTERS, keyset: keyset() }),
+      });
+
+      const notice = `No alert messages remain past the previous page for: start=${WINDOW.start}, end=${WINDOW.end}. NWS keeps alert messages for 7 days, back to ${CUTOFF}; any that aged out since that page are gone.`;
+      expect(surfaces.data.alerts).toEqual([]);
+      expect(surfaces.data).not.toHaveProperty('nextCursor');
+      expect(surfaces.data).toMatchObject({ shown: 0, notice, window: WINDOW });
+      expect(surfaces.text).toContain(
+        `No alert messages issued between ${WINDOW.start} and ${WINDOW.end} matched.`,
+      );
+      expect(surfaces.text).toContain(`> ${notice}`);
+    });
+
+    describe('retention notice', () => {
+      const EIGHT_DAYS_BACK = '2026-11-03T12:00:00Z';
+      const SIX_DAYS_BACK = '2026-11-05T12:00:00Z';
+      const RESTART =
+        'Widen the window or remove filters, or omit start and end to search the alerts active now.';
+
+      it.each([
+        ['with messages', 2, RETENTION],
+        [
+          'empty',
+          0,
+          `${RETENTION} No alert messages matched: start=${EIGHT_DAYS_BACK}. ${RESTART}`,
+        ],
+      ])(
+        'flags a window starting 8 days back on both surfaces, %s',
+        async (_label, count, notice) => {
+          serveWindow(hourly(count, '2026-11-05T00:00:00Z'));
+
+          const surfaces = await call({ start: EIGHT_DAYS_BACK });
+
+          expect(surfaces.data.alerts).toHaveLength(count);
+          expect(surfaces.data.notice).toBe(notice);
+          expect(surfaces.text).toContain(`> ${notice}`);
+        },
+      );
+
+      it.each([
+        ['with messages', 2, undefined],
+        [
+          'empty',
+          0,
+          `No alert messages matched: start=${SIX_DAYS_BACK}. NWS keeps alert messages for 7 days, back to ${CUTOFF}. ${RESTART}`,
+        ],
+      ])('leaves it off a window starting 6 days back, %s', async (_label, count, notice) => {
+        serveWindow(hourly(count, '2026-11-06T00:00:00Z'));
+
+        const surfaces = await call({ start: SIX_DAYS_BACK });
+
+        expect(surfaces.data.alerts).toHaveLength(count);
+        expect(surfaces.data.notice).toBe(notice);
+        expect(surfaces.text).not.toContain('as far back as NWS keeps');
+      });
+
+      it('names the cutoff, without the retention notice, on an end-only window past it', async () => {
+        serveWindow([]);
+
+        const surfaces = await call({ end: '2026-11-01T00:00:00Z' });
+
+        expect(surfaces.data.notice).toBe(
+          `No alert messages matched: end=2026-11-01T00:00:00Z. NWS keeps alert messages for 7 days, back to ${CUTOFF}. ${RESTART}`,
+        );
+      });
+
+      it('names the cutoff to the second, and flags only a start before that second, when the clock carries milliseconds', async () => {
+        vi.setSystemTime(new Date('2026-11-11T12:00:00.250Z'));
+        serveWindow([]);
+
+        const endOnly = await call({ end: '2026-11-01T00:00:00Z' });
+        const atCutoff = await call({ start: '2026-11-04T12:00:01Z' });
+        const beforeCutoff = await call({ start: '2026-11-04T12:00:00Z' });
+
+        expect(endOnly.data.notice).toBe(
+          `No alert messages matched: end=2026-11-01T00:00:00Z. NWS keeps alert messages for 7 days, back to 2026-11-04T12:00:01Z. ${RESTART}`,
+        );
+        expect(atCutoff.data.notice).not.toContain('as far back as NWS keeps');
+        expect(beforeCutoff.data.notice).toContain(
+          'This window starts before 2026-11-04T12:00:01Z, about as far back as NWS keeps alert messages (7 days)',
+        );
+      });
+
+      it('does not claim messages before the cutoff are gone when NWS still serves one', async () => {
+        // NWS purges a few minutes behind the 7-day mark, so a message sent just
+        // before the cutoff can still come back inside a window that starts earlier.
+        serveWindow([
+          makeAlert({ id: 'urn:test:kept:001', sent: '2026-11-04T12:30:00Z' }),
+          makeAlert({ id: 'urn:test:kept:002', sent: '2026-11-04T11:58:00Z' }),
+        ]);
+
+        const surfaces = await call({ start: EIGHT_DAYS_BACK });
+
+        expect(ids(surfaces)).toEqual(['urn:test:kept:001', 'urn:test:kept:002']);
+        expect(surfaces.data.notice).toBe(RETENTION);
+        expect(surfaces.data.notice).not.toContain('are missing');
+      });
+
+      it('carries both when the page also has older messages remaining', async () => {
+        serveWindow(hourly(10, '2026-11-05T00:00:00Z'));
+
+        const surfaces = await call({ start: EIGHT_DAYS_BACK, limit: 7 });
+
+        const notice = `${RETENTION} ${MORE_REMAIN(7)}`;
+        expect(surfaces.data.nextCursor).toEqual(expect.any(String));
+        expect(surfaces.data.notice).toBe(notice);
+        expect(surfaces.text).toContain(`> ${notice}`);
+      });
+
+      it('carries the limit clamp, the retention notice, and the remaining-messages notice together', async () => {
+        serveWindow(hourly(30, '2026-11-05T00:00:00Z'));
+
+        const surfaces = await call({ start: EIGHT_DAYS_BACK, limit: 40 });
+
+        const notice = `Requested limit 40 exceeds the per-page cap of 25; this page holds up to 25. ${RETENTION} ${MORE_REMAIN(25)}`;
+        expect(surfaces.data).toMatchObject({ requestedLimit: 40, effectiveLimit: 25, shown: 25 });
+        expect(surfaces.data.notice).toBe(notice);
+        expect(surfaces.text).toContain(`> ${notice}`);
+      });
+
+      it('carries both beside an event that matches no type, sending no /alerts request', async () => {
+        mockMatchAlertEventTypes.mockResolvedValueOnce([]);
+
+        const surfaces = await call({ start: EIGHT_DAYS_BACK, event: ['zzz'] });
+
+        const notice = `${RETENTION} No NWS alert event type matches event=zzz, so no message can match. Use nws_list_alert_types to find valid event names.`;
+        expect(surfaces.data.alerts).toEqual([]);
+        expect(surfaces.data.notice).toBe(notice);
+        expect(surfaces.text).toContain(`> ${notice}`);
+        expect(mockMatchAlertEventTypes).toHaveBeenCalledWith(['zzz'], expect.anything());
+        expect(mockSearchAlertWindow).not.toHaveBeenCalled();
+      });
+    });
+
+    it('passes message_type to the active search', async () => {
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: [] });
+
+      const surfaces = await call({ message_type: 'Update' });
+
+      expect(mockSearchAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({ message_type: 'Update' }),
+        expect.anything(),
+      );
+      expect(mockSearchAlertWindow).not.toHaveBeenCalled();
+      expect(surfaces.data.appliedFilters).toBe('message_type=Update');
+    });
+
+    it('passes message_type to the windowed search, on the first page and every continued one', async () => {
+      serveWindow(fixtureAlerts);
+
+      const first = await call({ ...WINDOW, message_type: 'Cancel', limit: 7 });
+      await call({ cursor: first.data.nextCursor });
+
+      expect(windowCalls().map((params) => params.message_type)).toEqual(['Cancel', 'Cancel']);
+      expect(decode(first.data.nextCursor).filters).toMatchObject({ message_type: 'Cancel' });
+      expect(first.data.appliedFilters).toBe(
+        `message_type=Cancel, start=${WINDOW.start}, end=${WINDOW.end}`,
+      );
+      expect(mockSearchAlerts).not.toHaveBeenCalled();
+    });
+
+    it('reports shown without totalCount on a windowed search, where an active search reports both', async () => {
+      serveWindow(fixtureAlerts);
+      mockSearchAlerts.mockResolvedValueOnce({ alerts: fixtureAlerts });
+
+      const windowed = await call({ ...WINDOW, limit: 7 });
+      const active = await call({ limit: 7 });
+
+      expect(windowed.data).not.toHaveProperty('totalCount');
+      expect(windowed.data.shown).toBe(7);
+      expect(windowed.text).not.toContain('Total Alerts');
+      expect(active.data).toMatchObject({ totalCount: 51, shown: 7 });
+      expect(active.text).toContain('Total Alerts');
     });
   });
 

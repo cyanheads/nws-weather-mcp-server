@@ -6,11 +6,9 @@
 import http from 'node:http';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DATE_TIME_INPUT_PATTERN } from '@/mcp-server/tools/date-time.js';
 import { ALERT_ID_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-alert.tool.js';
-import {
-  DATE_TIME_INPUT_PATTERN,
-  HISTORY_STATION_ID_INPUT_PATTERN,
-} from '@/mcp-server/tools/definitions/get-observation-history.tool.js';
+import { HISTORY_STATION_ID_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-observation-history.tool.js';
 import { STATION_ID_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-observations.tool.js';
 import { OFFICE_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-office-discussion.tool.js';
 import { ZONE_ID_INPUT_PATTERN } from '@/mcp-server/tools/definitions/get-zone-forecast.tool.js';
@@ -597,6 +595,14 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
         args: { area: 'WA', point: '47.6,-122.3', zone: '' },
         reason: 'mutually_exclusive_filters',
         hint: 'at most one',
+      },
+      {
+        id: 'alerts-inverted-window',
+        tool: 'nws_search_alerts',
+        args: { start: '2026-11-11T00:00:00Z', end: '2026-11-10T00:00:00Z' },
+        reason: 'invalid_time_window',
+        // The parameter names render as code spans, so a parse reads them back raw.
+        hint: 'with `start` no later than `end`, or omit both to search the alerts active now.',
       },
       {
         // A blank station_id is unset (issue #46); with no coordinates the call
@@ -1337,6 +1343,11 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
         type: 'string',
         enum: ['Land', 'Marine'],
       });
+      expect(alerts?.properties.message_type).toEqual({
+        description: expect.any(String),
+        type: 'string',
+        enum: ['Alert', 'Update', 'Cancel'],
+      });
       expect(alerts?.properties.status).toEqual({
         description: expect.any(String),
         default: 'Actual',
@@ -1412,14 +1423,17 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
         '2026-10-15T12:00:00+00:00',
         '2026-10-15T12:00:00.123456Z',
         ' 2026-10-15T12:00:00Z ',
+        // NWS reads a lowercase t or z and a colon-less offset as the same instant.
+        '2026-10-15t12:00:00z',
+        '2026-10-15T12:00:00+0000',
         '',
         '   ',
       ];
       const timesRefused = [
         '2026-10-15T12:00Z',
-        '2026-10-15t12:00:00z',
         '2026-10-15',
         '2026-10-15T12:00:00.1234567Z',
+        '2026-10-15T12:00:00+05',
       ];
       /**
        * `served` holds raw forms that return a result today; `refused` holds forms the
@@ -1457,6 +1471,20 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
           pattern: ZONE_INPUT_PATTERN,
           served: ['waz315', ' WAZ315 ', 'WaZ315', 'wac033', 'WAZ999', 'pzz135', '', '   '],
           refused: ['WA315', 'WA-315', 'WAZ31', 'WA Z315'],
+        },
+        {
+          tool: 'nws_search_alerts',
+          field: 'start',
+          pattern: DATE_TIME_INPUT_PATTERN,
+          served: times,
+          refused: timesRefused,
+        },
+        {
+          tool: 'nws_search_alerts',
+          field: 'end',
+          pattern: DATE_TIME_INPUT_PATTERN,
+          served: times,
+          refused: timesRefused,
         },
         {
           tool: 'nws_get_observations',
@@ -1552,6 +1580,12 @@ describe('HTTP JSON-RPC error contracts', { timeout: 30_000 }, () => {
       ['nws_search_alerts', { area: 'WAS' }, 'invalid_area_code', JsonRpcErrorCode.ValidationError],
       ['nws_search_alerts', { point: '47.6,' }, 'invalid_point', JsonRpcErrorCode.ValidationError],
       [
+        'nws_search_alerts',
+        { end: '2026-10-15T12:00Z' },
+        'invalid_time_window',
+        JsonRpcErrorCode.ValidationError,
+      ],
+      [
         'nws_get_observation_history',
         { station_id: 'KSEA', start: '2026-10-15T12:00Z' },
         'invalid_time_window',
@@ -1636,6 +1670,7 @@ describe('declared error severities (issue #43)', () => {
         invalid_area_code: 'notice',
         invalid_point: 'notice',
         invalid_zone: 'notice',
+        invalid_time_window: 'notice',
       },
       nws_get_alert: { alert_not_found: 'notice' },
       nws_get_observations: {

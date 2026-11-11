@@ -7,10 +7,12 @@ import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { decodeCursor, encodeCursor, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
+import { DATE_TIME_INPUT_PATTERN, parseDateTime } from '../date-time.js';
 import {
+  formatAltimeter,
   formatCloudLayers,
   formatPrecipitation,
-  formatPressure,
+  formatSeaLevelPressure,
   formatTemp,
   formatTimestamp,
   formatVisibility,
@@ -18,83 +20,18 @@ import {
   roundTenth,
   roundValue,
 } from '../format-utils.js';
-import {
-  clampPageLimit,
-  composeNotice,
-  invalidCursor,
-  LIMIT_CEILING,
-  type PageLimit,
-} from '../page-limit.js';
+import { clampPageLimit, composeNotice, invalidCursor, type PageLimit } from '../page-limit.js';
 import { unsetIfBlank } from '../unset-if-blank.js';
 
 /** Observations per page. A larger `limit` is served up to this cap rather than rejected. */
 const MAX_LIMIT = 100;
 
 /**
- * An ISO 8601 date-time with seconds and an explicit offset. NWS answers a date-only
- * value, one without seconds, or one with more than six fractional-second digits
- * with a 400, and a calendar-invalid one with a 500, so the handler validates
- * before any request goes out.
- */
-const DATE_TIME_RE =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
-
-/**
- * Shapes advertised as JSON Schema `pattern`s (issue #54), applied by a validating
- * client to the raw value. Each admits surrounding whitespace, which the handler
- * trims; start and end also admit a blank, which is unset. The date-time pattern is
- * DATE_TIME_RE's grammar without its captures: calendar validity, offset range, and
- * window order stay in the handler as invalid_time_window, and a malformed station
- * ID stays the service's station_not_found. No `format: "date-time"`: a padded or
- * blank value fails it, and it admits forms NWS refuses. A trailing `\s*` never
- * follows another `\s*` across an empty match, so a backtracking engine stays
- * linear on a long whitespace run.
+ * The station-ID shape advertised as a JSON Schema `pattern` (issue #54), applied
+ * by a validating client to the raw value. It admits surrounding whitespace, which
+ * the handler trims; a malformed ID stays the service's station_not_found.
  */
 export const HISTORY_STATION_ID_INPUT_PATTERN = /^\s*[A-Za-z0-9]+\s*$/;
-export const DATE_TIME_INPUT_PATTERN =
-  /^\s*(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})\s*)?$/;
-
-/**
- * Epoch milliseconds of a well-formed, calendar-valid date-time, or undefined.
- * `Date` rolls an out-of-range component into the next unit (Feb 30 reads as
- * Mar 2), so every component is checked by round-tripping it through `Date.UTC`
- * instead of trusting a parse.
- */
-function parseDateTime(value: string): number | undefined {
-  const match = DATE_TIME_RE.exec(value);
-  if (!match) return;
-  const [y, mo, d, h, mi, s] = match.slice(1, 7).map(Number) as [
-    number,
-    number,
-    number,
-    number,
-    number,
-    number,
-  ];
-  const wall = Date.UTC(y, mo - 1, d, h, mi, s);
-  const check = new Date(wall);
-  if (
-    check.getUTCFullYear() !== y ||
-    check.getUTCMonth() !== mo - 1 ||
-    check.getUTCDate() !== d ||
-    check.getUTCHours() !== h ||
-    check.getUTCMinutes() !== mi ||
-    check.getUTCSeconds() !== s
-  ) {
-    return;
-  }
-
-  const [, , , , , , , fraction, sign, offsetHour, offsetMinute] = match;
-  let offsetMs = 0;
-  if (sign) {
-    const oh = Number(offsetHour);
-    const om = Number(offsetMinute);
-    if (oh > 23 || om > 59) return;
-    offsetMs = (sign === '-' ? -1 : 1) * (oh * 60 + om) * 60_000;
-  }
-  const fractionMs = fraction ? Number(`0.${fraction}`) * 1000 : 0;
-  return wall + fractionMs - offsetMs;
-}
 
 /**
  * What a continuation token carries: the first page's window and applied page
@@ -128,20 +65,20 @@ function mintCursor(window: HistoryWindow, end: string): string {
  */
 function readCursor(cursor: string, ctx: Context): HistoryWindow {
   const { limit, end, start } = decodeCursor(cursor, ctx);
-  const endMs = typeof end === 'string' ? parseDateTime(end) : undefined;
-  const startMs = typeof start === 'string' ? parseDateTime(start) : undefined;
-  const valid =
-    Number.isInteger(limit) &&
-    limit <= MAX_LIMIT &&
-    endMs !== undefined &&
-    (start === undefined || (startMs !== undefined && startMs < endMs));
-  if (!valid) {
+  const endTime = typeof end === 'string' ? parseDateTime(end) : undefined;
+  const startTime = typeof start === 'string' ? parseDateTime(start) : undefined;
+  if (
+    !Number.isInteger(limit) ||
+    limit > MAX_LIMIT ||
+    endTime === undefined ||
+    (start !== undefined && (startTime === undefined || startTime.epochMs >= endTime.epochMs))
+  ) {
     throw invalidCursor(
       cursor,
-      'Omit `cursor` to start from the latest observation, or pass the `nextCursor` from the previous response unchanged.',
+      'Omit cursor to start from the latest observation, or pass the nextCursor from the previous response unchanged.',
     );
   }
-  return { limit, end: end as string, start: start as string | undefined };
+  return { limit, end: endTime.text, start: startTime?.text };
 }
 
 /** The caller's window in words, for a notice. */
@@ -206,10 +143,9 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
       .number()
       .int()
       .min(1)
-      .max(LIMIT_CEILING)
       .default(24)
       .describe(
-        `Observations per page, newest first. A page holds at most ${MAX_LIMIT}; a larger limit (up to ${LIMIT_CEILING}) is served as ${MAX_LIMIT} and reported through requestedLimit and effectiveLimit. When older observations remain in the window, the response carries nextCursor; pass it back as cursor for them.`,
+        `Observations per page, newest first. A page holds at most ${MAX_LIMIT}; a larger limit is served as ${MAX_LIMIT} and reported through requestedLimit and effectiveLimit. When older observations remain in the window, the response carries nextCursor; pass it back as cursor for them.`,
       ),
     cursor: z
       .string()
@@ -239,7 +175,18 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
             windSpeedKmh: z.number().nullable().describe('Wind speed in km/h'),
             windDirectionDeg: z.number().nullable().describe('Wind direction in degrees (0-360)'),
             windGustKmh: z.number().nullable().describe('Wind gust in km/h'),
-            barometricPressurePa: z.number().nullable().describe('Barometric pressure in Pascals'),
+            barometricPressurePa: z
+              .number()
+              .nullable()
+              .describe(
+                'Altimeter setting in Pascals: on METAR stations the A group, in hundredths of inHg (A3013 → 102030 Pa); stations in other networks, such as CWOP, fill it with their own reading. Not sea-level pressure (seaLevelPressurePa) — the two differ by several hPa at high-elevation stations.',
+              ),
+            seaLevelPressurePa: z
+              .number()
+              .nullable()
+              .describe(
+                'Sea-level pressure in Pascals, from the SLP remark of an hourly METAR (SLP129 → 1012.9 hPa, 101290 Pa). Null on 5-minute records and whenever NWS sends none. Read a pressure trend from one of the two fields, never a mix.',
+              ),
             visibilityM: z.number().nullable().describe('Visibility in meters'),
             relativeHumidityPct: z
               .number()
@@ -336,13 +283,13 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
     } else {
       const start = unsetIfBlank(input.start);
       const end = unsetIfBlank(input.end);
-      const startMs = start === undefined ? undefined : parseDateTime(start);
-      const endMs = end === undefined ? undefined : parseDateTime(end);
-      for (const [field, value, ms] of [
-        ['start', start, startMs],
-        ['end', end, endMs],
+      const startTime = start === undefined ? undefined : parseDateTime(start);
+      const endTime = end === undefined ? undefined : parseDateTime(end);
+      for (const [field, value, time] of [
+        ['start', start, startTime],
+        ['end', end, endTime],
       ] as const) {
-        if (value !== undefined && ms === undefined) {
+        if (value !== undefined && time === undefined) {
           throw ctx.fail(
             'invalid_time_window',
             `${field} "${value}" is not a valid ISO 8601 date-time with seconds and an offset (e.g., "2026-09-30T14:00:00Z"), or names a date that does not exist.`,
@@ -350,7 +297,7 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
           );
         }
       }
-      if (startMs !== undefined && endMs !== undefined && startMs >= endMs) {
+      if (startTime && endTime && startTime.epochMs >= endTime.epochMs) {
         throw ctx.fail(
           'invalid_time_window',
           `start "${start}" is not before end "${end}"; the window would hold no observations.`,
@@ -359,7 +306,7 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
       }
       const pageLimit = clampPageLimit(input.limit, MAX_LIMIT);
       clamp = pageLimit.clamp;
-      window = { start, end, limit: pageLimit.effectiveLimit };
+      window = { start: startTime?.text, end: endTime?.text, limit: pageLimit.effectiveLimit };
     }
 
     // One past the page size: NWS reports no total, so the extra record is the
@@ -380,6 +327,7 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
       windDirectionDeg: roundValue(obs.windDirection.value),
       windGustKmh: roundValue(obs.windGust.value),
       barometricPressurePa: roundValue(obs.barometricPressure.value),
+      seaLevelPressurePa: roundValue(obs.seaLevelPressure.value),
       visibilityM: roundValue(obs.visibility.value),
       relativeHumidityPct: roundValue(obs.relativeHumidity.value),
       heatIndexC: roundTenth(obs.heatIndex.value),
@@ -442,8 +390,8 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
     lines.push(
       `${result.observations.length} observation${result.observations.length === 1 ? '' : 's'}, newest first. ${MISSING} = not reported.`,
       '',
-      '| Time | Conditions | Temperature | Dewpoint | Humidity | Wind | Pressure | Visibility | Heat Index | Wind Chill | Precipitation | Clouds |',
-      '|:-----|:-----------|:------------|:---------|:---------|:-----|:---------|:-----------|:-----------|:-----------|:--------------|:-------|',
+      '| Time | Conditions | Temperature | Dewpoint | Humidity | Wind | Altimeter | Sea-Level Pressure | Visibility | Heat Index | Wind Chill | Precipitation | Clouds |',
+      '|:-----|:-----------|:------------|:---------|:---------|:-----|:----------|:-------------------|:-----------|:-----------|:-----------|:--------------|:-------|',
     );
 
     for (const o of result.observations) {
@@ -454,7 +402,8 @@ export const getObservationHistoryTool = tool('nws_get_observation_history', {
         formatTemp(o.dewpointC) ?? MISSING,
         o.relativeHumidityPct != null ? `${o.relativeHumidityPct}%` : MISSING,
         formatWind(o.windSpeedKmh, o.windDirectionDeg, o.windGustKmh) ?? MISSING,
-        o.barometricPressurePa != null ? formatPressure(o.barometricPressurePa) : MISSING,
+        o.barometricPressurePa != null ? formatAltimeter(o.barometricPressurePa) : MISSING,
+        o.seaLevelPressurePa != null ? formatSeaLevelPressure(o.seaLevelPressurePa) : MISSING,
         o.visibilityM != null ? formatVisibility(o.visibilityM) : MISSING,
         formatTemp(o.heatIndexC) ?? MISSING,
         formatTemp(o.windChillC) ?? MISSING,

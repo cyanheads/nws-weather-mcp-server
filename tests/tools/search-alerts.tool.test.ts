@@ -5,14 +5,18 @@
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { formatTimestamp } from '@/mcp-server/tools/format-utils.js';
 import type { AlertSearchResult } from '@/services/nws/nws-service.js';
 
 const mockSearchAlerts = vi.fn<() => Promise<AlertSearchResult>>();
+const mockSearchAlertWindow = vi.fn<() => Promise<AlertSearchResult>>();
 
 vi.mock('@/services/nws/nws-service.js', () => ({
-  getNwsService: () => ({ searchAlerts: mockSearchAlerts }),
+  getNwsService: () => ({
+    searchAlerts: mockSearchAlerts,
+    searchAlertWindow: mockSearchAlertWindow,
+  }),
 }));
 
 const { searchAlertsTool } = await import('@/mcp-server/tools/definitions/search-alerts.tool.js');
@@ -85,6 +89,7 @@ function formatAlert(overrides: Partial<AlertOutput> = {}): AlertOutput {
 describe('nws_search_alerts', () => {
   beforeEach(() => {
     mockSearchAlerts.mockReset();
+    mockSearchAlertWindow.mockReset();
   });
 
   it('parses input with area filter', () => {
@@ -733,6 +738,120 @@ describe('nws_search_alerts', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('CDT');
       expect(text).not.toContain('UTC-');
+    });
+  });
+
+  describe('window mode (issue #81)', () => {
+    const WINDOW = { start: '2026-11-11T02:00:00Z', end: '2026-11-11T03:00:00Z' };
+    const WINDOWS = [
+      ['start and end', WINDOW, 'between 2026-11-11T02:00:00Z and 2026-11-11T03:00:00Z'],
+      ['start alone', { start: WINDOW.start }, 'since 2026-11-11T02:00:00Z'],
+      ['end alone', { end: WINDOW.end }, 'at or before 2026-11-11T03:00:00Z'],
+    ] as const;
+
+    const render = (result: Parameters<NonNullable<typeof searchAlertsTool.format>>[0]) =>
+      (searchAlertsTool.format!(result)[0] as { type: 'text'; text: string }).text;
+    const joined = (result: { content: unknown[] }) =>
+      result.content.map((block) => (block as { text: string }).text).join('\n');
+
+    beforeEach(() => {
+      // The retention notice reads the clock; hold it a few hours past the window.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-11-11T12:00:00Z'));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it.each(WINDOWS)(
+      'heads a page searched with %s as the messages issued in the window',
+      (_label, window, words) => {
+        const two = render({ alerts: [formatAlert(), formatAlert({ id: 'urn:test:2' })], window });
+        const one = render({ alerts: [formatAlert()], window });
+
+        expect(two.split('\n')[0]).toBe(`## 2 Alert Messages Issued ${words}`);
+        expect(one.split('\n')[0]).toBe(`## 1 Alert Message Issued ${words}`);
+        expect(two).not.toContain('Active Alert');
+        expect(render({ alerts: [formatAlert()] }).split('\n')[0]).toBe('## 1 Active Alert');
+      },
+    );
+
+    it.each(WINDOWS)(
+      'says no message issued in a window searched with %s matched, never that no active alert did',
+      (_label, window, words) => {
+        expect(render({ alerts: [], window })).toBe(
+          `No alert messages issued ${words} matched. See the enrichment block below for filters and recovery guidance.`,
+        );
+        expect(render({ alerts: [], window })).not.toContain('active');
+      },
+    );
+
+    it('returns the window as sent to NWS in structuredContent, and none on an active search', async () => {
+      mockSearchAlertWindow.mockResolvedValue(alertResult);
+      mockSearchAlerts.mockResolvedValueOnce(alertResult);
+
+      const both = await runToolContract(searchAlertsTool, {
+        start: ' 2026-11-10t20:00:00-0600 ',
+        end: WINDOW.end,
+      });
+      const endOnly = await runToolContract(searchAlertsTool, { end: WINDOW.end });
+      const active = await runToolContract(searchAlertsTool, {});
+
+      expect(both.structuredContent).toMatchObject({
+        window: { start: '2026-11-10T20:00:00-06:00', end: WINDOW.end },
+      });
+      expect(mockSearchAlertWindow).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ start: '2026-11-10T20:00:00-06:00', end: WINDOW.end }),
+        expect.anything(),
+      );
+      expect((endOnly.structuredContent as { window: object }).window).toEqual({
+        end: WINDOW.end,
+      });
+      expect(active.structuredContent).not.toHaveProperty('window');
+      expect(joined(active).split('\n')[0]).toBe('## 1 Active Alert');
+    });
+
+    it('carries the same window, messages, and paging fields on both surfaces', async () => {
+      const messages = [1, 2, 3].map((n) =>
+        formatAlert({
+          id: `urn:test:window:${n}`,
+          headline: `Small Craft Advisory number ${n}`,
+          sent: `2026-11-11T02:${50 - n}:00Z`,
+        }),
+      );
+      mockSearchAlertWindow.mockResolvedValueOnce({ alerts: messages });
+
+      const result = await runToolContract(searchAlertsTool, { ...WINDOW, limit: 2 });
+      const data = result.structuredContent as {
+        alerts: { id: string; headline: string }[];
+        window: { start: string; end: string };
+        shown: number;
+        appliedFilters: string;
+        nextCursor: string;
+        notice: string;
+      };
+      const text = joined(result);
+
+      expect(result.isError).toBeFalsy();
+      expect(data.window).toEqual(WINDOW);
+      expect(text.split('\n')[0]).toBe(
+        `## 2 Alert Messages Issued between ${data.window.start} and ${data.window.end}`,
+      );
+      expect(data.alerts.map((alert) => alert.id)).toEqual([messages[0]!.id, messages[1]!.id]);
+      for (const alert of data.alerts) {
+        expect(text).toContain(`_ID: ${alert.id}_`);
+        expect(text).toContain(`**${alert.headline}**`);
+      }
+      // The extra message that signals more remain reaches neither surface.
+      expect(text).not.toContain(messages[2]!.id);
+      expect(data.shown).toBe(2);
+      expect(data).not.toHaveProperty('totalCount');
+      expect(text).toContain(`**Filters:** \`${data.appliedFilters}\``);
+      expect(data.appliedFilters).toBe(`start=${WINDOW.start}, end=${WINDOW.end}`);
+      expect(text).toContain(data.nextCursor);
+      expect(text).toContain(`> ${data.notice}`);
     });
   });
 });

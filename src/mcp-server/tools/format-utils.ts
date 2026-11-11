@@ -7,6 +7,20 @@ const ISO_WITH_OFFSET_RE =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 
 /**
+ * Renders a timestamp's wall clock, already shifted into UTC fields. Built once:
+ * every alert row formats several timestamps, and constructing a formatter per
+ * call dominated the cost of rendering a page.
+ */
+const WALL_CLOCK_FORMAT = new Intl.DateTimeFormat('en-US', {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  timeZone: 'UTC',
+});
+
+/**
  * Primary IANA time zone for each US state, territory, and DC. NWS zone codes
  * use a 2-letter state prefix (e.g., `WAZ558`, `OKC033`); the prefix is what
  * we look up here. States that span multiple zones (e.g., FL, ID, IN, KS, KY,
@@ -126,9 +140,9 @@ function kmhToMph(kmh: number): number {
   return Math.round(kmh * 0.621371);
 }
 
-/** Convert Pascals to inHg. */
-function paToInHg(pa: number): number {
-  return Math.round(pa * 0.0002953 * 100) / 100;
+/** Convert Pascals to inHg at the hundredths the METAR A group carries (`29.90`, not `29.9`). */
+function paToInHg(pa: number): string {
+  return (Math.round(pa * 0.0002953 * 100) / 100).toFixed(2);
 }
 
 /** Convert meters to miles. */
@@ -177,9 +191,20 @@ export function formatWind(
   return gusts ? `${sustained}, ${gusts}` : sustained;
 }
 
-/** Format barometric pressure in inHg, hPa, and the reported Pascals. */
-export function formatPressure(pa: number): string {
+/**
+ * Format an altimeter setting in inHg, the unit of the METAR A group, then hPa and the
+ * reported Pascals: `30.13 inHg (1020 hPa, 102030 Pa)`.
+ */
+export function formatAltimeter(pa: number): string {
   return `${paToInHg(pa)} inHg (${Math.round(pa / 100)} hPa, ${Math.round(pa)} Pa)`;
+}
+
+/**
+ * Format sea-level pressure in hPa at the tenth the METAR SLP remark carries, then inHg
+ * and the reported Pascals: `1012.9 hPa (29.91 inHg, 101290 Pa)`. A whole hPa stays whole.
+ */
+export function formatSeaLevelPressure(pa: number): string {
+  return `${roundTenth(pa / 100)} hPa (${paToInHg(pa)} inHg, ${Math.round(pa)} Pa)`;
 }
 
 /**
@@ -230,16 +255,8 @@ function formatTimestampWithOffset(iso: string): string {
   const wallClock = new Date(
     Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)),
   );
-  const formatted = wallClock.toLocaleString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: 'UTC',
-  });
   const zone = offset === 'Z' ? 'UTC' : `UTC${offset}`;
-  return `${formatted} ${zone}`;
+  return `${WALL_CLOCK_FORMAT.format(wallClock)} ${zone}`;
 }
 
 /** Format an ISO 8601 timestamp as a short human-readable string. */

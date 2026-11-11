@@ -10,7 +10,6 @@ import { getNwsService } from '@/services/nws/nws-service.js';
 import {
   clampPageLimit,
   composeNotice,
-  LIMIT_CEILING,
   type PageLimit,
   validatePageWindow,
 } from '../page-limit.js';
@@ -50,10 +49,9 @@ export const findStationsTool = tool('nws_find_stations', {
       .number()
       .int()
       .min(1)
-      .max(LIMIT_CEILING)
       .default(10)
       .describe(
-        `Max stations per page. A page holds at most ${MAX_STATIONS}; a larger limit (up to ${LIMIT_CEILING}) is served as ${MAX_STATIONS} and reported through requestedLimit and effectiveLimit. totalCount still reports every station near the point, so pass the returned nextCursor as cursor to reach the rest.`,
+        `Max stations per page. A page holds at most ${MAX_STATIONS}; a larger limit is served as ${MAX_STATIONS} and reported through requestedLimit and effectiveLimit. totalCount still reports every station near the point, so pass the returned nextCursor as cursor to reach the rest.`,
       ),
     cursor: z
       .string()
@@ -133,7 +131,7 @@ export const findStationsTool = tool('nws_find_stations', {
         offset,
         limit,
         cursor,
-        'Omit `cursor` to restart from the nearest station, or pass the previous nextCursor unchanged.',
+        'Omit cursor to restart from the nearest station, or pass the previous nextCursor unchanged.',
       );
     }
     const result = await getNwsService().findStations(input.latitude, input.longitude, ctx);

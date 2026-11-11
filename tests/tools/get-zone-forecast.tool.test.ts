@@ -3,9 +3,14 @@
  * @module tests/tools/get-zone-forecast
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZoneForecastResult } from '@/services/nws/nws-service.js';
+import {
+  lateEveningZoneForecastResponse,
+  midnightHourZoneForecastResponse,
+  noonHourZoneForecastResponse,
+} from '../fixtures/nws-responses.js';
 
 const mockGetZoneForecast = vi.fn<() => Promise<ZoneForecastResult>>();
 
@@ -120,6 +125,20 @@ describe('nws_get_zone_forecast', () => {
     }
   });
 
+  it('names the marine zone families that have a text forecast and those that have none (issue #82)', () => {
+    const marine = getZoneForecastTool.errors!.find(
+      (e) => e.reason === 'marine_forecast_unsupported',
+    )!;
+
+    expect(marine.recovery).toBe(
+      'Use nws_search_alerts with this zone code for marine hazards, or nws_get_forecast with coordinates on nearby land for a land forecast. Coastal zones starting AMZ, ANZ, GMZ, PHZ, or PZZ usually have a text forecast; Great Lakes, most Alaska, Guam, American Samoa, and offshore zones have none.',
+    );
+    expect(getZoneForecastTool.description).toContain(
+      'Marine zones vary by family: coastal zones on an ocean coast, bay, or sound (codes starting AMZ, ANZ, GMZ, PHZ, or PZZ, e.g., "PZZ251") usually serve a text forecast of wind and seas, while Great Lakes, most Alaska, Guam, American Samoa, and offshore zones (e.g., "GMZ056") have none.',
+    );
+    expect(getZoneForecastTool.description).not.toContain('many coastal zones');
+  });
+
   it('propagates zone_not_found error for invalid zone', async () => {
     mockGetZoneForecast.mockRejectedValueOnce(
       new Error('Zone "WAZ999" not found or has no forecast'),
@@ -153,6 +172,201 @@ describe('nws_get_zone_forecast', () => {
       const blocks = getZoneForecastTool.format!(sparse);
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('Sunny.');
+    });
+  });
+});
+
+describe('nws_get_zone_forecast — updated read 12 hours off (issue #78)', () => {
+  const { periods } = midnightHourZoneForecastResponse.properties;
+  const moved = (sent: string, direction: 'back' | 'forward', updated: string) =>
+    `NWS sent updated as ${sent}, 12 hours off: NWS misreads the 12 o'clock hour of the issuance time it takes updated from. Moved ${direction} 12 hours to ${updated}.`;
+  const untrusted = (sent: string) =>
+    `NWS sent updated as ${sent}, later than this response, so it cannot be trusted as the forecast's update time; it is returned as sent.`;
+
+  /** Runs the tool with the clock at `now` on a forecast whose `updated` NWS sent as `sent`. */
+  const callAt = async (now: string, sent: string) => {
+    vi.setSystemTime(new Date(now));
+    mockGetZoneForecast.mockResolvedValueOnce({ zoneId: 'TXZ211', updated: sent, periods });
+    const result = await runToolContract(getZoneForecastTool, { zone_id: 'TXZ211' });
+    expect(result.isError).toBeFalsy();
+    return {
+      structured: result.structuredContent as { notice?: string; updated: string },
+      text: result.content.map((block) => ('text' in block ? block.text : '')).join('\n'),
+    };
+  };
+
+  /** `updated` and the notice on both surfaces. */
+  const expectServed = async (
+    now: string,
+    sent: string,
+    updated: string,
+    notice: string | undefined,
+  ) => {
+    const { structured, text } = await callAt(now, sent);
+    expect(structured.updated).toBe(updated);
+    expect(structured.notice).toBe(notice);
+    expect(text).toContain(`**Updated:** ${updated}\n`);
+    if (notice) expect(text).toContain(`> ${notice}`);
+    else expect(text).not.toContain('NWS sent updated');
+  };
+
+  beforeEach(() => {
+    mockGetZoneForecast.mockReset();
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    // A future value at hour 12 or 00 moves back 12 hours.
+    [
+      '2026-11-11T13:40:00Z',
+      '2026-11-11T12:22:00-06:00',
+      '2026-11-11T00:22:00-06:00',
+      moved('2026-11-11T12:22:00-06:00', 'back', '2026-11-11T00:22:00-06:00'),
+    ],
+    [
+      '2026-11-11T19:00:00Z',
+      '2026-11-12T00:22:00-06:00',
+      '2026-11-11T12:22:00-06:00',
+      moved('2026-11-12T00:22:00-06:00', 'back', '2026-11-11T12:22:00-06:00'),
+    ],
+    // A past hour-00 value moves forward 12 hours when that is not after now.
+    [
+      '2026-11-11T19:00:00Z',
+      '2026-11-11T00:22:00-06:00',
+      '2026-11-11T12:22:00-06:00',
+      moved('2026-11-11T00:22:00-06:00', 'forward', '2026-11-11T12:22:00-06:00'),
+    ],
+    ['2026-11-11T07:00:00Z', '2026-11-11T00:22:00-06:00', '2026-11-11T00:22:00-06:00', undefined],
+    // A past hour-12 value is a faithful reading.
+    ['2026-11-11T19:00:00Z', '2026-11-11T12:22:00-06:00', '2026-11-11T12:22:00-06:00', undefined],
+    // Any other future value stays, flagged; any other past one stays.
+    [
+      '2026-11-11T13:40:00Z',
+      '2026-11-11T15:10:00-06:00',
+      '2026-11-11T15:10:00-06:00',
+      untrusted('2026-11-11T15:10:00-06:00'),
+    ],
+    ['2026-11-11T13:40:00Z', '2026-11-11T05:47:00-06:00', '2026-11-11T05:47:00-06:00', undefined],
+  ])('at %s serves NWS updated %s as %s', expectServed);
+
+  it.each([
+    // The future side ends at now: an hour-12 value at now is past, and a faithful reading.
+    ['2026-11-11T18:21:59.999Z', '2026-11-11T00:22:00-06:00'],
+    ['2026-11-11T18:22:00.000Z', '2026-11-11T12:22:00-06:00'],
+  ])('at %s serves NWS updated 2026-11-11T12:22:00-06:00 as %s', async (now, updated) => {
+    const sent = '2026-11-11T12:22:00-06:00';
+    await expectServed(
+      now,
+      sent,
+      updated,
+      updated === sent ? undefined : moved(sent, 'back', updated),
+    );
+  });
+
+  it.each([
+    // The forward move holds once the moved time is not after now.
+    ['2026-11-11T18:21:59.999Z', '2026-11-11T00:22:00-06:00'],
+    ['2026-11-11T18:22:00.000Z', '2026-11-11T12:22:00-06:00'],
+  ])('at %s serves NWS updated 2026-11-11T00:22:00-06:00 as %s', async (now, updated) => {
+    const sent = '2026-11-11T00:22:00-06:00';
+    await expectServed(
+      now,
+      sent,
+      updated,
+      updated === sent ? undefined : moved(sent, 'forward', updated),
+    );
+  });
+
+  it.each([
+    // Across a year boundary, in a positive offset, and with fractional seconds kept.
+    ['2026-12-31T20:00:00Z', '2027-01-01T00:05:00-10:00', '2026-12-31T12:05:00-10:00'],
+    ['2026-11-11T01:00:00Z', '2026-11-11T12:31:00+10:00', '2026-11-11T00:31:00+10:00'],
+    ['2026-11-11T13:40:00Z', '2026-11-11T12:22:00.000-06:00', '2026-11-11T00:22:00.000-06:00'],
+    ['2026-11-11T08:00:00Z', '2026-11-11T12:22:00Z', '2026-11-11T00:22:00Z'],
+  ])('at %s moves NWS updated %s back to %s in its own offset', async (now, sent, updated) => {
+    await expectServed(now, sent, updated, moved(sent, 'back', updated));
+  });
+
+  it('passes an unparseable updated through with no notice', async () => {
+    await expectServed('2026-11-11T13:40:00Z', 'not a time', 'not a time', undefined);
+  });
+
+  it.each(['Asia/Tokyo', 'America/Anchorage'])(
+    'corrects the same way with the host clock in %s',
+    async (zone) => {
+      vi.stubEnv('TZ', zone);
+      // The switch took effect: the host's local hour of 13:40Z differs by zone.
+      expect(new Date('2026-11-11T13:40:00Z').getHours()).toBe(zone === 'Asia/Tokyo' ? 22 : 4);
+      await expectServed(
+        '2026-11-11T13:40:00Z',
+        '2026-11-11T12:22:00-06:00',
+        '2026-11-11T00:22:00-06:00',
+        moved('2026-11-11T12:22:00-06:00', 'back', '2026-11-11T00:22:00-06:00'),
+      );
+    },
+  );
+
+  it('corrects the captured TXZ211 midnight-hour forecast to its header instant', async () => {
+    vi.setSystemTime(new Date('2026-11-11T13:40:00Z'));
+    const { updated: sent, periods: captured } = midnightHourZoneForecastResponse.properties;
+    mockGetZoneForecast.mockResolvedValueOnce({
+      zoneId: 'TXZ211',
+      updated: sent,
+      periods: captured,
+    });
+    const result = await runToolContract(getZoneForecastTool, { zone_id: 'TXZ211' });
+
+    // Header "1222 AM CST Wed Nov 11 2026".
+    expect(result.structuredContent).toEqual({
+      zoneId: 'TXZ211',
+      updated: '2026-11-11T00:22:00-06:00',
+      periods: captured,
+      periodCount: 2,
+      notice: moved(sent, 'back', '2026-11-11T00:22:00-06:00'),
+    });
+  });
+
+  it('leaves the captured WYZ118 late-evening forecast as sent', async () => {
+    vi.setSystemTime(new Date('2026-11-11T13:40:00Z'));
+    const { updated: sent, periods: captured } = lateEveningZoneForecastResponse.properties;
+    mockGetZoneForecast.mockResolvedValueOnce({
+      zoneId: 'WYZ118',
+      updated: sent,
+      periods: captured,
+    });
+    const result = await runToolContract(getZoneForecastTool, { zone_id: 'WYZ118' });
+
+    // Header "1132 PM MST Tue Nov 10 2026".
+    expect(result.structuredContent).toEqual({
+      zoneId: 'WYZ118',
+      updated: '2026-11-10T23:32:00-07:00',
+      periods: captured,
+      periodCount: 2,
+    });
+  });
+
+  it('leaves the captured PAZ064 noon-hour forecast at its header instant', async () => {
+    // Captured three minutes after issuance: a past hour-12 value is a correct reading.
+    vi.setSystemTime(new Date('2026-11-11T17:03:30Z'));
+    const { updated: sent, periods: captured } = noonHourZoneForecastResponse.properties;
+    mockGetZoneForecast.mockResolvedValueOnce({
+      zoneId: 'PAZ064',
+      updated: sent,
+      periods: captured,
+    });
+    const result = await runToolContract(getZoneForecastTool, { zone_id: 'PAZ064' });
+
+    // Header "1200 PM EST Wed Nov 11 2026".
+    expect(result.structuredContent).toEqual({
+      zoneId: 'PAZ064',
+      updated: '2026-11-11T12:00:00-05:00',
+      periods: captured,
+      periodCount: 2,
     });
   });
 });

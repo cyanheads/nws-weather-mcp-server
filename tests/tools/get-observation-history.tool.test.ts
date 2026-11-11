@@ -595,15 +595,15 @@ describe('nws_get_observation_history', () => {
       http.route(stationRoute(), observationsRoute(all));
 
       const { data, text } = successOf(
-        await runToolContract(tool, { station_id: 'KSEA', limit: 10_000 }),
+        await runToolContract(tool, { station_id: 'KSEA', limit: 1_000_000 }),
       );
 
       expect(data.observations).toHaveLength(30);
       expect(data).not.toHaveProperty('nextCursor');
       expect(data).not.toHaveProperty('truncated');
-      expect(data).toMatchObject({ requestedLimit: 10_000, effectiveLimit: 100 });
+      expect(data).toMatchObject({ requestedLimit: 1_000_000, effectiveLimit: 100 });
       expect(data.notice).toBe(
-        'Requested limit 10000 exceeds the per-page cap of 100; this page holds up to 100.',
+        'Requested limit 1000000 exceeds the per-page cap of 100; this page holds up to 100.',
       );
       expect(text).toContain('**Applied Limit:** 100');
       expect(listCalls()[0]!.searchParams.get('limit')).toBe('101');
@@ -639,7 +639,7 @@ describe('nws_get_observation_history', () => {
     });
 
     it.each([
-      ['past the 10000 ceiling', 10_001],
+      ['past the safe-integer range', 2 ** 53],
       ['zero', 0],
       ['fractional', 2.5],
     ])('rejects a limit %s as invalid_arguments with no request', async (_label, limit) => {
@@ -721,6 +721,7 @@ describe('nws_get_observation_history', () => {
         windGustKmh: 41,
         relativeHumidityPct: 65,
         barometricPressurePa: 101693,
+        seaLevelPressurePa: 101320,
         visibilityM: 16093,
         cloudLayers: [{ amount: 'BKN', baseM: 1524 }],
       });
@@ -728,7 +729,10 @@ describe('nws_get_observation_history', () => {
       const rows = text.split('\n').filter((line) => /^\| [A-Z][a-z]{2}, /.test(line));
       expect(rows).toHaveLength(2);
       expect(rows[0]).toBe(
-        `| ${formatTimestamp(newest!, 'America/Los_Angeles')} | Mostly Cloudy | 58°F (14.4°C) | 47°F (8.3°C) | 65% | 200° 12 mph (19 km/h), gusts 25 mph (41 km/h) | 30.03 inHg (1017 hPa, 101693 Pa) | 10 mi (16.1 km, 16093 m) | — | — | — | BKN at 1524m (5000 ft) |`,
+        `| ${formatTimestamp(newest!, 'America/Los_Angeles')} | Mostly Cloudy | 58°F (14.4°C) | 47°F (8.3°C) | 65% | 200° 12 mph (19 km/h), gusts 25 mph (41 km/h) | 30.03 inHg (1017 hPa, 101693 Pa) | 1013.2 hPa (29.92 inHg, 101320 Pa) | 10 mi (16.1 km, 16093 m) | — | — | — | BKN at 1524m (5000 ft) |`,
+      );
+      expect(text).toContain(
+        '| Time | Conditions | Temperature | Dewpoint | Humidity | Wind | Altimeter | Sea-Level Pressure | Visibility | Heat Index | Wind Chill | Precipitation | Clouds |',
       );
       expect(text).toContain(
         '## Observation History — Seattle, Seattle-Tacoma International Airport (KSEA)',
@@ -774,7 +778,7 @@ describe('nws_get_observation_history', () => {
       ]);
       const rows = text.split('\n').filter((line) => /^\| [A-Z][a-z]{2}, /.test(line));
       // Temperature, Dewpoint, Heat Index, Wind Chill cells.
-      const temps = (row: string) => row.split(' | ').filter((_, i) => [2, 3, 8, 9].includes(i));
+      const temps = (row: string) => row.split(' | ').filter((_, i) => [2, 3, 9, 10].includes(i));
       expect(rows.map(temps)).toEqual([
         ['47°F (8.3°C)', '38°F (3.3°C)', '—', '46°F (7.7°C)'],
         ['63°F (17°C)', '45°F (7°C)', '—', '—'],
@@ -835,7 +839,7 @@ describe('nws_get_observation_history', () => {
       ]);
       expect(text).toContain('| Precipitation |');
       const rows = text.split('\n').filter((line) => /^\| [A-Z][a-z]{2}, /.test(line));
-      const precipitationCell = (row: string) => row.split(' | ')[10];
+      const precipitationCell = (row: string) => row.split(' | ')[11];
       expect(rows.map(precipitationCell)).toEqual([
         '1 h: 0.13 in (3.3 mm), 3 h: 0.24 in (6.1 mm)',
         '1 h: Trace, 3 h: Trace',
@@ -872,6 +876,7 @@ describe('nws_get_observation_history', () => {
         windDirectionDeg: null,
         windGustKmh: null,
         barometricPressurePa: null,
+        seaLevelPressurePa: null,
         visibilityM: null,
         relativeHumidityPct: null,
         heatIndexC: null,
@@ -882,8 +887,66 @@ describe('nws_get_observation_history', () => {
         cloudLayers: [],
       });
       expect(text).toContain(
-        `| ${formatTimestamp(ts!, 'America/Los_Angeles')} | — | — | — | — | — | — | — | — | — | — | — |`,
+        `| ${formatTimestamp(ts!, 'America/Los_Angeles')} | — | — | — | — | — | — | — | — | — | — | — | — |`,
       );
+    });
+
+    it('returns the altimeter setting and sea-level pressure in separate columns, — when not reported (issue #80)', async () => {
+      // Newest: KLXV 2026-11-11T11:53Z (3,027 m), raw `… A3053 RMK AO2 SLP289 …`, both
+      // decoded. Next: KDEN 2026-11-11T11:53Z, raw `… A3028 RMK AO2 SLP223 …`, the
+      // altimeter dropped by NWS. Next: a KDEN 5-minute record carrying neither. Oldest:
+      // KLXV 2026-11-11T13:10Z, a 5-minute record with the altimeter's exact conversion.
+      const [both, seaLevelOnly, neither, altimeterOnly] = history(4);
+      const pa = (value: number | null) => ({
+        unitCode: 'wmoUnit:Pa',
+        value,
+        qualityControl: value == null ? 'Z' : 'V',
+      });
+      http.route(stationRoute(), {
+        match: (request: Request) => new URL(request.url).pathname === LIST_PATH,
+        respond: () =>
+          json({
+            features: [
+              observationFeature(both!, {
+                barometricPressure: pa(103390),
+                seaLevelPressure: pa(102890),
+              }),
+              observationFeature(seaLevelOnly!, {
+                barometricPressure: pa(null),
+                seaLevelPressure: pa(102230),
+              }),
+              observationFeature(neither!, {
+                barometricPressure: pa(null),
+                seaLevelPressure: pa(null),
+              }),
+              observationFeature(altimeterOnly!, {
+                barometricPressure: pa(103386.45),
+                seaLevelPressure: pa(null),
+              }),
+            ],
+          }),
+      });
+
+      const { data, text } = successOf(await runToolContract(tool, { station_id: 'KSEA' }));
+
+      expect(
+        data.observations.map((o) => [o.timestamp, o.barometricPressurePa, o.seaLevelPressurePa]),
+      ).toEqual([
+        [both, 103390, 102890],
+        [seaLevelOnly, null, 102230],
+        [neither, null, null],
+        [altimeterOnly, 103386, null],
+      ]);
+      expect(text).toContain('| Wind | Altimeter | Sea-Level Pressure | Visibility |');
+      expect(text).not.toContain('| Pressure |');
+      const rows = text.split('\n').filter((line) => /^\| [A-Z][a-z]{2}, /.test(line));
+      const pressureCells = (row: string) => row.split(' | ').slice(6, 8);
+      expect(rows.map(pressureCells)).toEqual([
+        ['30.53 inHg (1034 hPa, 103390 Pa)', '1028.9 hPa (30.38 inHg, 102890 Pa)'],
+        ['—', '1022.3 hPa (30.19 inHg, 102230 Pa)'],
+        ['—', '—'],
+        ['30.53 inHg (1034 hPa, 103386 Pa)', '—'],
+      ]);
     });
 
     it('renders a reported gust whose sustained speed is null, and — only when no wind is reported (issue #61)', async () => {

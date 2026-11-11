@@ -8,9 +8,10 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
 import {
+  formatAltimeter,
   formatCloudLayers,
   formatPrecipitation,
-  formatPressure,
+  formatSeaLevelPressure,
   formatTemp,
   formatTimestamp,
   formatVisibility,
@@ -127,7 +128,18 @@ export const getObservationsTool = tool('nws_get_observations', {
     windSpeedKmh: z.number().nullable().describe('Wind speed in km/h'),
     windDirectionDeg: z.number().nullable().describe('Wind direction in degrees (0-360)'),
     windGustKmh: z.number().nullable().describe('Wind gust in km/h'),
-    barometricPressurePa: z.number().nullable().describe('Barometric pressure in Pascals'),
+    barometricPressurePa: z
+      .number()
+      .nullable()
+      .describe(
+        'Altimeter setting in Pascals: on METAR stations the A group, in hundredths of inHg (A3013 → 102030 Pa); stations in other networks, such as CWOP, fill it with their own reading. Not sea-level pressure (seaLevelPressurePa) — the two differ by several hPa at high-elevation stations.',
+      ),
+    seaLevelPressurePa: z
+      .number()
+      .nullable()
+      .describe(
+        'Sea-level pressure in Pascals, from the SLP remark of an hourly METAR (SLP129 → 1012.9 hPa, 101290 Pa). Null on 5-minute records and whenever NWS sends none.',
+      ),
     visibilityM: z.number().nullable().describe('Visibility in meters'),
     relativeHumidityPct: z.number().nullable().describe('Relative humidity in percent (0-100)'),
     heatIndexC: z.number().nullable().describe('Heat index in Celsius, to one decimal'),
@@ -213,16 +225,18 @@ export const getObservationsTool = tool('nws_get_observations', {
       const ageHours = Math.round(((Date.now() - observedMs) / 3_600_000) * 10) / 10;
       staleNotice = `Observation is ${ageHours}h old — data may not reflect current conditions. Try a different station using nws_find_stations.`;
     }
+    // Six slots; the altimeter setting and sea-level pressure share the pressure slot,
+    // so either one counts as a pressure reading.
     const measurable = [
-      obs.temperature,
-      obs.dewpoint,
-      obs.windSpeed,
-      obs.barometricPressure,
-      obs.visibility,
-      obs.relativeHumidity,
+      obs.temperature.value,
+      obs.dewpoint.value,
+      obs.windSpeed.value,
+      obs.barometricPressure.value ?? obs.seaLevelPressure.value,
+      obs.visibility.value,
+      obs.relativeHumidity.value,
     ];
     const limitedNotice =
-      measurable.filter((measurement) => measurement.value == null).length >= 4
+      measurable.filter((value) => value == null).length >= 4
         ? 'Limited data — most measurements unavailable from this station. Try a different station using nws_find_stations.'
         : undefined;
     const notice = composeNotice(staleNotice, limitedNotice);
@@ -240,6 +254,7 @@ export const getObservationsTool = tool('nws_get_observations', {
       windDirectionDeg: roundValue(obs.windDirection.value),
       windGustKmh: roundValue(obs.windGust.value),
       barometricPressurePa: roundValue(obs.barometricPressure.value),
+      seaLevelPressurePa: roundValue(obs.seaLevelPressure.value),
       visibilityM: roundValue(obs.visibility.value),
       relativeHumidityPct: roundValue(obs.relativeHumidity.value),
       heatIndexC: roundTenth(obs.heatIndex.value),
@@ -283,7 +298,11 @@ export const getObservationsTool = tool('nws_get_observations', {
     );
 
     if (result.barometricPressurePa != null) {
-      lines.push(`**Pressure:** ${formatPressure(result.barometricPressurePa)}`);
+      lines.push(`**Altimeter:** ${formatAltimeter(result.barometricPressurePa)}`);
+    }
+
+    if (result.seaLevelPressurePa != null) {
+      lines.push(`**Sea-Level Pressure:** ${formatSeaLevelPressure(result.seaLevelPressurePa)}`);
     }
 
     if (result.visibilityM != null) {

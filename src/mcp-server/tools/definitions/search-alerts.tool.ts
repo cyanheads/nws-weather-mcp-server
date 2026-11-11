@@ -1,5 +1,6 @@
 /**
- * @fileoverview Tool: nws_search_alerts — searches active weather alerts across the US.
+ * @fileoverview Tool: nws_search_alerts — searches active weather alerts across the
+ * US, or the alert messages issued in a recent time window.
  * @module mcp-server/tools/definitions/search-alerts
  */
 
@@ -7,12 +8,13 @@ import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { decodeCursor, encodeCursor, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getNwsService } from '@/services/nws/nws-service.js';
+import type { Alert } from '@/services/nws/types.js';
 import { alertMarkdownLines, alertOutputSchema, toAlertOutput } from '../alert-output.js';
+import { DATE_TIME_INPUT_PATTERN, parseDateTime } from '../date-time.js';
 import {
   clampPageLimit,
   composeNotice,
   invalidCursor,
-  LIMIT_CEILING,
   type PageLimit,
   validatePageWindow,
 } from '../page-limit.js';
@@ -21,11 +23,20 @@ import { unsetIfBlank } from '../unset-if-blank.js';
 /**
  * Upper bound on alerts per page. `/alerts/active` rejects an upstream `limit`,
  * so the service fetches and filters the whole active collection and this tool
- * windows the result. Matches past the window are reachable through the
- * `nextCursor` continuation token. A larger `limit` is served up to this cap
- * rather than rejected.
+ * windows the result; a windowed search asks `/alerts` for one page at a time.
+ * Matches past the window are reachable through the `nextCursor` continuation
+ * token. A larger `limit` is served up to this cap rather than rejected.
  */
 const MAX_ALERTS = 25;
+
+/** NWS's ceiling on an `/alerts` request's `limit`; a larger one is a 400. */
+const MAX_UPSTREAM_LIMIT = 500;
+
+/**
+ * NWS keeps alert messages for a rolling 7 days. Its purge runs a few minutes behind
+ * that mark, so `/alerts` can still serve a message sent just before it.
+ */
+const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Filters that scope the search geographically. NWS rejects any pairing of these
@@ -174,7 +185,10 @@ function describeFilters(filters: SearchFilters): string {
   if (filters.severity) parts.push(`severity=${filters.severity.join(', ')}`);
   if (filters.urgency) parts.push(`urgency=${filters.urgency.join(', ')}`);
   if (filters.certainty) parts.push(`certainty=${filters.certainty.join(', ')}`);
+  if (filters.message_type) parts.push(`message_type=${filters.message_type}`);
   if (filters.status && filters.status !== 'Actual') parts.push(`status=${filters.status}`);
+  if (filters.start) parts.push(`start=${filters.start}`);
+  if (filters.end) parts.push(`end=${filters.end}`);
   return parts.length > 0 ? parts.join(', ') : NATIONAL_SEARCH;
 }
 
@@ -190,6 +204,16 @@ function nonEmpty<T>(values: T[] | undefined): T[] | undefined {
  */
 function normalizeEventFilter(events: string[] | undefined): string[] | undefined {
   return nonEmpty(events?.map((event) => event.trim()).filter((event) => event.length > 0));
+}
+
+/**
+ * A blank date-time is unset; one that parses takes its canonical spelling, the
+ * form sent upstream and carried in a cursor; any other stays as sent, for the
+ * window check to refuse.
+ */
+function normalizeDateTime(value: string | undefined): string | undefined {
+  const trimmed = unsetIfBlank(value);
+  return trimmed === undefined ? undefined : (parseDateTime(trimmed)?.text ?? trimmed);
 }
 
 /**
@@ -210,7 +234,10 @@ function normalizeFilters(filters: SearchFilters): SearchFilters {
     severity: nonEmpty(filters.severity),
     urgency: nonEmpty(filters.urgency),
     certainty: nonEmpty(filters.certainty),
+    message_type: filters.message_type,
     status: filters.status,
+    start: normalizeDateTime(filters.start),
+    end: normalizeDateTime(filters.end),
   };
 }
 
@@ -234,49 +261,184 @@ function isValidZone(zone: string): boolean {
   return areaPrefix !== undefined && VALID_AREA_CODES.has(areaPrefix);
 }
 
+/** Whether a search covers an issuance window (`/alerts`) rather than the active alerts. */
+function isWindowed(filters: SearchFilters): boolean {
+  return filters.start !== undefined || filters.end !== undefined;
+}
+
+/**
+ * What is wrong with a normalized window, or undefined when it is valid or there is
+ * none. `start` alone, `end` alone, and `start` equal to `end` are all windows NWS
+ * serves: both ends are inclusive. NWS answers a calendar-invalid date-time with a
+ * 500, so nothing here reaches it unchecked.
+ */
+function timeWindowProblem(filters: SearchFilters): string | undefined {
+  const { start, end } = filters;
+  const startTime = start === undefined ? undefined : parseDateTime(start);
+  const endTime = end === undefined ? undefined : parseDateTime(end);
+  for (const [field, value, time] of [
+    ['start', start, startTime],
+    ['end', end, endTime],
+  ] as const) {
+    if (value !== undefined && time === undefined) {
+      return `${field} "${value}" is not a valid ISO 8601 date-time with seconds and an offset (e.g., "2026-11-10T00:00:00Z"), or names a date that does not exist.`;
+    }
+  }
+  if (startTime && endTime && startTime.epochMs > endTime.epochMs) {
+    return `start "${start}" is after end "${end}"; the window would hold no messages.`;
+  }
+  return;
+}
+
 /**
  * Whether normalized filters pass every check the handler applies to the filter
- * inputs: one location filter at most, and a valid area, point, and zone.
+ * inputs: one location filter at most, a valid area, point, and zone, and a valid
+ * window.
  */
 function passesFilterChecks(filters: SearchFilters): boolean {
   return (
     locationFiltersSet(filters).length <= 1 &&
     (filters.area === undefined || VALID_AREA_CODES.has(filters.area)) &&
     (filters.point === undefined || isValidPoint(filters.point)) &&
-    (filters.zone === undefined || isValidZone(filters.zone))
+    (filters.zone === undefined || isValidZone(filters.zone)) &&
+    timeWindowProblem(filters) === undefined
   );
+}
+
+/** The ID prefix every CAP alert message shares, which a keyset leaves out. */
+const CAP_ID_PREFIX = 'urn:oid:2.49.0.1.840.0.';
+
+/** A CAP message ID: the shared prefix, the 40-hex message hash, then `segment.version`. */
+const CAP_ID_PATTERN = /^urn:oid:2\.49\.0\.1\.840\.0\.([0-9a-f]{40})\.(\d{3}\.\d+)$/;
+
+/**
+ * Message IDs as a keyset carries them: grouped by message hash, each group
+ * `[hash, ...segment.version]`, because one product issues dozens of segments at
+ * one instant and a group spells its hash once. An ID of any other shape (a test
+ * heartbeat) is a group of its own, `[id]`.
+ */
+function compactIds(ids: Iterable<string>): string[][] {
+  const groups = new Map<string, string[]>();
+  const loose: string[][] = [];
+  for (const id of ids) {
+    const [, hash, suffix] = CAP_ID_PATTERN.exec(id) ?? [];
+    if (hash === undefined || suffix === undefined) {
+      loose.push([id]);
+      continue;
+    }
+    const group = groups.get(hash);
+    if (group) group.push(suffix);
+    else groups.set(hash, [hash, suffix]);
+  }
+  return [...groups.values(), ...loose];
+}
+
+/** The message IDs a keyset's groups spell out. */
+function expandIds(groups: readonly (readonly [string, ...string[]])[]): Set<string> {
+  const ids = new Set<string>();
+  for (const [head, ...suffixes] of groups) {
+    if (suffixes.length === 0) ids.add(head);
+    for (const suffix of suffixes) ids.add(`${CAP_ID_PREFIX}${head}.${suffix}`);
+  }
+  return ids;
+}
+
+/** An instant as a compact canonical UTC date-time, for a keyset boundary. */
+function utcDateTime(epochMs: number): string {
+  return new Date(epochMs).toISOString().replace('.000Z', 'Z');
+}
+
+/**
+ * The shape of a keyset as decoded. Message IDs only ever drop rows from a
+ * response, so beyond their count and grouping nothing about them is checked.
+ */
+const keysetSchema = z
+  .object({
+    sent: z.string(),
+    ids: z.array(z.tuple([z.string()], z.string())).min(1),
+  })
+  .strict();
+
+/**
+ * Where a windowed walk resumes: the `sent` instant the previous page ended at, and
+ * the messages already returned at that instant. NWS orders a window newest first
+ * by `sent` alone and reorders messages that share an instant from one request to
+ * the next, so a position inside a tie has to be the set of IDs already returned.
+ */
+interface Keyset {
+  /** Message IDs already returned at `sent`. */
+  readonly seen: ReadonlySet<string>;
+  /** The boundary instant, canonical. */
+  readonly sent: string;
+  readonly sentMs: number;
 }
 
 /**
  * Where a continued page resumes. A token this tool mints carries the normalized
  * filters of the query that minted it; a token from before the query was carried
  * (`{ offset, limit }` alone) has no `filters` and resumes against the filters
- * sent with it.
+ * sent with it. A windowed search's token also carries its keyset, and its
+ * `offset` is unused.
  */
 interface Continuation {
   filters?: SearchFilters | undefined;
+  keyset?: Keyset | undefined;
   limit: number;
   offset: number;
 }
 
 const INVALID_CURSOR_HINT =
-  'Omit `cursor` and send the filters to start from the first page, or pass the `nextCursor` from the previous response unchanged.';
+  'Omit cursor and send the filters to start from the first page, or pass the nextCursor from the previous response unchanged.';
 
 /**
  * Decode a continuation token before any request. Fails as InvalidParams
  * (`invalid_cursor`) for a token that does not decode, carries a non-integer
  * offset or limit, or carries filters that fail the input schema or the checks
- * the filter inputs get.
+ * the filter inputs get — and for a pairing no walk could have minted: an offset
+ * token sent with `start` or `end` (`inputsWindowed`) or carrying a window, a
+ * keyset without a window, or a keyset outside its window or past what one
+ * `/alerts` request can page through.
  */
-function readCursor(cursor: string, ctx: Context): Continuation {
-  const { offset, limit, filters } = decodeCursor(cursor, ctx);
+function readCursor(cursor: string, inputsWindowed: boolean, ctx: Context): Continuation {
+  const { offset, limit, filters, keyset } = decodeCursor(cursor, ctx);
   validatePageWindow(offset, limit, cursor, INVALID_CURSOR_HINT);
-  if (filters === undefined) return { offset, limit };
-  const parsed = carriedFiltersSchema.safeParse(filters);
-  if (!parsed.success) throw invalidCursor(cursor, INVALID_CURSOR_HINT);
-  const carried = normalizeFilters(parsed.data);
-  if (!passesFilterChecks(carried)) throw invalidCursor(cursor, INVALID_CURSOR_HINT);
-  return { offset, limit, filters: carried };
+  const invalid = () => invalidCursor(cursor, INVALID_CURSOR_HINT);
+
+  let carried: SearchFilters | undefined;
+  if (filters !== undefined) {
+    const parsed = carriedFiltersSchema.safeParse(filters);
+    if (!parsed.success) throw invalid();
+    carried = normalizeFilters(parsed.data);
+    if (!passesFilterChecks(carried)) throw invalid();
+  }
+
+  if (keyset === undefined) {
+    // An offset token pages the active alerts; no window walk mints one.
+    if (inputsWindowed || (carried && isWindowed(carried))) throw invalid();
+    return { offset, limit, filters: carried };
+  }
+
+  if (!carried || !isWindowed(carried)) throw invalid();
+  const parsedKeyset = keysetSchema.safeParse(keyset);
+  if (!parsedKeyset.success) throw invalid();
+  const sent = parseDateTime(parsedKeyset.data.sent);
+  const startMs = carried.start === undefined ? undefined : parseDateTime(carried.start)?.epochMs;
+  const endMs = carried.end === undefined ? undefined : parseDateTime(carried.end)?.epochMs;
+  const seen = expandIds(parsedKeyset.data.ids);
+  if (
+    sent === undefined ||
+    (startMs !== undefined && sent.epochMs < startMs) ||
+    (endMs !== undefined && sent.epochMs > endMs) ||
+    seen.size + Math.min(limit, MAX_ALERTS) + 1 > MAX_UPSTREAM_LIMIT
+  ) {
+    throw invalid();
+  }
+  return {
+    offset,
+    limit,
+    filters: carried,
+    keyset: { sent: sent.text, sentMs: sent.epochMs, seen },
+  };
 }
 
 /**
@@ -336,39 +498,199 @@ const searchAlertsInputSchema = z.object({
     .array(z.enum(['Observed', 'Likely', 'Possible', 'Unlikely', 'Unknown']))
     .optional()
     .describe('Filter by certainty level.'),
+  message_type: blankAsUnset(z.enum(['Alert', 'Update', 'Cancel']).optional()).describe(
+    'Filter by CAP message type: "Alert" for an original issuance, "Update" for a revision of an earlier message, "Cancel" for a cancellation. Applies to active and windowed searches alike.',
+  ),
   status: blankAsUnset(
     z.enum(['Actual', 'Exercise', 'System', 'Test', 'Draft']).default('Actual'),
   ).describe(
     'Alert status filter. Default "Actual". Use a different value only when you specifically need non-live alerts.',
   ),
+  start: z
+    .string()
+    .optional()
+    .meta({ pattern: DATE_TIME_INPUT_PATTERN.source })
+    .describe(
+      'Search the alert messages issued at or after this time instead of the alerts active now, as an ISO 8601 date-time with seconds and an offset (e.g., "2026-11-10T00:00:00Z" or "2026-11-09T18:00:00-06:00"). The window bounds when each message was sent, inclusive at both ends, not when its hazard was in effect: a warning issued before start is missed even while it was still in effect. A windowed search returns every message issued in the window, updates and cancellations included. NWS keeps alert messages for 7 days. Combines with every filter; omit start and end to search active alerts.',
+    ),
+  end: z
+    .string()
+    .optional()
+    .meta({ pattern: DATE_TIME_INPUT_PATTERN.source })
+    .describe(
+      'Latest issuance time to include (inclusive), in the same format as start. On its own it searches every message NWS still keeps that was issued at or before it; equal to start, it searches that one instant. Omit start and end to search active alerts.',
+    ),
   limit: z
     .number()
     .int()
     .min(1)
-    .max(LIMIT_CEILING)
     .default(MAX_ALERTS)
     .describe(
-      `Maximum number of alerts to include in this page (default ${MAX_ALERTS}). A page holds at most ${MAX_ALERTS}; a larger limit (up to ${LIMIT_CEILING}) is served as ${MAX_ALERTS} and reported through requestedLimit and effectiveLimit. totalCount still reports the full number of distinct matches, so a small limit returns a digest of broad or national searches without dropping the total; pass the returned nextCursor as cursor to reach the rest.`,
+      `Maximum number of alerts to include in this page (default ${MAX_ALERTS}). A page holds at most ${MAX_ALERTS}; a larger limit is served as ${MAX_ALERTS} and reported through requestedLimit and effectiveLimit. On an active search totalCount still reports the full number of distinct matches, so a small limit returns a digest of broad or national searches without dropping the total; pass the returned nextCursor as cursor to reach the rest.`,
     ),
   cursor: z
     .string()
     .optional()
     .describe(
-      "Opaque continuation token from a previous response's nextCursor; send it on its own. Omit for the first page. It carries that query's filters and page size, so the filter inputs and limit apply to the first page only. Every call re-fetches the active-alert feed, so alerts are contiguous within one response but not across calls — the active set changes continuously as alerts are issued and expire, so a continued page covers the collection as it stands at that moment.",
+      "Opaque continuation token from a previous response's nextCursor; send it on its own. Omit for the first page. It carries that query's filters, window, and page size, so the filter inputs, start, end, and limit apply to the first page only. An active search re-fetches the active-alert feed on every call, so alerts are contiguous within one response but not across calls — the active set changes continuously as alerts are issued and expire, so a continued page covers the collection as it stands at that moment. A windowed search continues from the oldest message already returned, so its pages neither repeat nor skip a message.",
     ),
 });
 
 /**
- * The filter fields of the input, which a continuation token carries. Strict, as
- * the input is: a carried key that is not a filter is refused, not stripped.
+ * The filter fields of the input — the window included — which a continuation
+ * token carries. Strict, as the input is: a carried key that is not a filter is
+ * refused, not stripped.
  */
 const carriedFiltersSchema = searchAlertsInputSchema.omit({ limit: true, cursor: true }).strict();
 
 type SearchFilters = z.infer<typeof carriedFiltersSchema>;
 
+/** A window in words, for a heading or an empty result. */
+function describeWindow(window: { end?: string | undefined; start?: string | undefined }): string {
+  const start = window.start && escapeMarkdownInline(window.start);
+  const end = window.end && escapeMarkdownInline(window.end);
+  if (start && end) return `between ${start} and ${end}`;
+  if (start) return `since ${start}`;
+  return `at or before ${end}`;
+}
+
+/** What one page of a search hands back to the handler. */
+interface SearchPage {
+  readonly alerts: readonly Alert[];
+  readonly nextCursor?: string | undefined;
+  /** The page's own notice, composed after the limit clamp. */
+  readonly notice?: string | undefined;
+  /** Distinct matches before the page window; an active search's only. */
+  readonly totalCount?: number | undefined;
+}
+
+/**
+ * One page of the alerts active now. The service fetches and filters the whole
+ * active collection — `/alerts/active` takes no upstream limit or cursor — and
+ * the page is a window over that array, so continuation is local to one fetch.
+ */
+async function activePage(
+  filters: SearchFilters,
+  continuation: Continuation | undefined,
+  limit: number,
+  ctx: Context,
+): Promise<SearchPage> {
+  // The service collapses upstream duplicates on id (issue #36), so this is a
+  // distinct-alert count, which is what `totalCount` reports.
+  const result = await getNwsService().searchAlerts(filters, ctx);
+  const total = result.alerts.length;
+  const appliedFilters = describeFilters(filters);
+  const offset = continuation?.offset ?? 0;
+  const alerts = result.alerts.slice(offset, offset + limit);
+  const nextCursor =
+    offset + limit < total ? encodeCursor({ offset: offset + limit, limit, filters }) : undefined;
+
+  let notice: string | undefined;
+  if (total === 0) {
+    notice = `No active alerts matched: ${appliedFilters}. Try a broader area, remove severity or event filters, or use nws_list_alert_types to verify event names.`;
+  } else if (nextCursor) {
+    notice = `Returning ${alerts.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift entries across the page boundary. Duplicate alerts are collapsed on id within each fetch, so the same id arriving on two pages means the active set moved between calls, not that one alert was returned twice.`;
+  } else if (continuation && alerts.length === 0) {
+    const restart =
+      appliedFilters === NATIONAL_SEARCH
+        ? `Call again with limit ${limit} and no cursor to restart from the first match.`
+        : `To restart from the first match, call again with those filters, limit ${limit}, and no cursor.`;
+    notice = `The cursor points past the end of the ${total} alerts matching: ${appliedFilters}. ${restart}`;
+  }
+  return { alerts, totalCount: total, nextCursor, notice };
+}
+
+/**
+ * One page of the alert messages issued in a window, newest first, walked with a
+ * keyset this tool mints — never NWS's own cursor, which drops messages that share
+ * a `sent` instant. A continued page asks for messages sent at or before the
+ * boundary instant (`end` is inclusive), as many as were already returned there
+ * plus a page plus one, and drops the ones already returned: whatever is left
+ * holds the page, and one message more only when more remain. The response is the
+ * newest messages at or before the boundary, so it holds the whole tie whenever
+ * the tie is smaller than the request, and otherwise more unseen tie members than
+ * a page; either way the extra message is exact.
+ */
+async function windowPage(
+  filters: SearchFilters,
+  keyset: Keyset | undefined,
+  limit: number,
+  ctx: Context,
+): Promise<SearchPage> {
+  const service = getNwsService();
+  const appliedFilters = describeFilters(filters);
+  // Rounded up to the second, so the cutoff a notice names is the one the check uses.
+  const cutoffMs = Math.ceil((Date.now() - RETENTION_MS) / 1000) * 1000;
+  const cutoff = utcDateTime(cutoffMs);
+  const startMs = filters.start === undefined ? undefined : parseDateTime(filters.start)?.epochMs;
+  // Only a window that reaches past the cutoff loses messages silently: NWS
+  // returns what it still keeps, with no sign the rest is gone.
+  const retention =
+    startMs !== undefined && startMs < cutoffMs
+      ? `This window starts before ${cutoff}, about as far back as NWS keeps alert messages (7 days), so messages issued before then may be missing from it.`
+      : undefined;
+  const keptSince = retention ? '' : ` NWS keeps alert messages for 7 days, back to ${cutoff}.`;
+
+  // `/alerts` matches an event by its exact name, so each term resolves to the
+  // type names it matches in part. A term that matches none must not reach NWS
+  // as an empty filter, which would widen the search to every message.
+  const eventTypes = filters.event && (await service.matchAlertEventTypes(filters.event, ctx));
+  if (eventTypes?.length === 0) {
+    return {
+      alerts: [],
+      notice: composeNotice(
+        retention,
+        `No NWS alert event type matches event=${filters.event?.join(', ')}, so no message can match. Use nws_list_alert_types to find valid event names.`,
+      ),
+    };
+  }
+
+  const seen = keyset?.seen ?? new Set<string>();
+  const result = await service.searchAlertWindow(
+    {
+      ...filters,
+      event: eventTypes,
+      end: keyset?.sent ?? filters.end,
+      limit: seen.size + limit + 1,
+    },
+    ctx,
+  );
+  const unseen = result.alerts.filter((alert) => !seen.has(alert.id));
+  const alerts = unseen.slice(0, limit);
+  const last = unseen.length > limit ? alerts.at(-1) : undefined;
+
+  let nextCursor: string | undefined;
+  let pageNotice: string | undefined;
+  if (last) {
+    const boundaryMs = Date.parse(last.sent);
+    const boundary = utcDateTime(boundaryMs);
+    const atBoundary = alerts
+      .filter((alert) => Date.parse(alert.sent) === boundaryMs)
+      .map((alert) => alert.id);
+    // Offsets differ across offices, so ties compare by instant, never by string.
+    const carried = keyset?.sentMs === boundaryMs ? [...seen, ...atBoundary] : atBoundary;
+    if (carried.length + limit + 1 <= MAX_UPSTREAM_LIMIT) {
+      nextCursor = encodeCursor({
+        offset: 0,
+        limit,
+        filters,
+        keyset: { sent: boundary, ids: compactIds(carried) },
+      });
+      pageNotice = `Returning ${alerts.length} alert messages, newest first; older messages in this window remain. Pass nextCursor back as cursor for the next page, which picks up where this one ends; a walk returns each message once.`;
+    } else {
+      pageNotice = `Returning ${alerts.length} alert messages, newest first. More remain, but this walk has already returned ${carried.length} issued at ${boundary}, more than one NWS request can page past; narrow the filters, or move end to just before ${boundary}, to reach the rest.`;
+    }
+  } else if (alerts.length === 0) {
+    pageNotice = keyset
+      ? `No alert messages remain past the previous page for: ${appliedFilters}. NWS keeps alert messages for 7 days, back to ${cutoff}; any that aged out since that page are gone.`
+      : `No alert messages matched: ${appliedFilters}.${keptSince} Widen the window or remove filters, or omit start and end to search the alerts active now.`;
+  }
+  return { alerts, nextCursor, notice: composeNotice(retention, pageNotice) };
+}
+
 export const searchAlertsTool = tool('nws_search_alerts', {
   description:
-    'Search active weather alerts (watches, warnings, advisories) across the US. Filter by state, coordinates, zone, land/marine region, event type, severity, urgency, or certainty. area, point, zone, region_type, and region are mutually exclusive — provide at most one. Omit all filters for a national search.',
+    'Search weather alerts (watches, warnings, advisories) across the US: the alerts active now, or — with start and/or end — every alert message issued in that window within the last 7 days, updates and cancellations included, to answer whether a place was under a warning at a past time. Filter by state, coordinates, zone, land/marine region, event type, severity, urgency, certainty, or message type. area, point, zone, region_type, and region are mutually exclusive — provide at most one. Omit all filters for a national search.',
   annotations: { readOnlyHint: true },
   // Every reason is caller input NWS cannot serve, so each logs at notice rather
   // than error. All are rejected before any request except invalid_point, which
@@ -408,6 +730,14 @@ export const searchAlertsTool = tool('nws_search_alerts', {
         'Provide a 2-letter state/territory or marine code, then C for a county zone or Z for a forecast zone, then 3 digits (e.g., "WAZ558", "WAC033"). Zone codes come from affectedZones in nws_search_alerts, forecastZone in nws_get_forecast, or forecastZone in nws_find_stations.',
       severity: 'notice',
     },
+    {
+      reason: 'invalid_time_window',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'start or end is not a valid ISO 8601 date-time with seconds and an offset, or start is after end',
+      recovery:
+        'Pass start and end as ISO 8601 date-times with seconds and an offset (e.g., "2026-11-10T00:00:00Z" or "2026-11-09T18:00:00-06:00") with start no later than end, or omit both to search the alerts active now.',
+      severity: 'notice',
+    },
   ],
 
   input: searchAlertsInputSchema,
@@ -416,7 +746,16 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     alerts: z
       .array(alertOutputSchema)
       .describe(
-        `Matching alerts for this page (at most the applied limit, which never exceeds ${MAX_ALERTS})`,
+        `Matching alerts for this page — on a windowed search, the alert messages issued in the window, newest first (at most the applied limit, which never exceeds ${MAX_ALERTS})`,
+      ),
+    window: z
+      .object({
+        start: z.string().optional().describe('Earliest issuance time searched (inclusive)'),
+        end: z.string().optional().describe('Latest issuance time searched (inclusive)'),
+      })
+      .optional()
+      .describe(
+        'The issuance window a windowed search covered, as sent to NWS; absent on a search of the alerts active now',
       ),
   }),
 
@@ -426,16 +765,19 @@ export const searchAlertsTool = tool('nws_search_alerts', {
   enrichment: {
     totalCount: z
       .number()
+      .optional()
       .describe(
-        'Total distinct alerts matching the filters in this fetch, before the page window is applied. NWS repeats some alerts verbatim within one response; the copies are collapsed on id, so this counts each alert once. Compare against shown to tell whether matches were withheld from this page.',
+        'Total distinct alerts matching the filters in this fetch, before the page window is applied. NWS repeats some alerts verbatim within one response; the copies are collapsed on id, so this counts each alert once. Compare against shown to tell whether matches were withheld from this page. Reported on every search of the active alerts; absent on a windowed search, for which NWS gives no total.',
       ),
     shown: z.number().describe('Number of alerts included in this response'),
-    appliedFilters: z.string().describe('Summary of applied search filters'),
+    appliedFilters: z
+      .string()
+      .describe('Summary of applied search filters, the start and end of a window included'),
     nextCursor: z
       .string()
       .optional()
       .describe(
-        "Opaque token for the next page of matches — pass it back as `cursor` on its own; it carries this query's filters and page size. Omitted when this is the last page.",
+        "Opaque token for the next page of matches — pass it back as `cursor` on its own; it carries this query's filters, window, and page size. Omitted when this is the last page.",
       ),
     requestedLimit: z
       .number()
@@ -453,7 +795,7 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       .string()
       .optional()
       .describe(
-        'Guidance when the requested limit exceeded the page cap, when no alerts matched (echoes applied filters and suggests how to broaden), when matches remain beyond this page, or when the supplied cursor points past the end of the match set.',
+        'Guidance when the requested limit exceeded the page cap, when no alerts matched (echoes applied filters and suggests how to broaden), when matches remain beyond this page, when the supplied cursor points past the end of the match set, or when a window starts before the 7 days NWS keeps alert messages for.',
       ),
   },
 
@@ -473,10 +815,12 @@ export const searchAlertsTool = tool('nws_search_alerts', {
     // continued page: the filter inputs, like limit, shape the first page only.
     // A token without filters resumes against the filter inputs.
     const cursor = unsetIfBlank(input.cursor);
-    const continuation = cursor === undefined ? undefined : readCursor(cursor, ctx);
     // Blanks are unset from here on, so only filters that carry a value count
     // toward mutual exclusion and reach the shape checks below (issue #46).
-    const filters = continuation?.filters ?? normalizeFilters(input);
+    const inputFilters = normalizeFilters(input);
+    const continuation =
+      cursor === undefined ? undefined : readCursor(cursor, isWindowed(inputFilters), ctx);
+    const filters = continuation?.filters ?? inputFilters;
 
     const activeLocationFilters = locationFiltersSet(filters);
     if (activeLocationFilters.length > 1) {
@@ -507,68 +851,78 @@ export const searchAlertsTool = tool('nws_search_alerts', {
       );
     }
 
-    // The service collapses upstream duplicates on id (issue #36), so this is a
-    // distinct-alert count, which is what `totalCount` reports.
-    const result = await getNwsService().searchAlerts(filters, ctx);
-    const total = result.alerts.length;
-    const appliedFilters = describeFilters(filters);
+    const windowProblem = timeWindowProblem(filters);
+    if (windowProblem) {
+      throw ctx.fail(
+        'invalid_time_window',
+        windowProblem,
+        { start: filters.start, end: filters.end },
+        { literals: ['start', 'end'] },
+      );
+    }
 
-    // The fetched, filtered match set is windowed here — `/alerts/active` takes
-    // no upstream limit or cursor, so continuation is local to this array. The
-    // cursor carries its own page size, held to the cap; a first page holds
+    // The cursor carries its own page size, held to the cap; a first page holds
     // `limit` to the cap and discloses the clamp.
     const { effectiveLimit, clamp }: PageLimit = continuation
       ? { effectiveLimit: Math.min(continuation.limit, MAX_ALERTS) }
       : clampPageLimit(input.limit, MAX_ALERTS);
-    const offset = continuation?.offset ?? 0;
-    const items = result.alerts.slice(offset, offset + effectiveLimit);
-    const nextCursor =
-      offset + effectiveLimit < total
-        ? encodeCursor({ offset: offset + effectiveLimit, limit: effectiveLimit, filters })
-        : undefined;
+    const windowed = isWindowed(filters);
+    const page = windowed
+      ? await windowPage(filters, continuation?.keyset, effectiveLimit, ctx)
+      : await activePage(filters, continuation, effectiveLimit, ctx);
+    const appliedFilters = describeFilters(filters);
 
-    ctx.log.info('Alerts search completed', { total, shown: items.length, appliedFilters });
+    ctx.log.info('Alerts search completed', {
+      windowed,
+      total: page.totalCount,
+      shown: page.alerts.length,
+      appliedFilters,
+    });
 
     ctx.enrich({
-      totalCount: total,
-      shown: items.length,
+      ...(page.totalCount === undefined ? {} : { totalCount: page.totalCount }),
+      shown: page.alerts.length,
       appliedFilters,
-      ...(nextCursor ? { nextCursor } : {}),
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       ...clamp?.fields,
     });
-    let pageNotice: string | undefined;
-    if (total === 0) {
-      pageNotice = `No active alerts matched: ${appliedFilters}. Try a broader area, remove severity or event filters, or use nws_list_alert_types to verify event names.`;
-    } else if (nextCursor) {
-      pageNotice = `Returning ${items.length} of ${total} matching alerts. Pass nextCursor back as cursor for the next page. Alerts are contiguous within this response only — every call re-fetches the active-alert feed, so a continued page covers the collection as it stands at that moment, and alerts issued or expired in between can shift entries across the page boundary. Duplicate alerts are collapsed on id within each fetch, so the same id arriving on two pages means the active set moved between calls, not that one alert was returned twice.`;
-    } else if (continuation && items.length === 0) {
-      const restart =
-        appliedFilters === NATIONAL_SEARCH
-          ? `Call again with limit ${effectiveLimit} and no cursor to restart from the first match.`
-          : `To restart from the first match, call again with those filters, limit ${effectiveLimit}, and no cursor.`;
-      pageNotice = `The cursor points past the end of the ${total} alerts matching: ${appliedFilters}. ${restart}`;
-    }
-    const notice = composeNotice(clamp?.notice, pageNotice);
+    const notice = composeNotice(clamp?.notice, page.notice);
     if (notice) ctx.enrich.notice(notice);
 
-    return { alerts: items.map(toAlertOutput) };
+    return {
+      alerts: page.alerts.map(toAlertOutput),
+      ...(windowed
+        ? {
+            window: {
+              ...(filters.start ? { start: filters.start } : {}),
+              ...(filters.end ? { end: filters.end } : {}),
+            },
+          }
+        : {}),
+    };
   },
 
   format: (result) => {
-    if (result.alerts.length === 0) {
+    const { alerts, window } = result;
+    if (alerts.length === 0) {
       return [
         {
           type: 'text',
-          text: 'No active alerts matched. See the enrichment block below for filters and recovery guidance.',
+          text: window
+            ? `No alert messages issued ${describeWindow(window)} matched. See the enrichment block below for filters and recovery guidance.`
+            : 'No active alerts matched. See the enrichment block below for filters and recovery guidance.',
         },
       ];
     }
 
+    const plural = alerts.length === 1 ? '' : 's';
     const lines = [
-      `## ${result.alerts.length} Active Alert${result.alerts.length === 1 ? '' : 's'}\n`,
+      window
+        ? `## ${alerts.length} Alert Message${plural} Issued ${describeWindow(window)}\n`
+        : `## ${alerts.length} Active Alert${plural}\n`,
     ];
 
-    for (const alert of result.alerts) {
+    for (const alert of alerts) {
       lines.push(...alertMarkdownLines(alert), '', '---', '');
     }
 

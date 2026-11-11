@@ -64,6 +64,9 @@ const gridAmountsSchema = z.object({
   }),
 });
 
+/** `/alerts/types`: the exact event names `/alerts` matches `event` against. */
+const alertTypesSchema = z.object({ eventTypes: z.array(z.string()).min(1) });
+
 /** Instance-scoped cache for /points metadata. Grid cells are geography, not tenant-scoped. */
 const pointsCache = new Map<string, { data: PointsMetadata; expires: number }>();
 
@@ -108,7 +111,8 @@ const CANCELLED_MESSAGE = 'NWS API request cancelled — the caller disconnected
 /**
  * Problem type NWS returns (HTTP 404) for a marine gridpoint forecast and for an
  * offshore marine zone's text forecast. A coastal marine zone without a text
- * forecast answers a generic `NotFound` instead; many coastal zones serve one.
+ * forecast (Great Lakes, most Alaska, Guam, American Samoa) answers a generic
+ * `NotFound` instead; coastal zones starting AMZ, ANZ, GMZ, PHZ, or PZZ serve one.
  */
 const MARINE_FORECAST_NOT_SUPPORTED = 'MarineForecastNotSupported';
 
@@ -375,7 +379,14 @@ function nwsFetch<T>(
       throw requestCancelled(CANCELLED_MESSAGE, { url }, { cause: error });
     }
 
-    if (!isRetryableNwsError(error) || error instanceof McpError) {
+    /**
+     * Once retries are spent, `withRetry` re-wraps a non-`McpError` in a plain
+     * `Error` that keeps the original as `cause`, so a network `TypeError` is
+     * read from there; without it the failure reaches the caller as InternalError.
+     */
+    const failure =
+      error instanceof Error && error.cause instanceof TypeError ? error.cause : error;
+    if (error instanceof McpError || !isRetryableNwsError(failure)) {
       throw error;
     }
 
@@ -661,6 +672,35 @@ function parseAlert(feature: Record<string, unknown>): Alert {
   };
 }
 
+/** Set the filters both alert endpoints accept on `url`, in NWS's casing. */
+function setAlertFilterParams(url: URL, params: AlertFilters): void {
+  if (params.area) url.searchParams.set('area', params.area);
+  if (params.point) url.searchParams.set('point', params.point);
+  if (params.zone) url.searchParams.set('zone', params.zone);
+  // NWS accepts only the lowercase region_type, status, and message_type values
+  // and only the uppercase marine region codes; a casing mismatch is a 400
+  // enumeration error on both endpoints.
+  if (params.region_type) url.searchParams.set('region_type', params.region_type.toLowerCase());
+  if (params.region?.length) url.searchParams.set('region', params.region.join(','));
+  if (params.severity?.length) url.searchParams.set('severity', params.severity.join(','));
+  if (params.urgency?.length) url.searchParams.set('urgency', params.urgency.join(','));
+  if (params.certainty?.length) url.searchParams.set('certainty', params.certainty.join(','));
+  const normalizedStatus = params.status?.trim().toLowerCase();
+  if (normalizedStatus) url.searchParams.set('status', normalizedStatus);
+  if (params.message_type) url.searchParams.set('message_type', params.message_type.toLowerCase());
+}
+
+/** Event search terms lowercased, blanks dropped. */
+function eventTerms(terms: readonly string[] | undefined): string[] {
+  return (terms ?? []).map((term) => term.trim().toLowerCase()).filter((term) => term.length > 0);
+}
+
+/** Whether an event name contains any of the lowercased `terms`, case-insensitively. */
+function matchesEventTerms(event: string, terms: readonly string[]): boolean {
+  const normalized = event.toLowerCase();
+  return terms.some((term) => normalized.includes(term));
+}
+
 /** Parse observation from latest observation response. */
 function parseObservation(
   data: Record<string, unknown>,
@@ -683,6 +723,7 @@ function parseObservation(
     windDirection: (props.windDirection as NwsValue) ?? nullValue,
     windGust: (props.windGust as NwsValue) ?? nullValue,
     barometricPressure: (props.barometricPressure as NwsValue) ?? nullValue,
+    seaLevelPressure: (props.seaLevelPressure as NwsValue) ?? nullValue,
     visibility: (props.visibility as NwsValue) ?? nullValue,
     relativeHumidity: (props.relativeHumidity as NwsValue) ?? nullValue,
     heatIndex: (props.heatIndex as NwsValue) ?? nullValue,
@@ -801,6 +842,42 @@ export interface AlertSearchResult {
   readonly alerts: readonly Alert[];
 }
 
+/**
+ * The filters `/alerts/active` and `/alerts` both accept, with one grammar and the
+ * same mutual exclusions; the location filters are the caller's to keep exclusive.
+ */
+export interface AlertFilters {
+  readonly area?: string | undefined;
+  readonly certainty?: readonly string[] | undefined;
+  /** CAP message type, `Alert`, `Update`, or `Cancel`; sent lowercased. */
+  readonly message_type?: string | undefined;
+  readonly point?: string | undefined;
+  readonly region?: readonly string[] | undefined;
+  readonly region_type?: string | undefined;
+  readonly severity?: readonly string[] | undefined;
+  readonly status?: string | undefined;
+  readonly urgency?: readonly string[] | undefined;
+  readonly zone?: string | undefined;
+}
+
+/** A search of the active alerts. */
+export interface ActiveAlertQuery extends AlertFilters {
+  /** Search terms, each matched case-insensitively against part of an alert's event. */
+  readonly event?: readonly string[] | undefined;
+}
+
+/** A search of the alert messages issued in a window, as `/alerts` takes it. */
+export interface AlertWindowQuery extends AlertFilters {
+  /** Latest `sent` to include (inclusive), as a date-time NWS accepts. */
+  readonly end?: string | undefined;
+  /** Exact event type names; `/alerts` matches no partial name. */
+  readonly event?: readonly string[] | undefined;
+  /** Messages to request, at most 500. */
+  readonly limit: number;
+  /** Earliest `sent` to include (inclusive), as a date-time NWS accepts. */
+  readonly start?: string | undefined;
+}
+
 export interface ObservationResult {
   readonly observation: Observation;
 }
@@ -889,12 +966,18 @@ export class NwsService {
     callerSignal: AbortSignal,
   ): Promise<ForecastResult> {
     const points = await resolvePoints(lat, lon, ctx);
-    const marineUnsupported = () =>
+    /** `where` names the zone; the contract recovery tells a coastal zone from an offshore one by it. */
+    const marineUnsupported = (where: string) =>
       marineForecastUnsupported(
-        `Coordinates (${truncateCoord(lat)}, ${truncateCoord(lon)}) are in marine zone ${points.forecastZone}; NWS publishes no point forecast for marine areas.`,
+        `Coordinates (${truncateCoord(lat)}, ${truncateCoord(lon)}) are in ${where}; NWS publishes no point forecast for marine areas.`,
         { latitude: lat, longitude: lon, forecastZone: points.forecastZone },
       );
-    if (points.kind === 'gridless_marine') throw marineUnsupported();
+    // Every sampled point beyond the grid lies in an offshore zone, which has no zone text forecast either.
+    if (points.kind === 'gridless_marine') {
+      throw marineUnsupported(
+        `offshore marine zone ${points.forecastZone}, beyond the NWS forecast grid`,
+      );
+    }
     if (points.kind === 'gridless_land') {
       throw notFound(
         `Coordinates (${truncateCoord(lat)}, ${truncateCoord(lon)}) are in forecast zone ${points.forecastZone}, but NWS serves no forecast grid there and publishes no point forecast for them.`,
@@ -915,7 +998,9 @@ export class NwsService {
       MAX_RETRIES,
       DEFAULT_NOT_FOUND,
       (message, problemType) =>
-        problemType === MARINE_FORECAST_NOT_SUPPORTED ? marineUnsupported() : notFound(message),
+        problemType === MARINE_FORECAST_NOT_SUPPORTED
+          ? marineUnsupported(`marine zone ${points.forecastZone}`)
+          : notFound(message),
     );
 
     const forecast = parseForecastPeriods(data);
@@ -991,37 +1076,52 @@ export class NwsService {
     };
   }
 
-  /** Search active alerts with optional filters. */
-  async searchAlerts(
-    params: {
-      area?: string | undefined;
-      point?: string | undefined;
-      zone?: string | undefined;
-      region_type?: string | undefined;
-      region?: string[] | undefined;
-      event?: string[] | undefined;
-      severity?: string[] | undefined;
-      urgency?: string[] | undefined;
-      certainty?: string[] | undefined;
-      status?: string | undefined;
-    },
-    ctx: Context,
-  ): Promise<AlertSearchResult> {
+  /**
+   * Search active alerts with optional filters. `/alerts/active` takes no event
+   * filter of its own beyond exact names, so event terms match here, in part.
+   */
+  async searchAlerts(params: ActiveAlertQuery, ctx: Context): Promise<AlertSearchResult> {
     const url = new URL(`${BASE_URL}/alerts/active`);
+    setAlertFilterParams(url, params);
+    const terms = eventTerms(params.event);
+    const alerts = await this.fetchAlerts(url, params.point, ctx);
+    return {
+      alerts: terms.length
+        ? alerts.filter((alert) => matchesEventTerms(alert.event, terms))
+        : alerts,
+    };
+  }
 
-    if (params.area) url.searchParams.set('area', params.area);
-    if (params.point) url.searchParams.set('point', params.point);
-    if (params.zone) url.searchParams.set('zone', params.zone);
-    // NWS accepts only the lowercase region_type values and only the uppercase
-    // marine region codes; either casing mismatch is a 400 enumeration error.
-    if (params.region_type) url.searchParams.set('region_type', params.region_type.toLowerCase());
-    if (params.region?.length) url.searchParams.set('region', params.region.join(','));
-    if (params.severity?.length) url.searchParams.set('severity', params.severity.join(','));
-    if (params.urgency?.length) url.searchParams.set('urgency', params.urgency.join(','));
-    if (params.certainty?.length) url.searchParams.set('certainty', params.certainty.join(','));
-    const normalizedStatus = params.status?.trim().toLowerCase();
-    if (normalizedStatus) url.searchParams.set('status', normalizedStatus);
+  /**
+   * Alert messages issued in a window, newest first by `sent`, from `/alerts` —
+   * every message NWS keeps (7 days), updates and cancellations included, not
+   * only the active ones. The window bounds `sent`, inclusive at both ends.
+   * `event` must hold exact type names (see `matchAlertEventTypes`), and `limit`
+   * is sent as given: paging is the caller's. NWS's own `cursor` is never sent —
+   * it drops messages that share a `sent` instant.
+   */
+  async searchAlertWindow(params: AlertWindowQuery, ctx: Context): Promise<AlertSearchResult> {
+    const url = new URL(`${BASE_URL}/alerts`);
+    setAlertFilterParams(url, params);
+    if (params.event?.length) url.searchParams.set('event', params.event.join(','));
+    if (params.start) url.searchParams.set('start', params.start);
+    if (params.end) url.searchParams.set('end', params.end);
+    url.searchParams.set('limit', String(params.limit));
+    return { alerts: await this.fetchAlerts(url, params.point, ctx) };
+  }
 
+  /**
+   * The `/alerts/types` names that match any of `terms` the way an active search
+   * matches an alert's event: case-insensitively, in part. Empty when none does.
+   */
+  async matchAlertEventTypes(terms: readonly string[], ctx: Context): Promise<readonly string[]> {
+    const normalized = eventTerms(terms);
+    const types = await this.listAlertTypes(ctx);
+    return types.filter((type) => matchesEventTerms(type, normalized));
+  }
+
+  /** Fetch one alert collection, its point-search failures explained, its repeats collapsed. */
+  private async fetchAlerts(url: URL, point: string | undefined, ctx: Context): Promise<Alert[]> {
     ctx.log.info('Searching alerts', { url: url.toString() });
     const data = await nwsFetch<Record<string, unknown>>(
       url.toString(),
@@ -1029,40 +1129,30 @@ export class NwsService {
       MAX_RETRIES,
       DEFAULT_NOT_FOUND,
       undefined,
-      params.point ? pointOutsideCoverage(params.point) : undefined,
+      point ? pointOutsideCoverage(point) : undefined,
     ).catch((error: unknown) => {
-      if (!params.point) throw error;
+      if (!point) throw error;
       throw explainPointServerError(
         error,
-        `the alerts search at point "${params.point}"`,
+        `the alerts search at point "${point}"`,
         'For a point at sea, search by marine region (e.g., region "AT") or a marine area or zone filter instead.',
       );
     });
 
     const features = (data.features ?? []) as Record<string, unknown>[];
-    const eventFilters = params.event
-      ?.map((event) => event.trim().toLowerCase())
-      .filter((event) => event.length > 0);
-
     // `/alerts/active` repeats some alerts verbatim within a single response —
     // byte-identical id, sent, event, and areaDesc — so the second copy carries
     // nothing the first did not. Collapse on id here, at the raw feature array,
-    // rather than in the tool: this is ahead of both the event filter below and
-    // the tool's page window, so no count is inflated and no duplicate can
-    // straddle a page boundary (issue #36). Map insertion order keeps the first
-    // occurrence in its upstream position.
+    // rather than in the tool: this is ahead of both the event filter and the
+    // tool's page window, so no count is inflated and no duplicate can straddle a
+    // page boundary (issue #36). Map insertion order keeps the first occurrence
+    // in its upstream position.
     const byId = new Map<string, Alert>();
     for (const feature of features) {
       const alert = parseAlert(feature);
       if (!byId.has(alert.id)) byId.set(alert.id, alert);
     }
-
-    const alerts = [...byId.values()].filter((alert) => {
-      if (!eventFilters?.length) return true;
-      const normalizedEvent = alert.event.toLowerCase();
-      return eventFilters.some((event) => normalizedEvent.includes(event));
-    });
-    return { alerts };
+    return [...byId.values()];
   }
 
   /**
@@ -1312,15 +1402,19 @@ export class NwsService {
     return parseStations(await nwsFetch<Record<string, unknown>>(url, ctx, MAX_RETRIES));
   }
 
-  /** List all valid alert event type names. */
+  /**
+   * List all valid alert event type names. A body without a non-empty `eventTypes`
+   * string array fails as SerializationError: read as an empty catalog, it would
+   * tell a windowed `event` search that no type matches, a false "no messages".
+   */
   async listAlertTypes(ctx: Context): Promise<readonly string[]> {
     ctx.log.info('Fetching alert types');
-    const data = await nwsFetch<Record<string, unknown>>(
-      `${BASE_URL}/alerts/types`,
-      ctx,
-      MAX_RETRIES,
-    );
-    return (data.eventTypes as string[]) ?? [];
+    const url = `${BASE_URL}/alerts/types`;
+    const parsed = alertTypesSchema.safeParse(await nwsFetch<unknown>(url, ctx, MAX_RETRIES));
+    if (!parsed.success) {
+      throw serializationError('NWS alert types response is unusable.', { url });
+    }
+    return parsed.data.eventTypes;
   }
 
   /**
@@ -1364,7 +1458,7 @@ export class NwsService {
       if (!(await this.probeRecord(`${BASE_URL}/offices/${office}`, ctx))) throw unknownOffice();
       if (productType === 'HWO' || productType === 'SPS') {
         throw notFound(
-          `No ${productType} products are currently available for office "${office}". ${productType} products are episodic — most offices have none active most of the time. Try a different product type (AFD is near-always available).`,
+          `No ${productType} products are on file for office "${office}". ${productType} products are issued only when conditions warrant, and NWS keeps about 7 days of them. Try a different product type (AFD is near-always available).`,
           {
             office,
             productType,

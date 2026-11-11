@@ -128,7 +128,7 @@ export type AlertHazard = {
   readonly [K in (typeof ALERT_HAZARD_KEYS)[number]]?: string | undefined;
 };
 
-/** Active alert from /alerts/active. */
+/** One alert message, as /alerts/active, /alerts, and /alerts/{id} all return it. */
 export interface Alert {
   readonly affectedZones: readonly AffectedZone[];
   readonly areaDesc: string;
@@ -181,6 +181,10 @@ export interface AlertCounts {
 
 /** Latest observation from /stations/{id}/observations/latest. */
 export interface Observation {
+  /**
+   * Pa, the altimeter setting: on METAR stations the A group (A3013 → 102030); other
+   * networks (CWOP) fill it with their own reading. Not sea-level pressure.
+   */
   readonly barometricPressure: NwsValue;
   readonly cloudLayers: readonly CloudLayer[];
   readonly dewpoint: NwsValue;
@@ -192,6 +196,8 @@ export interface Observation {
   /** mm, from the METAR P group; 0 is a trace, null no amount (the group is omitted when dry). */
   readonly precipitationLastHour: NwsValue;
   readonly relativeHumidity: NwsValue;
+  /** Pa, from the SLP remark of an hourly METAR (SLP129 → 101290); null on 5-minute records. */
+  readonly seaLevelPressure: NwsValue;
   readonly stationId: string;
   readonly stationName: string;
   readonly temperature: NwsValue;

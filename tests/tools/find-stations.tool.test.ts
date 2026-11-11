@@ -81,6 +81,30 @@ describe('nws_find_stations', () => {
     expect(mockFindStations).not.toHaveBeenCalled();
   });
 
+  it('renders the invalid-cursor recovery with the parameter names as code spans', async () => {
+    const result = await runToolContract(findStationsTool, {
+      latitude: 47.6,
+      longitude: -122.3,
+      cursor: Buffer.from('{"offset":0.5,"limit":10}').toString('base64'),
+    });
+    const text = result.content
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('\n');
+    expect(text).toContain(
+      'Recovery: Omit `cursor` to restart from the nearest station, or pass the previous `nextCursor` unchanged.',
+    );
+    expect(text).not.toContain('\\`');
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        data: {
+          recovery: {
+            hint: 'Omit cursor to restart from the nearest station, or pass the previous nextCursor unchanged.',
+          },
+        },
+      },
+    });
+  });
+
   it('normalizes a whitespace cursor before first-page clamping', async () => {
     mockFindStations.mockResolvedValue(stationsResult);
     const result = await runToolContract(findStationsTool, {
@@ -105,15 +129,22 @@ describe('nws_find_stations', () => {
     expect(input.limit).toBe(10);
   });
 
-  it('accepts a limit past the page cap up to the 10000 ceiling, and rejects beyond it', () => {
+  it('accepts any safe-integer limit past the page cap, and rejects beyond the safe range', () => {
     expect(
       findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 100 }).limit,
     ).toBe(100);
     expect(
-      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 10_000 }).limit,
-    ).toBe(10_000);
+      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 10_001 }).limit,
+    ).toBe(10_001);
+    expect(
+      findStationsTool.input.parse({
+        latitude: 47.6,
+        longitude: -122.3,
+        limit: Number.MAX_SAFE_INTEGER,
+      }).limit,
+    ).toBe(Number.MAX_SAFE_INTEGER);
     expect(() =>
-      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 10_001 }),
+      findStationsTool.input.parse({ latitude: 47.6, longitude: -122.3, limit: 2 ** 53 }),
     ).toThrow();
   });
 
@@ -395,12 +426,12 @@ describe('nws_find_stations', () => {
       it('discloses the clamp alone when every station fits one page', async () => {
         mockFindStations.mockResolvedValue(stationList(12));
 
-        const { data } = await call({ limit: 10_000 });
+        const { data } = await call({ limit: 1_000_000 });
 
         expect(data.stations).toHaveLength(12);
-        expect(data).toMatchObject({ requestedLimit: 10_000, effectiveLimit: 50 });
+        expect(data).toMatchObject({ requestedLimit: 1_000_000, effectiveLimit: 50 });
         expect(data.notice).toBe(
-          'Requested limit 10000 exceeds the per-page cap of 50; this page holds up to 50.',
+          'Requested limit 1000000 exceeds the per-page cap of 50; this page holds up to 50.',
         );
       });
 
@@ -433,7 +464,7 @@ describe('nws_find_stations', () => {
       });
 
       it.each([
-        ['past the 10000 ceiling', 10_001],
+        ['past the safe-integer range', 2 ** 53],
         ['zero', 0],
         ['fractional', 2.5],
       ])('rejects a limit %s as invalid_arguments', async (_label, limit) => {

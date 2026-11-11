@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: nws-weather-mcp-server
-abstract: "Model Context Protocol (MCP) server for the National Weather Service API, providing forecasts, active alerts, current observations, and station discovery for US locations."
+abstract: "Model Context Protocol (MCP) server for the National Weather Service API, providing forecasts, active and recent alerts, current observations, and station discovery for US locations."
 type: software
 authors:
   - family-names: Hand

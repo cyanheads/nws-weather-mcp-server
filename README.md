@@ -1,6 +1,6 @@
 <div align="center">
   <h1>@cyanheads/nws-weather-mcp-server</h1>
-  <p><b>Get US weather forecasts, active alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.</b>
+  <p><b>Get US weather forecasts, active and recent alerts, and current observations via the National Weather Service API. STDIO or Streamable HTTP.</b>
   <div>10 Tools • 2 Resources</div>
   </p>
 </div>
@@ -29,14 +29,14 @@
 
 ## Overview
 
-Real-time US weather from the National Weather Service: forecasts, active alerts, current conditions, and forecaster discussions for any point in the 50 states and US territories, plus zone forecasts, coastal and marine alerts, and a week of station history. No API key required.
+Real-time US weather from the National Weather Service: forecasts, active and recent alerts, current conditions, and forecaster discussions for any point in the 50 states and US territories, plus zone forecasts, coastal and marine alerts, and a week of station history. No API key required.
 
 ### Tools
 
 | Tool | Description |
 |:----------|:------------|
 | `nws_get_forecast` | 7-day or hourly forecast for coordinates. Resolves NWS grid internally. |
-| `nws_search_alerts` | Active weather alerts filtered by area, point, zone, event, severity, urgency, certainty, and status. |
+| `nws_search_alerts` | Active weather alerts, or the alert messages issued in a window within the last 7 days, filtered by area, point, zone, event, severity, urgency, certainty, message type, and status. |
 | `nws_get_alert` | One alert message by ID, current or superseded (~7-day retention). |
 | `nws_get_alert_counts` | Active alert counts nationwide, per state/territory or marine area, and per marine region. |
 | `nws_get_observations` | Current conditions by coordinates (nearest station) or station ID. |
@@ -64,15 +64,17 @@ Alert types are also reachable via `nws_list_alert_types`. The weather guide is 
 - `include_amounts: true` adds every native `quantitativePrecipitation`, `snowfallAmount`, and `iceAccumulation` interval as `precipitationAmounts` (`layer`, `uom`, `values` with `validTime` and `value`), plus the separate `amountsUpdateTime`. Default false; resend it on any cursor page that needs amounts. Interval strings, units, zeroes, and nulls stay unchanged. Missing layers and unavailable amounts are explained in `notice`; present empty layers carry `values: []`. Absent units or update time are null. An unavailable amount feed leaves the main forecast available.
 - Returns `updateTime`, when the grid's forecast data was last updated, beside `generatedAt`; a `notice` flags a grid not updated in more than 24 hours
 - Returns the `forecastZone` and `county` zone codes for chaining into `nws_search_alerts`
-- Marine coordinates fail with `marine_forecast_unsupported`, and land points NWS serves no forecast grid for fail with `no_forecast_grid`
+- Marine coordinates fail with `marine_forecast_unsupported`, whose recovery sends a coastal zone starting AMZ, ANZ, GMZ, PHZ, or PZZ to `nws_get_zone_forecast` for its text forecast of wind and seas (Great Lakes, most Alaska, Guam, American Samoa, and offshore zones have none), and land points NWS serves no forecast grid for fail with `no_forecast_grid`
 
 ---
 
 ### `nws_search_alerts` <sub>tool</sub>
 
-- At most one location filter (`area`, `point`, `zone`, `region_type`, or `region`), or none for a national search; `event` matches case-insensitively and partially; `status` defaults to `Actual` (also `Exercise`, `System`, `Test`, `Draft`)
+- At most one location filter (`area`, `point`, `zone`, `region_type`, or `region`), or none for a national search; `event` matches case-insensitively and partially; `status` defaults to `Actual` (also `Exercise`, `System`, `Test`, `Draft`); `message_type` (`Alert`, `Update`, `Cancel`) filters active and windowed searches alike
+- `start` and/or `end` (ISO 8601 date-times with seconds and an offset, read as in `nws_get_observation_history`; either alone, or equal to each other) switch to window mode: every alert message issued in the window, updates and cancellations included, newest first, for questions like whether a place was under a warning at a past time. Both ends are inclusive and bound when a message was sent, not when its hazard was in effect, so a warning issued before `start` is missed even while still in effect. NWS keeps messages for 7 days; a window reaching past that says so in `notice`. Malformed or calendar-invalid values, or `start` after `end`, fail with `invalid_time_window`
+- A windowed search reports `shown` without `totalCount`, since NWS gives no total; `event` still matches partially, and a term matching no event type returns no alerts with a `notice`
 - `limit` (default 25) is capped at 25; a larger limit is served as 25 and reported through `requestedLimit`/`effectiveLimit`
-- `nextCursor` carries the query's filters and page size, so pass it back as `cursor` on its own; filters sent with it are ignored
+- `nextCursor` carries the query's filters, window, and page size, so pass it back as `cursor` on its own; filters sent with it are ignored. A windowed walk returns each message once, however many share an issuance time
 - Each `affectedZones` entry carries its zone `type` (`forecast`/`county`/`fire`); `references` lists superseded messages newest first by `sent`; a `point` outside NWS coverage fails with `invalid_point`
 - Each alert carries `office` (the issuing office code for `nws_get_office_discussion`, e.g. `RIW`), raw `vtec` strings, the `nwsHeadline`, and `hazard` tags such as `maxHailSize` and `maxWindGust`, verbatim
 
@@ -95,15 +97,16 @@ Alert types are also reachable via `nws_list_alert_types`. The weather guide is 
 ### `nws_get_observations` <sub>tool</sub>
 
 - Look up by coordinates (resolves nearest station) or `station_id` directly
+- `barometricPressurePa` is the altimeter setting (METAR A group; other networks such as CWOP fill it with their own reading); `seaLevelPressurePa` is the sea-level pressure from an hourly METAR's `SLP` remark, `null` on 5-minute records and whenever NWS sends none. They differ by several hPa at high-elevation stations, and each renders on its own line (`Altimeter`, `Sea-Level Pressure`)
 - Dual-unit display on every measurement (F/C, mph/km/h, inHg/hPa, mi/km, in/mm), temperatures to one decimal; 1-, 3-, and 6-hour precipitation amounts from hourly reports, with `0` a trace and `null` no amount reported; observations older than 2 hours carry a staleness notice, and a separate warning flags a station with most measurements unavailable
 
 ---
 
 ### `nws_get_observation_history` <sub>tool</sub>
 
-- `station_id` (from `nws_find_stations`); optional `start` (inclusive) and `end` (exclusive) as ISO 8601 date-times with seconds and an offset; newest first, back through the ~7 days NWS keeps
+- `station_id` (from `nws_find_stations`); optional `start` (inclusive) and `end` (exclusive) as ISO 8601 date-times with seconds and an offset (lowercase `t`/`z` and an offset without its colon, `+0000`, also read); newest first, back through the ~7 days NWS keeps
 - `limit` (default 24) is capped at 100; a larger limit is served as 100 and reported through `requestedLimit`/`effectiveLimit`
-- Each observation carries the `nws_get_observations` measurement fields, `null` where the station reported nothing; an unknown station fails with `station_not_found`, and a malformed window or a `start` not before `end` with `invalid_time_window`
+- Each observation carries the `nws_get_observations` measurement fields, altimeter (`barometricPressurePa`) and sea-level pressure (`seaLevelPressurePa`, hourly records only) included and rendered as separate table columns, `null` where the station reported nothing; an unknown station fails with `station_not_found`, and a malformed window or a `start` not before `end` with `invalid_time_window`
 - `nextCursor` appears only when older observations remain; there is no `totalCount`, since NWS reports none for a window
 
 ---
@@ -127,6 +130,7 @@ Alert types are also reachable via `nws_list_alert_types`. The weather guide is 
 - `office`: usually the 3-letter WFO code (e.g., "SEW" for Seattle) returned as the `office` field by `nws_get_forecast`; `product_type`: `AFD` (default), `HWO`, `ZFP`, `SPS`, or `FWF` (Fire Weather Planning Forecast)
 - Returns `productText` plus `issuanceTime`, `issuingOffice`, `productName`, `productCode`, `wmoCollectiveId`; `content[]` carries the product text in a `text` code block, so fixed-width tables keep their columns; an unknown office, or one with no current product of the requested type, fails with `no_products`
 - A product too large to inline (most ZFPs and FWFs) returns an `outline` of its sections instead of `productText`; pass `sections` (AFD section names, or zone codes for ZFP/HWO/SPS/FWF) to get the matching sections, and an unknown name fails with `unknown_section`
+- The newest product on file can be past its expiry: when every zone segment the response carries has passed the expiry in its UGC line (only the selected segments with `sections`), a `notice` names that time and says the product is no longer in effect. An SPS usually is, and its notice points to `nws_search_alerts` with event "Special Weather Statement" for statements in effect now; AFD carries no expiry
 - An alert zone typed `fire` gets its forecast from the FWF: `office` from the alert's `office` field, `product_type: "FWF"`, `sections: [<zone code>]`
 
 ---
@@ -134,8 +138,8 @@ Alert types are also reachable via `nws_list_alert_types`. The weather guide is 
 ### `nws_get_zone_forecast` <sub>tool</sub>
 
 - `zone_id`: forecast zone code (e.g., "WAZ315") — returned by `nws_get_forecast` (`forecastZone`), `nws_find_stations` (`forecastZone` column), and `nws_search_alerts` (the `code` of an `affectedZones` entry with `type: "forecast"`)
-- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters
-- County (`XXC###`) and unknown zone codes fail with `zone_not_found`, and so do most fire zone codes, whose forecast is their segment of the office FWF on `nws_get_office_discussion`; a fire code that is also a public zone code returns the public zone's forecast; marine zones with no text forecast fail with `marine_forecast_unsupported`, and land zones with none with `zone_forecast_unavailable`
+- Returns named periods (e.g., "Today", "Tonight", "Monday") with narrative text from local forecasters, and `updated`, the issuance time of the product it comes from; when NWS sends it 12 hours off (it misreads the 12 o'clock hour), the value is corrected and `notice` names NWS's value, and a time later than the response that cannot be corrected is returned as sent with a `notice`
+- County (`XXC###`) and unknown zone codes fail with `zone_not_found`, and so do most fire zone codes, whose forecast is their segment of the office FWF on `nws_get_office_discussion`; a fire code that is also a public zone code returns the public zone's forecast; marine zones with no text forecast fail with `marine_forecast_unsupported` (coastal zones starting AMZ, ANZ, GMZ, PHZ, or PZZ usually have one; Great Lakes, most Alaska, Guam, American Samoa, and offshore zones have none), and land zones with none with `zone_forecast_unavailable`
 
 ---
 
@@ -209,7 +213,7 @@ See [`.env.example`](.env.example) for the full list including auth, storage, an
 
 ### Local development
 
-Source development requires [Bun v1.4+](https://bun.sh/). The published executable also runs on [Node.js v24+](https://nodejs.org/).
+Source development requires [Bun v1.4.4+](https://bun.sh/). The published executable also runs on [Node.js v24+](https://nodejs.org/).
 
 ```sh
 git clone https://github.com/cyanheads/nws-weather-mcp-server.git

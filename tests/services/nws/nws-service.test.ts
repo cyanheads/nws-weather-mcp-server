@@ -6,12 +6,14 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { encodeCursor } from '@cyanheads/mcp-ts-core/utils';
+import { encodeCursor, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGED_OUT_ALERT_ID,
   alertCountsResponse,
+  alertMessageFeature,
   alertsResponse,
+  alertTypesCatalogResponse,
   alertTypesResponse,
   ascendingReferencesAlertsResponse,
   CURRENT_ALERT_ID,
@@ -40,6 +42,7 @@ import {
   unexpectedProblem,
   updateAlertsResponse,
   updateAlertWithReferences,
+  windowAlertMessages,
   zoneTypedAlertsResponse,
 } from '../../fixtures/nws-responses.js';
 
@@ -697,6 +700,321 @@ describe('NwsService', () => {
       });
     });
 
+    /**
+     * Window mode through the real tool and this service, over a fetch fake. Date is
+     * pinned so the windows below sit inside NWS's 7-day retention.
+     */
+    describe('nws_search_alerts window mode over the real service (issue #81)', () => {
+      type Message = readonly [id: string, sent: string, event: string, messageType: string];
+      interface Page {
+        alerts: { id: string; sent: string }[];
+        nextCursor?: string;
+        notice?: string;
+        text: string;
+        totalCount?: number;
+      }
+
+      const WINDOW = { start: '2026-11-11T02:00:00Z', end: '2026-11-11T03:00:00Z' } as const;
+      let searchAlertsTool: Awaited<
+        typeof import('@/mcp-server/tools/definitions/search-alerts.tool.js')
+      >['searchAlertsTool'];
+
+      beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-11-11T12:00:00Z'));
+        ({ searchAlertsTool } = await import(
+          '@/mcp-server/tools/definitions/search-alerts.tool.js'
+        ));
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /**
+       * Answer `/alerts` as NWS does over `messages`: the ones sent within `start` and
+       * `end`, inclusive and compared by instant, newest first, at most `limit`, with
+       * the messages that share an instant shuffled anew on every request.
+       * `/alerts/types` serves the live catalog. Returns every requested URL and, per
+       * `/alerts` response, the IDs it served in order.
+       */
+      function serveWindow(messages: readonly Message[]) {
+        const requests: URL[] = [];
+        const served: string[][] = [];
+        let seed = 81;
+        const random = () => {
+          seed = (Math.imul(seed, 1_103_515_245) + 12_345) >>> 0;
+          return seed / 2 ** 32;
+        };
+        mockFetch.mockImplementation(async (input) => {
+          const url = new URL(String(input));
+          requests.push(url);
+          if (url.pathname === '/alerts/types') return jsonResponse(alertTypesCatalogResponse);
+          if (url.pathname !== '/alerts') throw new Error(`Unexpected fetch: ${url}`);
+          const bound = (name: string, missing: number) => {
+            const value = url.searchParams.get(name);
+            return value === null ? missing : Date.parse(value);
+          };
+          const startMs = bound('start', Number.NEGATIVE_INFINITY);
+          const endMs = bound('end', Number.POSITIVE_INFINITY);
+          const ties = new Map<number, Message[]>();
+          for (const message of messages) {
+            const sentMs = Date.parse(message[1]);
+            if (sentMs < startMs || sentMs > endMs) continue;
+            const tie = ties.get(sentMs);
+            if (tie) tie.push(message);
+            else ties.set(sentMs, [message]);
+          }
+          const page = [...ties]
+            .sort(([a], [b]) => b - a)
+            .flatMap(([, tie]) => {
+              const shuffled = [...tie];
+              for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = Math.floor(random() * (i + 1));
+                [shuffled[i], shuffled[j]] = [shuffled[j] as Message, shuffled[i] as Message];
+              }
+              return shuffled;
+            })
+            .slice(0, Number(url.searchParams.get('limit')));
+          served.push(page.map(([id]) => id));
+          return jsonResponse({ features: page.map((message) => alertMessageFeature(...message)) });
+        });
+        return { requests, served };
+      }
+
+      /** Run a search from `args`, then follow each nextCursor alone to the last page. */
+      async function walk(args: Record<string, unknown>): Promise<Page[]> {
+        const pages: Page[] = [];
+        let next: Record<string, unknown> | undefined = args;
+        while (next && pages.length < 40) {
+          const result: Awaited<ReturnType<typeof runToolContract>> = await runToolContract(
+            searchAlertsTool,
+            next as never,
+          );
+          expect(result.isError, JSON.stringify(result.structuredContent)).toBeFalsy();
+          const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join();
+          const page: Page = { ...(result.structuredContent as Omit<Page, 'text'>), text };
+          pages.push(page);
+          next = page.nextCursor ? { cursor: page.nextCursor } : undefined;
+        }
+        return pages;
+      }
+
+      /** Each `/alerts` request's window bounds, limit, and whether it sent NWS's cursor. */
+      const windowParams = (requests: readonly URL[]) =>
+        requests
+          .filter((url) => url.pathname === '/alerts')
+          .map((url) => [
+            url.searchParams.get('start'),
+            url.searchParams.get('end'),
+            url.searchParams.get('limit'),
+            url.searchParams.has('cursor'),
+          ]);
+
+      const idsOf = (pages: readonly Page[]) =>
+        pages.flatMap((page) => page.alerts.map((a) => a.id));
+
+      it('walks 51 messages at limit 7, each once and newest first, though NWS reorders ties', async () => {
+        const { requests, served } = serveWindow(windowAlertMessages);
+
+        const pages = await walk({ ...WINDOW, limit: 7 });
+
+        // 51 = 7 × 7 + 2: the last page holds the remainder, never nothing.
+        expect(pages.map((page) => page.alerts.length)).toEqual([7, 7, 7, 7, 7, 7, 7, 2]);
+        const ids = idsOf(pages);
+        expect([...ids].sort()).toEqual(windowAlertMessages.map(([id]) => id).sort());
+        const sentMs = pages.flatMap((page) => page.alerts.map((a) => Date.parse(a.sent)));
+        expect(sentMs).toEqual([...sentMs].sort((a, b) => b - a));
+        for (const page of pages) {
+          expect(page.totalCount).toBeUndefined();
+          for (const alert of page.alerts)
+            expect(page.text).toContain(escapeMarkdownInline(alert.id));
+        }
+        // Each request ends at the instant the previous page ended at and asks for the
+        // messages already returned there, plus a page, plus one; none sends NWS's cursor.
+        const start = WINDOW.start;
+        expect(windowParams(requests)).toEqual([
+          [start, WINDOW.end, '8', false],
+          [start, '2026-11-11T02:44:00Z', '11', false],
+          [start, '2026-11-11T02:37:00Z', '14', false],
+          [start, '2026-11-11T02:37:00Z', '21', false],
+          [start, '2026-11-11T02:37:00Z', '28', false],
+          [start, '2026-11-11T02:37:00Z', '35', false],
+          [start, '2026-11-11T02:33:00Z', '12', false],
+          [start, '2026-11-11T02:33:00Z', '19', false],
+        ]);
+        // The four requests that served 14 or more of the 30-message tie each served it
+        // in a different order.
+        const tieOrders = served
+          .filter((page) => page.length >= 14)
+          .map((page) => page.slice(0, 14));
+        expect(new Set(tieOrders.map((order) => order.join())).size).toBe(4);
+      });
+
+      it('returns a window holding exactly limit messages in one request, with no nextCursor', async () => {
+        const { requests } = serveWindow(windowAlertMessages);
+
+        // 02:44Z to 03:00Z holds 8 messages: one at 02:57Z, three at 02:51Z, four at 02:44Z.
+        const pages = await walk({ start: '2026-11-11T02:44:00Z', end: WINDOW.end, limit: 8 });
+
+        expect(pages).toHaveLength(1);
+        expect(pages[0]!.alerts).toHaveLength(8);
+        expect(pages[0]!.nextCursor).toBeUndefined();
+        expect(pages[0]!.notice).toBeUndefined();
+        expect(windowParams(requests)).toEqual([['2026-11-11T02:44:00Z', WINDOW.end, '9', false]]);
+      });
+
+      it('walks a window whose start equals its end through the 30 messages sent at that instant', async () => {
+        const instant = '2026-11-11T02:37:00Z';
+        const { requests } = serveWindow(windowAlertMessages);
+
+        const pages = await walk({ start: instant, end: instant });
+
+        expect(pages.map((page) => page.alerts.length)).toEqual([25, 5]);
+        expect(idsOf(pages).sort()).toEqual(
+          windowAlertMessages
+            .filter(([, sent]) => Date.parse(sent) === Date.parse(instant))
+            .map(([id]) => id)
+            .sort(),
+        );
+        expect(windowParams(requests)).toEqual([
+          [instant, instant, '26', false],
+          [instant, instant, '51', false],
+        ]);
+      });
+
+      it('stops a walk through a tie no request can page past, never asking for more than 500', async () => {
+        // 500 segments of one product, all sent at one instant.
+        const hash = 'ab'.repeat(20);
+        const tie = Array.from(
+          { length: 500 },
+          (_, i): Message => [
+            `urn:oid:2.49.0.1.840.0.${hash}.${String((i >> 1) + 1).padStart(3, '0')}.${(i % 2) + 1}`,
+            '2026-11-11T02:37:00Z',
+            'Small Craft Advisory',
+            'Update',
+          ],
+        );
+        const { requests } = serveWindow(tie);
+
+        const pages = await walk({ ...WINDOW });
+
+        // A token carries the IDs returned at the tie, and the next request asks for
+        // those plus a page plus one: past 474 carried, that is more than 500.
+        expect(pages.map((page) => page.alerts.length)).toEqual(Array(19).fill(25));
+        expect(new Set(idsOf(pages)).size).toBe(475);
+        expect(pages.at(-1)!.nextCursor).toBeUndefined();
+        expect(pages.at(-1)!.notice).toContain('475');
+        const limits = windowParams(requests).map(([, , limit]) => Number(limit));
+        expect(limits).toHaveLength(19);
+        expect(Math.max(...limits)).toBe(476);
+        expect(windowParams(requests).some(([, , , cursor]) => cursor)).toBe(false);
+      });
+
+      it.each([
+        ['Alert', 'Actual', 'alert', 'actual'],
+        ['Update', 'Exercise', 'update', 'exercise'],
+        ['Cancel', 'Test', 'cancel', 'test'],
+      ] as const)(
+        'sends message_type %s and status %s lowercased to /alerts/active and /alerts',
+        async (messageType, status, sentType, sentStatus) => {
+          mockFetch.mockImplementation(async () => jsonResponse(emptyAlertsResponse));
+
+          await runToolContract(searchAlertsTool, { message_type: messageType, status });
+          await runToolContract(searchAlertsTool, {
+            message_type: messageType,
+            status,
+            start: WINDOW.start,
+          });
+
+          expect(
+            mockFetch.mock.calls.map(([input]) => {
+              const url = new URL(String(input));
+              return [
+                url.pathname,
+                url.searchParams.get('status'),
+                url.searchParams.get('message_type'),
+              ];
+            }),
+          ).toEqual([
+            ['/alerts/active', sentStatus, sentType],
+            ['/alerts', sentStatus, sentType],
+          ]);
+        },
+      );
+
+      it.each([
+        [['thunderstorm'], 'Severe Thunderstorm Warning,Severe Thunderstorm Watch'],
+        [
+          ['TORNADO', ' thunderstorm '],
+          'Severe Thunderstorm Warning,Severe Thunderstorm Watch,Tornado Warning,Tornado Watch',
+        ],
+      ])(
+        'resolves event %j to the type names it matches and sends them to /alerts',
+        async (event, sent) => {
+          const { requests } = serveWindow([]);
+
+          const result = await runToolContract(searchAlertsTool, { ...WINDOW, event });
+
+          expect(result.isError).toBeFalsy();
+          expect(requests.map((url) => url.pathname)).toEqual(['/alerts/types', '/alerts']);
+          expect(requests[1]!.searchParams.getAll('event')).toEqual([sent]);
+        },
+      );
+
+      it('answers an event term no type matches with no alerts and no /alerts request', async () => {
+        const { requests } = serveWindow(windowAlertMessages);
+
+        const result = await runToolContract(searchAlertsTool, { ...WINDOW, event: ['hailnado'] });
+
+        expect(result.isError).toBeFalsy();
+        expect(requests.map((url) => url.pathname)).toEqual(['/alerts/types']);
+        const page = result.structuredContent as { alerts: unknown[]; notice: string };
+        expect(page.alerts).toEqual([]);
+        expect(page.notice).toContain('nws_list_alert_types');
+        const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join();
+        expect(text).toContain('nws_list_alert_types');
+      });
+
+      it('fails an event search when /alerts/types carries no type names, rather than answering no match', async () => {
+        const requests: string[] = [];
+        mockFetch.mockImplementation(async (input) => {
+          const url = new URL(String(input));
+          requests.push(url.pathname);
+          if (url.pathname === '/alerts/types') return jsonResponse({});
+          throw new Error(`Unexpected fetch: ${url}`);
+        });
+
+        const result = await runToolContract(searchAlertsTool, { ...WINDOW, event: ['tornado'] });
+
+        expect(result.isError).toBe(true);
+        expect((result.structuredContent as { error: { code: number } }).error.code).toBe(
+          JsonRpcErrorCode.SerializationError,
+        );
+        expect(requests).toEqual(['/alerts/types']);
+      });
+
+      it.each([
+        ['start alone', { start: WINDOW.start }],
+        ['end alone', { end: WINDOW.end }],
+        ['start equal to end', { start: WINDOW.start, end: WINDOW.start }],
+      ])('serves %s as a window, sending only the bounds given', async (_label, window) => {
+        mockFetch.mockImplementation(async () => jsonResponse(emptyAlertsResponse));
+
+        const result = await runToolContract(searchAlertsTool, window);
+
+        expect(result.isError).toBeFalsy();
+        expect((result.structuredContent as { window: unknown }).window).toEqual(window);
+        const urls = mockFetch.mock.calls.map(([input]) => new URL(String(input)));
+        expect(urls.map((url) => url.pathname)).toEqual(['/alerts']);
+        expect(Object.fromEntries(urls[0]!.searchParams)).toEqual({
+          status: 'actual',
+          ...window,
+          limit: '26',
+        });
+      });
+    });
+
     it('passes query params to the API and keeps event matching local', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse(emptyAlertsResponse));
 
@@ -1119,6 +1437,43 @@ describe('NwsService', () => {
       expect(observation.precipitationLastHour.value).toBeNull();
       expect(observation.precipitationLast3Hours.value).toBeNull();
       expect(observation.precipitationLast6Hours.value).toBeNull();
+    });
+
+    it('parses sea-level pressure beside the altimeter setting (issue #80)', async () => {
+      // KDEN 2026-11-11T11:53Z, raw `… A3028 RMK AO2 SLP223 …`: NWS dropped the
+      // altimeter and decoded the SLP remark.
+      mockFetch.mockResolvedValueOnce(jsonResponse(stationInfoResponse)).mockResolvedValueOnce(
+        jsonResponse({
+          properties: {
+            ...observationResponse.properties,
+            barometricPressure: { unitCode: 'wmoUnit:Pa', value: null, qualityControl: 'Z' },
+            seaLevelPressure: { unitCode: 'wmoUnit:Pa', value: 102230, qualityControl: 'V' },
+          },
+        }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const { observation } = await service
+        .getNwsService()
+        .getObservation({ stationId: 'KSEA' }, ctx);
+
+      expect(observation.barometricPressure.value).toBeNull();
+      expect(observation.seaLevelPressure.value).toBe(102230);
+    });
+
+    it('reads an absent seaLevelPressure key as not reported', async () => {
+      const { seaLevelPressure: _slp, ...withoutSeaLevel } = observationResponse.properties;
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(stationInfoResponse))
+        .mockResolvedValueOnce(jsonResponse({ properties: withoutSeaLevel }));
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const { observation } = await service
+        .getNwsService()
+        .getObservation({ stationId: 'KSEA' }, ctx);
+
+      expect(observation.seaLevelPressure).toEqual({ value: null, unitCode: '' });
+      expect(observation.barometricPressure.value).toBe(101325);
     });
 
     it('resolves nearest station from coordinates', async () => {
@@ -1610,6 +1965,24 @@ describe('NwsService', () => {
       expect(mockFetch.mock.calls.length).toBeGreaterThan(1);
     });
 
+    it('surfaces ServiceUnavailable when a network failure outlives the retries', async () => {
+      mockFetch.mockImplementation(async () => {
+        throw new TypeError('fetch failed');
+      });
+
+      const ctx = createMockContext({ tenantId: 'test' });
+      const result = service.getNwsService().searchAlerts({}, ctx);
+      const assertion = expect(result).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        message: 'NWS API unavailable after 3 attempts.',
+        data: { retryAttempts: 3 },
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
     it('fails fast on an upstream 501 instead of retrying a method NWS does not implement', async () => {
       mockFetch.mockImplementation(async () => jsonResponse({}, 501));
 
@@ -1787,6 +2160,37 @@ describe('NwsService', () => {
         '/stations/KSEA/observations',
         '2026-10-16T12:00:00Z',
       ],
+      // A lowercase t or z and a colon-less offset reach NWS in canonical form.
+      [
+        'getObservationHistoryTool',
+        'start',
+        '2026-10-15t12:00:00z',
+        '/stations/KSEA/observations',
+        '2026-10-15T12:00:00Z',
+      ],
+      [
+        'getObservationHistoryTool',
+        'start',
+        '2026-10-15T05:00:00-0700',
+        '/stations/KSEA/observations',
+        '2026-10-15T05:00:00-07:00',
+      ],
+      ['searchAlertsTool', 'start', '2026-11-10T00:00:00Z', '/alerts', '2026-11-10T00:00:00Z'],
+      ['searchAlertsTool', 'start', '2026-11-10t00:00:00z', '/alerts', '2026-11-10T00:00:00Z'],
+      [
+        'searchAlertsTool',
+        'start',
+        '2026-11-09T18:00:00-0600',
+        '/alerts',
+        '2026-11-09T18:00:00-06:00',
+      ],
+      [
+        'searchAlertsTool',
+        'end',
+        ' 2026-11-10T06:00:00+0000 ',
+        '/alerts',
+        '2026-11-10T06:00:00+00:00',
+      ],
       ['getOfficeDiscussionTool', 'office', 'sew', '/products/types/AFD/locations/SEW'],
       ['getOfficeDiscussionTool', 'office', ' SEW ', '/products/types/AFD/locations/SEW'],
       ['getZoneForecastTool', 'zone_id', 'waz315', '/zones/forecast/WAZ315/forecast'],
@@ -1831,6 +2235,8 @@ describe('NwsService', () => {
       ['searchAlertsTool', 'area'],
       ['searchAlertsTool', 'point'],
       ['searchAlertsTool', 'zone'],
+      ['searchAlertsTool', 'start'],
+      ['searchAlertsTool', 'end'],
       ['getObservationHistoryTool', 'start'],
       ['getObservationHistoryTool', 'end'],
     ] as const)('%s admits a blank %s, which the request leaves off', async (name, field) => {
@@ -1869,8 +2275,15 @@ describe('NwsService', () => {
      * the shapes NWS serves (every product location is 2–3 characters, and only
      * Z-infix zones carry a zone forecast), so for those two the check runs the
      * other way — nothing the pattern admits is refused before a request.
+     *
+     * The corpus is built once, when the suite is collected, from one PRNG sequence,
+     * so each field draws the same values on every run, and a value drawn twice runs
+     * once. Each field's values run in slices of at least FUZZ_SLICE, each its own
+     * case, so no slice shares another's time budget, and each slice must reach both
+     * outcomes on its own.
      */
-    it('agrees with the lexical checks on every fuzzed value', async () => {
+    const FUZZ_SLICE = 500;
+    const fuzzCorpus = (() => {
       let state = 54;
       const random = () => {
         state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0;
@@ -1953,24 +2366,44 @@ describe('NwsService', () => {
           seeds: [CURRENT_ALERT_ID, KEEPALIVE_ALERT_ID],
           noRandom: true,
         },
+        // Last, so the fields above draw the values they always have.
+        {
+          name: 'searchAlertsTool',
+          field: 'start',
+          chars: '0123456789-:TtZz.+ ',
+          seeds: ['2026-11-10T00:00:00Z', '2026-11-09T18:00:00-06:00', '2026-11-10t06:00:00+0000'],
+        },
       ] as const;
 
-      const disagreements: string[] = [];
-      for (const spec of fields) {
-        const definition = tools[spec.name] as Definition;
-        const label = `${definition.name}.${spec.field}`;
-        const pattern = advertised(definition, spec.field);
+      return fields.flatMap((spec) => {
         const values: string[] = [...spec.seeds];
         for (let i = 0; i < 1000; i++) {
           const seed = spec.seeds[Math.floor(random() * spec.seeds.length)] as string;
           values.push(edit(seed, spec.chars));
           if (!('noRandom' in spec)) values.push(randomString(spec.chars, 14));
         }
+        const unique = [...new Set(values)];
+        // Dealt round-robin, so every slice samples the seeds, edits, and random
+        // strings alike, and none is a short tail.
+        const slices = Math.max(1, Math.floor(unique.length / FUZZ_SLICE));
+        return Array.from({ length: slices }, (_, k) => ({
+          ...spec,
+          label: `${spec.name}.${spec.field} (slice ${k + 1} of ${slices})`,
+          values: unique.filter((_, i) => i % slices === k),
+        }));
+      });
+    })();
 
+    it.each(fuzzCorpus)(
+      'agrees with the lexical checks on every fuzzed $label value',
+      async (spec) => {
+        const definition = tools[spec.name] as Definition;
+        const pattern = advertised(definition, spec.field);
+        const base = 'base' in spec ? spec.base : {};
+        const disagreements: string[] = [];
         let reached = 0;
         let refused = 0;
-        for (const value of values) {
-          const base = 'base' in spec ? spec.base : {};
+        for (const value of spec.values) {
           const urls = await requested(definition, { ...base, [spec.field]: value });
           const admitted = pattern.test(value);
           if (urls.length > 0) reached++;
@@ -1979,15 +2412,14 @@ describe('NwsService', () => {
             'upstreamNarrowed' in spec
               ? admitted && urls.length === 0
               : !admitted && urls.length > 0;
-          if (disagrees) disagreements.push(`${label} ${JSON.stringify(value)}`);
+          if (disagrees) disagreements.push(JSON.stringify(value));
         }
         // Both outcomes occur, so the fuzz exercises the checks rather than one branch.
-        expect(reached, `${label} reached`).toBeGreaterThan(20);
-        expect(refused, `${label} refused`).toBeGreaterThan(20);
-      }
-
-      expect(disagreements).toEqual([]);
-    });
+        expect(reached, 'reached').toBeGreaterThan(20);
+        expect(refused, 'refused').toBeGreaterThan(20);
+        expect(disagreements).toEqual([]);
+      },
+    );
 
     /**
      * Clients compile these patterns over caller text, most with a backtracking engine.

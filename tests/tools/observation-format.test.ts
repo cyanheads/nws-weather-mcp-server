@@ -31,6 +31,7 @@ function fmt(
     windDirectionDeg: 270,
     windGustKmh: null,
     barometricPressurePa: 101325,
+    seaLevelPressurePa: null,
     visibilityM: 16000,
     relativeHumidityPct: 60,
     heatIndexC: null,
@@ -137,11 +138,45 @@ describe('nws_get_observations format() — unit conversions', () => {
     expect(t).not.toContain('Not available');
   });
 
-  it('renders pressure in inHg and hPa', () => {
-    // 101325 Pa = 29.92 inHg = 1013 hPa
-    const t = text({ barometricPressurePa: 101325 });
-    expect(t).toContain('inHg');
-    expect(t).toContain('hPa');
+  it('renders the altimeter setting and sea-level pressure on separate lines (issue #80)', () => {
+    // `A3013` → 102030 Pa and `SLP129` → 101290 Pa: the altimeter leads with inHg, sea-level
+    // pressure with hPa at the SLP group's tenth, and both keep the raw Pa.
+    const t = text({ barometricPressurePa: 102030, seaLevelPressurePa: 101290 });
+    expect(t).toContain(
+      '**Altimeter:** 30.13 inHg (1020 hPa, 102030 Pa)\n**Sea-Level Pressure:** 1012.9 hPa (29.91 inHg, 101290 Pa)\n',
+    );
+    expect(t).not.toContain('**Pressure:**');
+  });
+
+  it('keeps both inHg decimals when the hundredths digit is zero', () => {
+    // KMCI 2026-11-10T12:53Z, raw `A3010 … SLP191`; KMCI 2026-11-11T11:53Z, raw `A2991 … SLP126`.
+    expect(text({ barometricPressurePa: 101930, seaLevelPressurePa: 101910 })).toContain(
+      '**Altimeter:** 30.10 inHg (1019 hPa, 101930 Pa)\n**Sea-Level Pressure:** 1019.1 hPa (30.09 inHg, 101910 Pa)\n',
+    );
+    expect(text({ barometricPressurePa: 101290, seaLevelPressurePa: 101260 })).toContain(
+      '**Altimeter:** 29.91 inHg (1013 hPa, 101290 Pa)\n**Sea-Level Pressure:** 1012.6 hPa (29.90 inHg, 101260 Pa)\n',
+    );
+    // A3000 → 101590 Pa: whole inches keep both decimals too.
+    expect(text({ barometricPressurePa: 101590 })).toContain(
+      '**Altimeter:** 30.00 inHg (1016 hPa, 101590 Pa)',
+    );
+  });
+
+  it('renders a whole-hPa sea-level pressure without .0', () => {
+    const t = text({ seaLevelPressurePa: 101300 });
+    expect(t).toContain('**Sea-Level Pressure:** 1013 hPa (29.91 inHg, 101300 Pa)');
+  });
+
+  it('renders sea-level pressure alone when the altimeter setting was not reported', () => {
+    // KDEN 2026-11-11T11:53Z, raw `A3028 … SLP223`: NWS sent barometricPressure null.
+    const t = text({ barometricPressurePa: null, seaLevelPressurePa: 102230 });
+    expect(t).toContain('**Sea-Level Pressure:** 1022.3 hPa (30.19 inHg, 102230 Pa)');
+    expect(t).not.toContain('Altimeter');
+  });
+
+  it('renders no pressure line when neither value was reported', () => {
+    const t = text({ barometricPressurePa: null, seaLevelPressurePa: null });
+    expect(t).not.toMatch(/Altimeter|Pressure/);
   });
 
   it('renders visibility in mi and km', () => {
@@ -318,6 +353,7 @@ describe('nws_get_observations format() — sparse payloads', () => {
       windDirectionDeg: 90,
       windGustKmh: null,
       barometricPressurePa: 101000,
+      seaLevelPressurePa: null,
       visibilityM: 10000,
       relativeHumidityPct: 55,
       heatIndexC: null,
@@ -362,6 +398,7 @@ describe('nws_get_observations format() — exact output', () => {
         windDirectionDeg: 225.4,
         windGustKmh: 40.7,
         barometricPressurePa: 101693.25,
+        seaLevelPressurePa: 101740,
         visibilityM: 16093.44,
         relativeHumidityPct: 54.4,
         heatIndexC: 34.8,
@@ -379,7 +416,8 @@ describe('nws_get_observations format() — exact output', () => {
       **Dewpoint:** 70°F (21.2°C)
       **Humidity:** 54%
       **Wind:** 225° 15 mph (24 km/h), gusts 25 mph (41 km/h)
-      **Pressure:** 30.03 inHg (1017 hPa, 101693 Pa)
+      **Altimeter:** 30.03 inHg (1017 hPa, 101693 Pa)
+      **Sea-Level Pressure:** 1017.4 hPa (30.04 inHg, 101740 Pa)
       **Visibility:** 10 mi (16.1 km, 16093 m)
       **Heat Index:** 95°F (34.8°C)
       **Clouds:** FEW at 610m (2001 ft), BKN at 1524m (5000 ft), OVC"
@@ -410,7 +448,7 @@ describe('nws_get_observations format() — exact output', () => {
       **Dewpoint:** -1°F (-18.3°C)
       **Humidity:** 60%
       **Wind:** Calm
-      **Pressure:** 30.43 inHg (1031 hPa, 103050 Pa)
+      **Altimeter:** 30.43 inHg (1031 hPa, 103050 Pa)
       **Visibility:** 0.2 mi (0.4 km, 402 m)
       **Wind Chill:** -3°F (-19.7°C)"
     `);
@@ -460,7 +498,7 @@ describe('nws_get_observations format() — exact output', () => {
       **Dewpoint:** 54°F (12.2°C)
       **Humidity:** 93%
       **Wind:** 140° 9 mph (15 km/h)
-      **Pressure:** 29.92 inHg (1013 hPa, 101325 Pa)
+      **Altimeter:** 29.92 inHg (1013 hPa, 101325 Pa)
       **Visibility:** 9.9 mi (16 km, 16000 m)
       **Precipitation:** 1 h: 0.13 in (3.3 mm), 3 h: 0.24 in (6.1 mm)
       **Clouds:** SCT at 1250m (4101 ft)"
@@ -478,7 +516,7 @@ describe('nws_get_observations format() — exact output', () => {
       **Dewpoint:** 46°F (8°C)
       **Humidity:** 60%
       **Wind:** 360° 7 mph (11 km/h)
-      **Pressure:** 29.92 inHg (1013 hPa, 101325 Pa)
+      **Altimeter:** 29.92 inHg (1013 hPa, 101325 Pa)
       **Visibility:** 9.9 mi (16 km, 16000 m)"
     `);
   });

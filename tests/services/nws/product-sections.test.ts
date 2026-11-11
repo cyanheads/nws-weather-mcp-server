@@ -6,11 +6,12 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type ProductPart,
   partitionProduct,
   partMatches,
+  ugcExpiryTime,
 } from '@/services/nws/product-sections.js';
 
 interface ProductFixture {
@@ -220,6 +221,81 @@ describe('partitionProduct — FWF zone segments (issue #67)', () => {
   });
 });
 
+describe('partitionProduct — UGC expiry tokens (issue #79)', () => {
+  it('carries each segment’s expiry token, as issued', () => {
+    expect(partitionFixture('oun-sps').parts).toEqual([
+      expect.objectContaining({ name: 'OKZ025', label: 'Oklahoma OK', expiry: '060000' }),
+    ]);
+    expect(partitionFixture('dvn-sps').parts).toEqual([
+      expect.objectContaining({ name: 'IAZ051>054, IAZ063>066, IAZ068, ILZ015', expiry: '111415' }),
+    ]);
+    const sew = partitionFixture('sew-zfp').parts;
+    expect(sew).toHaveLength(34);
+    expect(new Set(sew.map((part) => part.expiry))).toEqual(new Set(['162300']));
+  });
+
+  it('reads the token from the wrapped second line of a UGC line', () => {
+    const [land] = partitionFixture('lot-hwo').parts as [ProductPart];
+    expect(land.text.split('\n').slice(0, 2)).toEqual([
+      'ILZ003>006-008-010>013-019>021-023-032-033-039-103>108-INZ001-002-',
+      '010-011-019-170800-',
+    ]);
+    expect(land.expiry).toBe('170800');
+  });
+
+  it('gives AFD sections no expiry', () => {
+    const { parts } = partitionFixture('box-afd');
+    expect(parts.length).toBeGreaterThan(0);
+    expect(parts.every((part) => part.expiry === undefined)).toBe(true);
+  });
+});
+
+describe('ugcExpiryTime (issue #79)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    // The same day or a later one is in the issuance month.
+    ['060000', '2026-11-05T23:28:00+00:00', '2026-11-06T00:00:00.000Z'],
+    ['111415', '2026-11-11T13:37:00+00:00', '2026-11-11T14:15:00.000Z'],
+    ['302359', '2026-11-30T00:00:00+00:00', '2026-11-30T23:59:00.000Z'],
+    // An earlier time on the issuance day stays in that month: already expired.
+    ['111200', '2026-11-11T13:37:00+00:00', '2026-11-11T12:00:00.000Z'],
+    // An earlier day is in the next month, and December rolls to January.
+    ['010400', '2026-11-30T22:00:00+00:00', '2026-12-01T04:00:00.000Z'],
+    ['010400', '2026-12-31T22:00:00+00:00', '2027-01-01T04:00:00.000Z'],
+    // The issuance day is its UTC day: 20:00 EST on Nov 30 is Dec 1 in UTC.
+    ['010400', '2026-11-30T20:00:00-05:00', '2026-12-01T04:00:00.000Z'],
+  ])('resolves %s issued %s to %s', (token, issuanceTime, expected) => {
+    expect(new Date(ugcExpiryTime(token, issuanceTime) as number).toISOString()).toBe(expected);
+  });
+
+  it.each([
+    ['000400', '2026-11-11T13:37:00+00:00'],
+    ['322400', '2026-11-11T13:37:00+00:00'],
+    ['112400', '2026-11-11T13:37:00+00:00'],
+    ['111260', '2026-11-11T13:37:00+00:00'],
+    ['111200', 'not a time'],
+  ])('returns undefined for token %s issued %s', (token, issuanceTime) => {
+    expect(ugcExpiryTime(token, issuanceTime)).toBeUndefined();
+  });
+
+  it.each(['Pacific/Kiritimati', 'Pacific/Pago_Pago'])(
+    'resolves the same instant with the host clock in %s',
+    (zone) => {
+      vi.stubEnv('TZ', zone);
+      // The switch took effect: the host's local date of 22:00Z Nov 30 differs by zone.
+      expect(new Date('2026-11-30T22:00:00Z').getDate()).toBe(
+        zone === 'Pacific/Kiritimati' ? 1 : 30,
+      );
+      expect(
+        new Date(ugcExpiryTime('010400', '2026-11-30T22:00:00+00:00') as number).toISOString(),
+      ).toBe('2026-12-01T04:00:00.000Z');
+    },
+  );
+});
+
 describe('partMatches — AFD names', () => {
   it('matches section names case- and spacing-insensitively', () => {
     const { parts } = partitionFixture('box-afd');
@@ -236,10 +312,12 @@ describe('partitionProduct — lossless over real products', () => {
     'akq-zfp',
     'bis-fwf',
     'box-afd',
+    'dvn-sps',
     'key-zfp',
     'lot-hwo',
     'lox-afd',
     'otx-zfp',
+    'oun-sps',
     'riw-fwf',
     'sew-zfp',
     'slc-afd',

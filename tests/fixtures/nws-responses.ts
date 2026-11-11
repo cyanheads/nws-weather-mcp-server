@@ -844,6 +844,466 @@ export const alertTypesResponse = {
   ],
 };
 
+/** The full /alerts/types list, captured 2026-11-11: the names `/alerts` matches `event` against. */
+export const alertTypesCatalogResponse = {
+  '@context': {},
+  eventTypes: [
+    '911 Telephone Outage',
+    'Administrative Message',
+    'Air Quality Alert',
+    'Air Stagnation Advisory',
+    'Ashfall Advisory',
+    'Ashfall Warning',
+    'Avalanche Advisory',
+    'Avalanche Warning',
+    'Avalanche Watch',
+    'Beach Hazards Statement',
+    'Blizzard Warning',
+    'Blowing Dust Advisory',
+    'Blowing Dust Warning',
+    'Blue Alert',
+    'Brisk Wind Advisory',
+    'Child Abduction Emergency',
+    'Civil Danger Warning',
+    'Civil Emergency Message',
+    'Coastal Flood Advisory',
+    'Coastal Flood Statement',
+    'Coastal Flood Warning',
+    'Coastal Flood Watch',
+    'Cold Weather Advisory',
+    'Dense Fog Advisory',
+    'Dense Smoke Advisory',
+    'Dust Advisory',
+    'Dust Storm Warning',
+    'Earthquake Warning',
+    'Evacuation Immediate',
+    'Extreme Heat Warning',
+    'Extreme Heat Watch',
+    'Extreme Cold Warning',
+    'Extreme Cold Watch',
+    'Extreme Fire Danger',
+    'Extreme Wind Warning',
+    'Fire Warning',
+    'Fire Weather Watch',
+    'Flash Flood Statement',
+    'Flash Flood Warning',
+    'Flash Flood Watch',
+    'Flood Advisory',
+    'Flood Statement',
+    'Flood Warning',
+    'Flood Watch',
+    'Freeze Warning',
+    'Freeze Watch',
+    'Freezing Fog Advisory',
+    'Freezing Spray Advisory',
+    'Frost Advisory',
+    'Gale Warning',
+    'Gale Watch',
+    'Hazardous Materials Warning',
+    'Hazardous Seas Warning',
+    'Hazardous Seas Watch',
+    'Hazardous Weather Outlook',
+    'Heat Advisory',
+    'Heavy Freezing Spray Warning',
+    'Heavy Freezing Spray Watch',
+    'High Surf Advisory',
+    'High Surf Warning',
+    'High Wind Warning',
+    'High Wind Watch',
+    'Hurricane Force Wind Warning',
+    'Hurricane Force Wind Watch',
+    'Hurricane Warning',
+    'Hurricane Watch',
+    'Hydrologic Outlook',
+    'Ice Storm Warning',
+    'Lake Effect Snow Warning',
+    'Lake Wind Advisory',
+    'Lakeshore Flood Advisory',
+    'Lakeshore Flood Statement',
+    'Lakeshore Flood Warning',
+    'Lakeshore Flood Watch',
+    'Law Enforcement Warning',
+    'Local Area Emergency',
+    'Low Water Advisory',
+    'Marine Weather Statement',
+    'Nuclear Power Plant Warning',
+    'Radiological Hazard Warning',
+    'Red Flag Warning',
+    'Rip Current Statement',
+    'Severe Thunderstorm Warning',
+    'Severe Thunderstorm Watch',
+    'Severe Weather Statement',
+    'Shelter In Place Warning',
+    'Short Term Forecast',
+    'Small Craft Advisory',
+    'Snow Squall Warning',
+    'Special Marine Warning',
+    'Special Weather Statement',
+    'Storm Surge Warning',
+    'Storm Surge Watch',
+    'Storm Warning',
+    'Storm Watch',
+    'Test',
+    'Tornado Warning',
+    'Tornado Watch',
+    'Tropical Cyclone Local Statement',
+    'Tropical Storm Warning',
+    'Tropical Storm Watch',
+    'Tsunami Advisory',
+    'Tsunami Warning',
+    'Tsunami Watch',
+    'Typhoon Warning',
+    'Typhoon Watch',
+    'Volcano Warning',
+    'Wind Advisory',
+    'Winter Storm Warning',
+    'Winter Storm Watch',
+    'Winter Weather Advisory',
+  ],
+};
+
+/**
+ * The 51 messages `/alerts` served for `start=2026-11-11T02:00:00Z&end=2026-11-11T03:00:00Z`
+ * (status actual), newest first, as `[id, sent, event, messageType]`. Three offices sent
+ * them under three offsets; 30 share the instant 02:37Z (one Juneau product's segments
+ * and versions) and 11 share 02:33Z, so a page boundary lands inside a tie.
+ */
+export const windowAlertMessages: readonly (readonly [string, string, string, string])[] = [
+  [
+    'urn:oid:2.49.0.1.840.0.91fcc43d237495b5c2d1b07efb1a3cc41cb4eaa4.001.1',
+    '2026-11-10T21:57:00-05:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.cba3a6006f586dc9e22db1ea565b415716887d9c.002.1',
+    '2026-11-10T21:51:00-05:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.cba3a6006f586dc9e22db1ea565b415716887d9c.003.1',
+    '2026-11-10T21:51:00-05:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.cba3a6006f586dc9e22db1ea565b415716887d9c.001.1',
+    '2026-11-10T21:51:00-05:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.0661c42ec6465e3547320c18750c5e69a35c353f.003.1',
+    '2026-11-10T21:44:00-05:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.0661c42ec6465e3547320c18750c5e69a35c353f.004.1',
+    '2026-11-10T21:44:00-05:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.0661c42ec6465e3547320c18750c5e69a35c353f.002.1',
+    '2026-11-10T21:44:00-05:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.0661c42ec6465e3547320c18750c5e69a35c353f.001.1',
+    '2026-11-10T21:44:00-05:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.004.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.003.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.001.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.005.1',
+    '2026-11-10T17:37:00-09:00',
+    'Gale Warning',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.002.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.007.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.002.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.003.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.001.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Cancel',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.006.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.014.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.012.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.015.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.016.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.010.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.004.2',
+    '2026-11-10T17:37:00-09:00',
+    'Gale Warning',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.012.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.008.1',
+    '2026-11-10T17:37:00-09:00',
+    'Gale Warning',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.011.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.004.3',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.006.1',
+    '2026-11-10T17:37:00-09:00',
+    'Gale Warning',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.011.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.010.1',
+    '2026-11-10T17:37:00-09:00',
+    'Gale Warning',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.007.1',
+    '2026-11-10T17:37:00-09:00',
+    'Gale Warning',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.009.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.013.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.009.1',
+    '2026-11-10T17:37:00-09:00',
+    'Gale Warning',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.017.1',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.008.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.f4bcc0d7975543a3af2853065b60547e3a99236b.005.2',
+    '2026-11-10T17:37:00-09:00',
+    'Small Craft Advisory',
+    'Update',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.011.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.007.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.012.1',
+    '2026-11-10T17:33:00-09:00',
+    'Gale Warning',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.004.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.008.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.006.1',
+    '2026-11-10T17:33:00-09:00',
+    'Gale Warning',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.010.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.002.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.003.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.005.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.c73deb5a8cb86ffaace27e6576331c7beffa3105.009.1',
+    '2026-11-10T17:33:00-09:00',
+    'Small Craft Advisory',
+    'Alert',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.052f98cf691caeb7372d829299a35e3ed194768b.001.1',
+    '2026-11-10T18:07:00-08:00',
+    'Flood Watch',
+    'Cancel',
+  ],
+  [
+    'urn:oid:2.49.0.1.840.0.5609965cd082440fb4cc153cfc1f4b8fdc50e756.001.1',
+    '2026-11-10T18:05:00-08:00',
+    'Flood Warning',
+    'Alert',
+  ],
+];
+
+/** One `/alerts` feature for a message, its other CAP fields filled as an original issuance reads. */
+export function alertMessageFeature(id: string, sent: string, event: string, messageType: string) {
+  return {
+    properties: {
+      id,
+      event,
+      headline: `${event} issued`,
+      description: `${event} in effect.`,
+      instruction: null,
+      severity: 'Moderate',
+      urgency: 'Expected',
+      certainty: 'Likely',
+      areaDesc: 'Coastal waters',
+      sent,
+      effective: sent,
+      onset: sent,
+      ends: null,
+      expires: sent,
+      status: 'Actual',
+      messageType,
+      references: [],
+      senderName: 'NWS',
+      affectedZones: [],
+    },
+  };
+}
+
 /**
  * Mock /alerts/active/count response, shaped like the live one: a multi-area
  * alert counts in each area (areas sum past `total`), `land + marine = total`,
@@ -879,7 +1339,9 @@ export const observationResponse = {
     windSpeed: { value: 18.5, unitCode: 'wmoUnit:km_h-1' },
     windDirection: { value: 200, unitCode: 'wmoUnit:degree_(angle)' },
     windGust: { value: null, unitCode: 'wmoUnit:km_h-1' },
+    // The altimeter setting (29.92 inHg), and sea-level pressure from an hourly METAR's SLP132.
     barometricPressure: { value: 101325, unitCode: 'wmoUnit:Pa' },
+    seaLevelPressure: { value: 101320, unitCode: 'wmoUnit:Pa' },
     visibility: { value: 16093, unitCode: 'wmoUnit:m' },
     relativeHumidity: { value: 65.2, unitCode: 'wmoUnit:percent' },
     heatIndex: { value: null, unitCode: 'wmoUnit:degC' },
@@ -1423,6 +1885,78 @@ export const zoneForecastResponse = {
         number: 2,
         name: 'Tonight',
         detailedForecast: 'Rain likely. Lows in the upper 40s.',
+      },
+    ],
+  },
+};
+
+/**
+ * TXZ211's `/forecast`, captured 2026-11-11T13:31Z (first two of fourteen periods). Its
+ * HGX ZFP header reads "1222 AM CST Wed Nov 11 2026" (06:22Z), which NWS read as noon:
+ * `updated` is 12 hours late, in the future until local noon.
+ */
+export const midnightHourZoneForecastResponse = {
+  properties: {
+    updated: '2026-11-11T12:22:00-06:00',
+    periods: [
+      {
+        number: 1,
+        name: 'Rest Of Tonight',
+        detailedForecast:
+          'Showers likely with isolated thunderstorms. Near steady temperature around 60. Northeast winds around 5 mph. Chance of rain 70 percent.',
+      },
+      {
+        number: 2,
+        name: 'Wednesday',
+        detailedForecast:
+          'Partly sunny with a chance of showers with isolated thunderstorms in the morning, then mostly cloudy with a slight chance of showers in the afternoon. Highs in the mid 70s. Northeast winds around 5 mph. Chance of rain 50 percent.',
+      },
+    ],
+  },
+};
+
+/**
+ * WYZ118's `/forecast`, captured 2026-11-11T13:32Z (first two of eight periods). Its CYS
+ * ZFP header reads "1132 PM MST Tue Nov 10 2026", which NWS read correctly.
+ */
+export const lateEveningZoneForecastResponse = {
+  properties: {
+    updated: '2026-11-10T23:32:00-07:00',
+    periods: [
+      {
+        number: 1,
+        name: 'Rest Of Tonight',
+        detailedForecast: 'Mostly clear. Lows in the upper 30s. West winds 10 to 15 mph.',
+      },
+      {
+        number: 2,
+        name: 'Veterans Day',
+        detailedForecast:
+          'Sunny. Highs around 60. Northwest winds 15 to 20 mph with gusts up to 30 mph.',
+      },
+    ],
+  },
+};
+
+/**
+ * PAZ064's `/forecast`, captured 2026-11-11T17:03Z (first two of thirteen periods). Its
+ * CTP ZFP header reads "1200 PM EST Wed Nov 11 2026" (17:00Z), which NWS read correctly:
+ * a noon-hour header is not misread the way a midnight-hour one is.
+ */
+export const noonHourZoneForecastResponse = {
+  properties: {
+    updated: '2026-11-11T12:00:00-05:00',
+    periods: [
+      {
+        number: 1,
+        name: 'Today',
+        detailedForecast: 'Mostly sunny. Highs in the mid 60s. Southwest winds around 5 mph.',
+      },
+      {
+        number: 2,
+        name: 'Tonight',
+        detailedForecast:
+          'Mostly cloudy. A slight chance of rain after midnight. Lows in the mid 40s. Southeast winds around 5 mph. Chance of rain 20 percent.',
       },
     ],
   },

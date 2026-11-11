@@ -1,10 +1,10 @@
 /**
  * @fileoverview Pure partition of an NWS narrative text product into addressable parts.
  * An AFD splits at its `.NAME...` section header lines; ZFP, HWO, SPS, and FWF split into
- * `$$`-terminated UGC segments keyed by every zone their UGC line covers. Text before
- * the first part is the header, text after the last is the trailer. Every scan is a
- * single pass over the product's lines with no backtracking regex, so cost stays
- * linear in the product size.
+ * `$$`-terminated UGC segments keyed by every zone their UGC line covers, each carrying
+ * the expiry token that ends its UGC line. Text before the first part is the header,
+ * text after the last is the trailer. Every scan is a single pass over the product's
+ * lines with no backtracking regex, so cost stays linear in the product size.
  * @module services/nws/product-sections
  */
 
@@ -17,6 +17,11 @@ interface ZoneRun {
 
 /** One addressable part of a narrative product. */
 export interface ProductPart {
+  /**
+   * A UGC segment's expiry token as issued: UTC day, hour, and minute (`DDHHMM`, e.g.
+   * `060000`), resolved to an instant by {@link ugcExpiryTime}; absent for AFD sections.
+   */
+  readonly expiry?: string;
   /** A UGC segment's first area-name line (`City of Seattle`); absent for AFD sections. */
   readonly label?: string;
   /**
@@ -68,6 +73,24 @@ export function partMatches(part: ProductPart, wanted: string): boolean {
   const [, prefix, digits] = code;
   const n = Number(digits);
   return part.zones.some((run) => run.prefix === prefix && run.from <= n && n <= run.to);
+}
+
+/**
+ * The instant (epoch ms) a UGC expiry token names. The token is UTC `DDHHMM` with no
+ * month or year, so it resolves against the product's issuance time: a day on or after
+ * the issuance day is in the issuance month, an earlier day in the next month
+ * (December rolls to January). Undefined for an unparseable issuance time or a token
+ * whose day, hour, or minute is out of range.
+ */
+export function ugcExpiryTime(token: string, issuanceTime: string): number | undefined {
+  const issued = new Date(issuanceTime);
+  const day = Number(token.slice(0, 2));
+  const hour = Number(token.slice(2, 4));
+  const minute = Number(token.slice(4, 6));
+  if (Number.isNaN(issued.getTime()) || day < 1 || day > 31 || hour > 23 || minute > 59) return;
+  const month = issued.getUTCMonth() + (day < issued.getUTCDate() ? 1 : 0);
+  // Date.UTC carries month 12 into January of the next year.
+  return Date.UTC(issued.getUTCFullYear(), month, day, hour, minute);
 }
 
 function collapseSpaces(value: string): string {
@@ -129,7 +152,13 @@ function afdSectionName(line: string, next: string | undefined): string {
 }
 
 function partitionUgc(lines: readonly string[]): ProductPartition {
-  const blocks: { label?: string; name: string; start: number; zones: ZoneRun[] }[] = [];
+  const blocks: {
+    expiry: string;
+    label?: string;
+    name: string;
+    start: number;
+    zones: ZoneRun[];
+  }[] = [];
   let last = -1;
   let i = 0;
   while (i < lines.length) {
@@ -147,7 +176,8 @@ function partitionUgc(lines: readonly string[]): ProductPartition {
       ugcLines.push(nextLine);
       j++;
     }
-    if (!endsWithExpiry(ugcLines[ugcLines.length - 1] as string)) {
+    const lastUgc = ugcLines[ugcLines.length - 1] as string;
+    if (!endsWithExpiry(lastUgc)) {
       // Not a UGC line; none of the lines it absorbed can start one either.
       i = j + 1;
       continue;
@@ -156,7 +186,9 @@ function partitionUgc(lines: readonly string[]): ProductPartition {
     while (end < lines.length && !(lines[end] as string).startsWith('$$')) end++;
     const { name, zones } = parseUgc(ugcLines.join(''));
     const label = lines[j + 1]?.trim().replace(/-$/, '');
-    blocks.push({ name, start: i, zones, ...(label ? { label } : {}) });
+    // endsWithExpiry has just checked the token's place: the six digits before the final hyphen.
+    const expiry = lastUgc.slice(-7, -1);
+    blocks.push({ expiry, name, start: i, zones, ...(label ? { label } : {}) });
     last = Math.min(end, lines.length - 1);
     i = last + 1;
   }

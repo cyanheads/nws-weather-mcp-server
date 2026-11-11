@@ -7,13 +7,6 @@
 
 import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
 
-/**
- * Hard ceiling on any `limit` input. It clears every collection these tools serve
- * (a metro grid cell's stations, the national active-alert set, a busy station's
- * 7-day history), so only bulk-script sizes fail at the schema.
- */
-export const LIMIT_CEILING = 10_000;
-
 /** A first page's size, with the disclosure owed when the caller asked for more. */
 export interface PageLimit {
   /** Set only when the requested limit exceeded the cap. */
@@ -39,14 +32,19 @@ export function clampPageLimit(requestedLimit: number, cap: number): PageLimit {
   };
 }
 
+/** Parameter names a restart hint quotes, rendered as code spans in `content[]`. */
+const CURSOR_LITERALS = ['cursor', 'nextCursor'] as const;
+
 /**
  * The InvalidParams (`invalid_cursor`) a continuation token the tool would never
- * mint fails with; `hint` tells the caller how to restart.
+ * mint fails with; `hint` tells the caller how to restart, in plain text — the
+ * parameter names it mentions render as code spans in `content[]`.
  */
 export function invalidCursor(cursor: string, hint: string) {
   return invalidParams(
     'Invalid pagination cursor. The cursor may be corrupted or from a different tool.',
     { cursor, reason: 'invalid_cursor', recovery: { hint } },
+    { literals: CURSOR_LITERALS },
   );
 }
 

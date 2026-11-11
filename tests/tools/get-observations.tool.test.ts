@@ -34,6 +34,7 @@ const observationResult: ObservationResult = {
     windDirection: { value: 199.6, unitCode: 'wmoUnit:degree_(angle)' },
     windGust: { value: null, unitCode: 'wmoUnit:km_h-1' },
     barometricPressure: { value: 101693.25, unitCode: 'wmoUnit:Pa' },
+    seaLevelPressure: { value: 101740, unitCode: 'wmoUnit:Pa' },
     visibility: { value: 16093.44, unitCode: 'wmoUnit:m' },
     relativeHumidity: { value: 66.720955975373, unitCode: 'wmoUnit:percent' },
     heatIndex: { value: null, unitCode: 'wmoUnit:degC' },
@@ -53,16 +54,19 @@ describe('nws_get_observations', () => {
       vi.setSystemTime(new Date('2026-04-03T12:00:00Z'));
       try {
         const observation = { ...observationResult.observation };
-        const keys = [
-          'temperature',
-          'dewpoint',
-          'windSpeed',
-          'barometricPressure',
-          'visibility',
-          'relativeHumidity',
+        const slots = [
+          ['temperature'],
+          ['dewpoint'],
+          ['windSpeed'],
+          // The altimeter setting and sea-level pressure share the pressure slot.
+          ['barometricPressure', 'seaLevelPressure'],
+          ['visibility'],
+          ['relativeHumidity'],
         ] as const;
-        keys.forEach((key, index) => {
-          observation[key] = { ...observation[key], value: index < missing ? null : 0 };
+        slots.forEach((slot, index) => {
+          for (const key of slot) {
+            observation[key] = { ...observation[key], value: index < missing ? null : 0 };
+          }
         });
         mockGetObservation.mockResolvedValueOnce({ observation });
         const result = await runToolContract(getObservationsTool, { station_id: 'KSEA' });
@@ -88,7 +92,14 @@ describe('nws_get_observations', () => {
           ...observationResult.observation,
           timestamp: stale ? '2026-04-03T09:00:00Z' : '2026-04-03T11:30:00Z',
         };
-        for (const key of ['dewpoint', 'windSpeed', 'barometricPressure', 'visibility'] as const)
+        // Four slots missing; the pressure slot is empty only with both pressures null.
+        for (const key of [
+          'dewpoint',
+          'windSpeed',
+          'barometricPressure',
+          'seaLevelPressure',
+          'visibility',
+        ] as const)
           observation[key] = { ...observation[key], value: null };
         mockGetObservation.mockResolvedValueOnce({ observation });
         const result = await runToolContract(getObservationsTool, { station_id: 'KSEA' });
@@ -103,6 +114,108 @@ describe('nws_get_observations', () => {
       }
     },
   );
+
+  it.each([
+    ['sea-level pressure alone', null, 102230, false],
+    ['the altimeter setting alone', 102030, null, false],
+    ['neither pressure', null, null, true],
+  ] as const)(
+    'counts the pressure slot as reported with %s, three other slots missing (issue #80)',
+    async (_label, altimeter, seaLevel, limited) => {
+      // KDEN 2026-11-11T11:53Z, raw `… A3028 RMK AO2 SLP223 …`: NWS dropped the
+      // altimeter and decoded the SLP remark. Dewpoint, wind, and visibility are
+      // nulled, so the pressure slot decides the 4-of-6 threshold.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-04-03T12:00:00Z'));
+      try {
+        const pa = (value: number | null) => ({ value, unitCode: 'wmoUnit:Pa' });
+        const observation = {
+          ...observationResult.observation,
+          barometricPressure: pa(altimeter),
+          seaLevelPressure: pa(seaLevel),
+        };
+        for (const key of ['dewpoint', 'windSpeed', 'visibility'] as const)
+          observation[key] = { ...observation[key], value: null };
+        mockGetObservation.mockResolvedValueOnce({ observation });
+        const result = await runToolContract(getObservationsTool, { station_id: 'KDEN' });
+        const text = result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+        expect((result.structuredContent as { notice?: string }).notice).toBe(
+          limited
+            ? 'Limited data — most measurements unavailable from this station. Try a different station using nws_find_stations.'
+            : undefined,
+        );
+        expect(text.includes('Limited data')).toBe(limited);
+        expect(result.structuredContent).toMatchObject({
+          barometricPressurePa: altimeter,
+          seaLevelPressurePa: seaLevel,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('returns the altimeter setting and sea-level pressure separately on both surfaces (issue #80)', async () => {
+    // KLXV 2026-11-11T11:53Z (3,027 m), raw `… A3053 RMK AO2 SLP289 …`: 5.0 hPa apart.
+    // KDEN 2026-11-11T11:53Z, raw `… A3028 RMK AO2 SLP223 …`: altimeter dropped by NWS.
+    // KLXV 2026-11-11T13:10Z, a 5-minute record: the altimeter's exact conversion, no SLP.
+    // Then a record carrying neither.
+    const pa = (value: number | null) => ({ value, unitCode: 'wmoUnit:Pa' });
+    const withPressure = (altimeter: number | null, seaLevel: number | null) => ({
+      observation: {
+        ...observationResult.observation,
+        barometricPressure: pa(altimeter),
+        seaLevelPressure: pa(seaLevel),
+      },
+    });
+    mockGetObservation
+      .mockResolvedValueOnce(withPressure(103390, 102890))
+      .mockResolvedValueOnce(withPressure(null, 102230))
+      .mockResolvedValueOnce(withPressure(103386.45, null))
+      .mockResolvedValueOnce(withPressure(null, null));
+
+    /** Every pressure line of a result's content[], old label included, each whole. */
+    const pressureLines = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content
+        .map((block) => ('text' in block ? block.text : ''))
+        .join('\n')
+        .split('\n')
+        .filter((line) => /^\*\*(Altimeter|Sea-Level Pressure|Pressure):\*\*/.test(line));
+
+    const both = await runToolContract(getObservationsTool, { station_id: 'KLXV' });
+    expect(both.structuredContent).toMatchObject({
+      barometricPressurePa: 103390,
+      seaLevelPressurePa: 102890,
+    });
+    expect(pressureLines(both)).toEqual([
+      '**Altimeter:** 30.53 inHg (1034 hPa, 103390 Pa)',
+      '**Sea-Level Pressure:** 1028.9 hPa (30.38 inHg, 102890 Pa)',
+    ]);
+
+    const seaLevelOnly = await runToolContract(getObservationsTool, { station_id: 'KDEN' });
+    expect(seaLevelOnly.structuredContent).toMatchObject({
+      barometricPressurePa: null,
+      seaLevelPressurePa: 102230,
+    });
+    expect(pressureLines(seaLevelOnly)).toEqual([
+      '**Sea-Level Pressure:** 1022.3 hPa (30.19 inHg, 102230 Pa)',
+    ]);
+
+    const fiveMinute = await runToolContract(getObservationsTool, { station_id: 'KLXV' });
+    expect(fiveMinute.structuredContent).toMatchObject({
+      barometricPressurePa: 103386,
+      seaLevelPressurePa: null,
+    });
+    expect(pressureLines(fiveMinute)).toEqual(['**Altimeter:** 30.53 inHg (1034 hPa, 103386 Pa)']);
+
+    const neither = await runToolContract(getObservationsTool, { station_id: 'KDEN' });
+    expect(neither.structuredContent).toMatchObject({
+      barometricPressurePa: null,
+      seaLevelPressurePa: null,
+    });
+    expect(pressureLines(neither)).toEqual([]);
+  });
+
   beforeEach(() => {
     mockGetObservation.mockReset();
   });
@@ -148,6 +261,7 @@ describe('nws_get_observations', () => {
     expect(result.windSpeedKmh).toBe(15); // 14.832
     expect(result.windDirectionDeg).toBe(200); // 199.6
     expect(result.barometricPressurePa).toBe(101693); // 101693.25
+    expect(result.seaLevelPressurePa).toBe(101740); // whole tens of Pa upstream
     expect(result.visibilityM).toBe(16093); // 16093.44
     expect(result.relativeHumidityPct).toBe(67); // 66.720955975373
     expect(result.cloudLayers[0]!.baseM).toBe(1524); // 1524.123
@@ -468,6 +582,7 @@ describe('nws_get_observations', () => {
         windDirectionDeg: 200,
         windGustKmh: null,
         barometricPressurePa: 101325,
+        seaLevelPressurePa: 101320,
         visibilityM: 16093,
         relativeHumidityPct: 65.2,
         heatIndexC: null,
@@ -488,9 +603,9 @@ describe('nws_get_observations', () => {
       expect(text).toContain('**Dewpoint:** 47°F (8.3°C)');
       // Should show wind
       expect(text).toContain('mph');
-      // Should show pressure in both units
-      expect(text).toContain('inHg');
-      expect(text).toContain('hPa');
+      // Altimeter setting and sea-level pressure, each in both units with the raw Pa
+      expect(text).toContain('**Altimeter:** 29.92 inHg (1013 hPa, 101325 Pa)');
+      expect(text).toContain('**Sea-Level Pressure:** 1013.2 hPa (29.92 inHg, 101320 Pa)');
       // Should show clouds
       expect(text).toContain('BKN');
     });
@@ -508,6 +623,7 @@ describe('nws_get_observations', () => {
         windDirectionDeg: 200,
         windGustKmh: null,
         barometricPressurePa: 101693,
+        seaLevelPressurePa: null,
         visibilityM: 16093,
         relativeHumidityPct: 67,
         heatIndexC: null,
@@ -540,6 +656,7 @@ describe('nws_get_observations', () => {
         windDirectionDeg: null,
         windGustKmh: null,
         barometricPressurePa: null,
+        seaLevelPressurePa: null,
         visibilityM: null,
         relativeHumidityPct: null,
         heatIndexC: null,
@@ -554,6 +671,7 @@ describe('nws_get_observations', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('KSEA');
       expect(text).toContain('Clear');
+      expect(text).not.toMatch(/Altimeter|Pressure/);
       expect(text).toContain('6:00 AM HST');
       expect(text).toContain('Not available');
     });

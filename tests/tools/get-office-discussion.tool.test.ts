@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OfficeDiscussionResult } from '@/services/nws/nws-service.js';
 
 const mockGetOfficeDiscussion = vi.fn<() => Promise<OfficeDiscussionResult>>();
@@ -101,15 +101,13 @@ describe('nws_get_office_discussion', () => {
   it('propagates the valid-office no-current-product error for episodic types', async () => {
     mockGetOfficeDiscussion.mockRejectedValueOnce(
       new Error(
-        'No SPS products are currently available for office "SEW". SPS products are episodic',
+        'No SPS products are on file for office "SEW". SPS products are issued only when conditions warrant',
       ),
     );
 
     const ctx = createMockContext({ tenantId: 'test', errors: getOfficeDiscussionTool.errors });
     const input = getOfficeDiscussionTool.input.parse({ office: 'SEW', product_type: 'SPS' });
-    await expect(getOfficeDiscussionTool.handler(input, ctx)).rejects.toThrow(
-      'currently available',
-    );
+    await expect(getOfficeDiscussionTool.handler(input, ctx)).rejects.toThrow('on file');
   });
 
   describe('format', () => {
@@ -136,7 +134,16 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
     (result.content as { type: string; text?: string }[])
       .map((block) => block.text ?? '')
       .join('\n');
-  const call = async (product: OfficeDiscussionResult, args: Record<string, unknown>) => {
+  /**
+   * Runs the tool on `product` with the clock at `now`: by default the product's own
+   * issuance time, before any of its zone segments has expired (issue #79).
+   */
+  const call = async (
+    product: OfficeDiscussionResult,
+    args: Record<string, unknown>,
+    now: string = product.issuanceTime,
+  ) => {
+    vi.setSystemTime(new Date(now));
     mockGetOfficeDiscussion.mockResolvedValueOnce(product);
     const result = await runToolContract(getOfficeDiscussionTool, {
       office: product.issuingOffice.slice(1),
@@ -152,9 +159,17 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
   /** The product's lines that start a UGC segment (`WAZ315-162300-`). */
   const ugcLines = (text: string) =>
     text.split('\n').filter((line) => /^[A-Z]{2}Z\d{3}[->]/.test(line));
+  /** A notice as the trailer renders it in `content[]`: brackets escaped. */
+  const rendered = (notice: unknown) =>
+    (notice as string).replaceAll('[', '\\[').replaceAll(']', '\\]');
 
   beforeEach(() => {
     mockGetOfficeDiscussion.mockReset();
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('outlines an over-budget ZFP instead of returning its text', async () => {
@@ -410,6 +425,8 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
     ['bis-fwf', 'outline'],
     ['riw-fwf', 'outline'],
     ['twc-fwf', 'whole'],
+    ['oun-sps', 'whole'],
+    ['dvn-sps', 'whole'],
   ])('serves fixture %s as %s', async (name, arm) => {
     const product = loadProduct(name);
     const { structured, text } = await call(product, {});
@@ -580,5 +597,166 @@ describe('nws_get_office_discussion — bounded output and sections (issue #50)'
     expect(structured.notice).toBe(
       'This AFD is 55254 bytes, over the 24000-byte response budget, so its 2 sections are outlined instead of returned. No single section fits the budget (the smallest is 27517 bytes); a sections:[...] selection still returns whole at any size.',
     );
+  });
+
+  describe('expired products (issue #79)', () => {
+    const SPS_ALERTS =
+      ' For Special Weather Statements in effect now, call nws_search_alerts with event ["Special Weather Statement"].';
+    /** A two-segment ZFP: FLZ076 expires 2026-10-16T12:00Z, FLZ077 at 21:45Z. */
+    const twoSegments: OfficeDiscussionResult = {
+      ...loadProduct('key-zfp'),
+      productText:
+        'FPUS52 KKEY 160800\nZFPKEY\n\nZone Forecast Product\n\nFLZ076-161200-\nMonroe Upper Keys-\n.TODAY...Sunny.\n\n$$\n\nFLZ077-162145-\nMonroe Middle Keys-\n.TODAY...Sunny.\n\n$$\n',
+    };
+
+    it('names the expiry and the alert search for an expired SPS on both surfaces', async () => {
+      const oun = loadProduct('oun-sps');
+      const { result, structured, text } = await call(oun, {}, '2026-11-11T13:40:00Z');
+
+      expect(result.isError).toBeFalsy();
+      expect(structured.productText).toBe(oun.productText);
+      expect(structured.notice).toBe(
+        `This SPS expired at 2026-11-06T00:00Z and is no longer in effect; it is the newest SPS on file for OUN.${SPS_ALERTS}`,
+      );
+      expect(text).toContain(`> ${rendered(structured.notice)}`);
+    });
+
+    it('owes no notice for an SPS still in effect, up to its expiry minute', async () => {
+      const dvn = loadProduct('dvn-sps');
+      for (const now of ['2026-11-11T13:40:00Z', '2026-11-11T14:14:59.999Z']) {
+        const { structured } = await call(dvn, {}, now);
+        expect(structured.productText).toBe(dvn.productText);
+        expect(structured.notice, now).toBeUndefined();
+      }
+      const { structured } = await call(dvn, {}, '2026-11-11T14:15:00Z');
+      expect(structured.notice).toBe(
+        `This SPS expired at 2026-11-11T14:15Z and is no longer in effect; it is the newest SPS on file for DVN.${SPS_ALERTS}`,
+      );
+    });
+
+    it.each([
+      ['lot-hwo', 'HWO', 'LOT', '2026-10-17T08:00Z'],
+      ['key-zfp', 'ZFP', 'KEY', '2026-10-16T21:45Z'],
+      ['twc-fwf', 'FWF', 'TWC', '2026-10-23T14:15Z'],
+    ])(
+      'names the expiry of an expired %s with no alert-search sentence',
+      async (name, code, office, expiry) => {
+        const product = loadProduct(name);
+        const { structured, text } = await call(product, {}, '2026-11-11T13:40:00Z');
+
+        expect(structured.productText).toBe(product.productText);
+        expect(structured.notice).toBe(
+          `This ${code} expired at ${expiry} and is no longer in effect; it is the newest ${code} on file for ${office}.`,
+        );
+        expect(text).toContain(`> ${rendered(structured.notice)}`);
+        expect(text).not.toContain('nws_search_alerts');
+      },
+    );
+
+    it('carries the expiry and the outline re-call in one notice for an expired over-budget ZFP', async () => {
+      const sew = loadProduct('sew-zfp');
+      const { structured, text } = await call(sew, {}, '2026-10-17T00:00:00Z');
+
+      expect(structured.productText).toBeUndefined();
+      expect(structured.outline as unknown[]).toHaveLength(34);
+      expect(structured.notice).toBe(
+        'This ZFP expired at 2026-10-16T23:00Z and is no longer in effect; it is the newest ZFP on file for SEW. This ZFP is 55764 bytes, over the 24000-byte response budget, so its 34 sections are outlined instead of returned. Re-call with the same office and product_type plus sections:["WAZ302"] to get that section (2106 bytes) with the product header. A selection returns the 244-byte product header and closing lines plus every section it names whole, so add up the listed sizes before naming several.',
+      );
+      expect(text).toContain(`> ${rendered(structured.notice)}`);
+    });
+
+    it('keeps the count notice beside the expiry for an expired selection', async () => {
+      const { structured, text } = await call(
+        loadProduct('sew-zfp'),
+        { sections: ['WAZ315'] },
+        '2026-10-17T00:00:00Z',
+      );
+      expect(ugcLines(structured.productText as string)).toEqual(['WAZ315-162300-']);
+      expect(structured.notice).toBe(
+        'The selected sections of this ZFP expired at 2026-10-16T23:00Z and are no longer in effect; it is the newest ZFP on file for SEW. Returned 1 of 34 sections with the product header: WAZ315. Omit sections for the whole product.',
+      );
+      expect(text).toContain(`> ${rendered(structured.notice)}`);
+    });
+
+    it('names the expiry of an over-budget product with one section, served whole', async () => {
+      const key = loadProduct('key-zfp');
+      const oversized: OfficeDiscussionResult = {
+        ...key,
+        productText: `${key.productText.slice(0, key.productText.indexOf('$$'))}${'.TODAY...Sunny and warm. '.repeat(1_200)}\n$$`,
+      };
+      const { structured } = await call(oversized, {}, '2026-10-16T21:45:00Z');
+      expect(structured.productText).toBe(oversized.productText);
+      expect(structured.notice).toBe(
+        'This ZFP expired at 2026-10-16T21:45Z and is no longer in effect; it is the newest ZFP on file for KEY.',
+      );
+    });
+
+    it('judges a selection on the selected segments only', async () => {
+      const now = '2026-10-16T13:00:00Z';
+      const count = (n: number, names: string) =>
+        `Returned ${n} of 2 sections with the product header: ${names}. Omit sections for the whole product.`;
+
+      // The whole product carries FLZ077, still in effect.
+      expect((await call(twoSegments, {}, now)).structured.notice).toBeUndefined();
+      expect((await call(twoSegments, { sections: ['FLZ076'] }, now)).structured.notice).toBe(
+        `The selected sections of this ZFP expired at 2026-10-16T12:00Z and are no longer in effect; it is the newest ZFP on file for KEY. ${count(1, 'FLZ076')}`,
+      );
+      expect((await call(twoSegments, { sections: ['FLZ077'] }, now)).structured.notice).toBe(
+        count(1, 'FLZ077'),
+      );
+      // The latest expiry among the selected segments decides.
+      expect(
+        (await call(twoSegments, { sections: ['FLZ076', 'FLZ077'] }, now)).structured.notice,
+      ).toBe(count(2, 'FLZ076; FLZ077'));
+      // Past both, the whole product has expired at the later one.
+      expect((await call(twoSegments, {}, '2026-10-16T21:45:00Z')).structured.notice).toBe(
+        'This ZFP expired at 2026-10-16T21:45Z and is no longer in effect; it is the newest ZFP on file for KEY.',
+      );
+    });
+
+    it('resolves an expiry day across the year boundary against the issuance time', async () => {
+      const newYear: OfficeDiscussionResult = {
+        ...loadProduct('oun-sps'),
+        issuanceTime: '2026-12-31T22:00:00+00:00',
+        productText:
+          'WWUS84 KOUN 312200\nSPSOUN\n\nSpecial Weather Statement\n\nOKZ025-010400-\nOklahoma OK-\n\nA strong thunderstorm.\n\n$$\n',
+      };
+      expect((await call(newYear, {}, '2027-01-01T03:59:00Z')).structured.notice).toBeUndefined();
+      expect((await call(newYear, {}, '2027-01-01T04:00:00Z')).structured.notice).toBe(
+        `This SPS expired at 2027-01-01T04:00Z and is no longer in effect; it is the newest SPS on file for OUN.${SPS_ALERTS}`,
+      );
+    });
+
+    it('reads the expiry token on the wrapped second line of a UGC line', async () => {
+      const { structured } = await call(
+        loadProduct('lot-hwo'),
+        { sections: ['INZ019'] },
+        '2026-10-17T08:00:00Z',
+      );
+      expect(structured.notice).toMatch(
+        /^The selected sections of this HWO expired at 2026-10-17T08:00Z and are no longer in effect; /,
+      );
+    });
+
+    it('owes no expiry notice for an AFD or a product with no UGC line', async () => {
+      const box = loadProduct('box-afd');
+      const afd = await call(box, {}, '2027-06-01T00:00:00Z');
+      expect(afd.structured.productText).toBe(box.productText);
+      expect(afd.structured.notice).toBeUndefined();
+      expect(
+        (await call(box, { sections: ['DISCUSSION'] }, '2027-06-01T00:00:00Z')).structured.notice,
+      ).toBe(
+        'Returned 1 of 6 sections with the product header: DISCUSSION. Omit sections for the whole product.',
+      );
+
+      const noUgc: OfficeDiscussionResult = {
+        ...loadProduct('oun-sps'),
+        productText:
+          'WWUS84 KOUN 052328\nSPSOUN\n\nSpecial Weather Statement\n\nNo zone line here.\n\n$$\n',
+      };
+      const sps = await call(noUgc, {}, '2027-06-01T00:00:00Z');
+      expect(sps.structured.productText).toBe(noUgc.productText);
+      expect(sps.structured.notice).toBeUndefined();
+    });
   });
 });

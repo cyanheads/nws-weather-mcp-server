@@ -1,0 +1,8 @@
+{
+  "issuanceTime": "2026-11-05T23:28:00+00:00",
+  "issuingOffice": "KOUN",
+  "productCode": "SPS",
+  "productName": "Special Weather Statement",
+  "productText": "\n000\nWWUS84 KOUN 052328\nSPSOUN\n\nSpecial Weather Statement\nNational Weather Service Norman OK\n528 PM CST Thu Nov 5 2026\n \nOKZ025-060000-\nOklahoma OK-\n528 PM CST Thu Nov 5 2026\n\n...A strong thunderstorm will impact portions of southwestern\nOklahoma County through 600 PM CST...\n\nAt 526 PM CST, Doppler radar was tracking a strong thunderstorm over \nsouthwestern Oklahoma City, near Will Rogers International Airport, \nmoving east-northeast at 15 mph.\n\nHAZARD...Half inch hail and accumulating hail.\n\nSOURCE...Radar indicated.\n\nIMPACT...Minor damage to outdoor objects is possible. Accumulating \n         hail may make roads slick.\n\nLocations impacted include...\nOklahoma City, Del City, and Valley Brook.\n\nPRECAUTIONARY/PREPAREDNESS ACTIONS...\n\nIf outdoors, consider seeking shelter inside a building. \n\n&&\n\nLAT...LON 3538 9765 3547 9766 3554 9746 3540 9743\nTIME...MOT...LOC 2326Z 256DEG 14KT 3543 9759 \n\nMAX HAIL SIZE...0.50 IN\nMAX WIND GUST...<30 MPH\n\n$$\n\n..speg.\n",
+  "wmoCollectiveId": "WWUS84"
+}
